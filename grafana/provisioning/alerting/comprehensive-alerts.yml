@@ -1,0 +1,319 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: ServiceHealth
+    folder: Alerts
+    interval: 30s
+    rules:
+      - uid: service-health-keycloak
+        title: Keycloak Service Down
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: up{job="keycloak"} == 0
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: query
+              expression: A
+              refId: C
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Keycloak service is down"
+          description: "Keycloak is not responding to health checks"
+
+      - uid: service-health-litellm
+        title: LiteLLM Service Down
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: up{job="litellm"} == 0
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: query
+              expression: A
+              refId: C
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LiteLLM service is down"
+          description: "LiteLLM is not responding to health checks"
+
+      - uid: service-health-openwebui
+        title: Open WebUI Service Down
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: up{job="open-webui"} == 0
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: query
+              expression: A
+              refId: C
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Open WebUI service is down"
+          description: "Open WebUI is not responding to health checks"
+
+      - uid: service-health-postgres
+        title: PostgreSQL Service Down
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: pg_up == 0
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: query
+              expression: A
+              refId: C
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL service is down"
+          description: "PostgreSQL is not responding to health checks"
+
+      - uid: service-health-qdrant
+        title: Qdrant Service Down
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: up{job="qdrant"} == 0
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: query
+              expression: A
+              refId: C
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Qdrant service is down"
+          description: "Qdrant is not responding to health checks"
+
+  - orgId: 1
+    name: SystemMetrics
+    folder: Alerts
+    interval: 30s
+    rules:
+      - uid: high-cpu-usage
+        title: High CPU Usage
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: query
+              expression: A
+              refId: C
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is {{ $value }}% (threshold: 85%)"
+
+      - uid: high-memory-usage
+        title: High Memory Usage
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: query
+              expression: A
+              refId: C
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is {{ $value }}% (threshold: 85%)"
+
+      - uid: disk-space-low
+        title: Low Disk Space
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"})) * 100 > 85
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: query
+              expression: A
+              refId: C
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space detected"
+          description: "Disk usage is {{ $value }}% (threshold: 85%)"
+
+  - orgId: 1
+    name: ApplicationErrors
+    folder: Alerts
+    interval: 30s
+    rules:
+      - uid: litellm-high-error-rate
+        title: LiteLLM High Error Rate
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                sum(rate(litellm_failed_requests_total[5m])) /
+                sum(rate(litellm_requests_total[5m])) > 0.05
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: query
+              expression: A
+              refId: C
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LiteLLM error rate exceeds 5%"
+          description: "Error rate is {{ $value | humanizePercentage }}"
+
+      - uid: litellm-latency-high
+        title: LiteLLM High Latency
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                histogram_quantile(0.95,
+                  sum(rate(litellm_request_duration_seconds_bucket[5m])) by (le)
+                ) > 10
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: query
+              expression: A
+              refId: C
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LiteLLM P95 latency exceeds 10s"
+          description: "P95 latency is {{ $value }}s"
+
+      - uid: postgres-connections-high
+        title: PostgreSQL High Connection Count
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: pg_stat_activity_count > 150
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: query
+              expression: A
+              refId: C
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL connection count is high"
+          description: "Connection count is {{ $value }}"

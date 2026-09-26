@@ -313,6 +313,81 @@ if prompt_yes_no_default_no "Start Docker stack and configure Keycloak clients?"
 	fi
 fi
 
+# 5. Additional Providers (Optional)
+echo -e "${YELLOW}Step 6: Additional LLM Providers (Optional)${NC}"
+echo ""
+
+# Discord Webhook for Grafana alerts
+DISCORD_WEBHOOK=""
+if prompt_yes_no "Configure Discord webhook for Grafana alerts?"; then
+	read -rp "Enter Discord webhook URL: " DISCORD_WEBHOOK
+	if [[ -n "$DISCORD_WEBHOOK" ]]; then
+		if [ -f "$PROJECT_ROOT/.env" ]; then
+			if grep -q "^GRAFANA_DISCORD_WEBHOOK_URL=" "$PROJECT_ROOT/.env" 2>/dev/null; then
+				sed_inplace "s|^GRAFANA_DISCORD_WEBHOOK_URL=.*|GRAFANA_DISCORD_WEBHOOK_URL=$DISCORD_WEBHOOK|" "$PROJECT_ROOT/.env"
+			else
+				echo "GRAFANA_DISCORD_WEBHOOK_URL=$DISCORD_WEBHOOK" >>"$PROJECT_ROOT/.env"
+			fi
+			echo -e "${GREEN}✓ Added Discord webhook to .env${NC}"
+		else
+			echo -e "${RED}.env file not found. Add manually: GRAFANA_DISCORD_WEBHOOK_URL=$DISCORD_WEBHOOK${NC}"
+		fi
+	fi
+fi
+
+# Gemini API Key
+GEMINI_KEY=""
+if prompt_yes_no "Configure Google Gemini provider?"; then
+	read -rp "Enter Gemini API key: " GEMINI_KEY
+	if [[ -n "$GEMINI_KEY" ]]; then
+		if [ -f "$PROJECT_ROOT/.env" ]; then
+			if grep -q "^GEMINI_API_KEY=" "$PROJECT_ROOT/.env" 2>/dev/null; then
+				sed_inplace "s|^GEMINI_API_KEY=.*|GEMINI_API_KEY=$GEMINI_KEY|" "$PROJECT_ROOT/.env"
+			else
+				echo "GEMINI_API_KEY=$GEMINI_KEY" >>"$PROJECT_ROOT/.env"
+			fi
+			echo -e "${GREEN}✓ Added Gemini API key to .env${NC}"
+		else
+			echo -e "${RED}.env file not found. Add manually: GEMINI_API_KEY=$GEMINI_KEY${NC}"
+		fi
+	fi
+fi
+
+# AWS Bedrock (OSS Models)
+if prompt_yes_no "Configure AWS Bedrock provider for OSS models (MiniMax, Qwen, Kimi)?"; then
+	read -rp "Enter AWS Access Key ID: " AWS_ACCESS_KEY_ID
+	read -rp "Enter AWS Secret Access Key: " AWS_SECRET_ACCESS_KEY
+
+	if [[ -n "$AWS_ACCESS_KEY_ID" ]] && [[ -n "$AWS_SECRET_ACCESS_KEY" ]]; then
+		if [ -f "$PROJECT_ROOT/.env" ]; then
+			for KEY in "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY" "AWS_REGION=us-east-1"; do
+				VAR_NAME="${KEY%%=*}"
+				VAR_VALUE="${KEY##*=}"
+				if grep -q "^${VAR_NAME}=" "$PROJECT_ROOT/.env" 2>/dev/null; then
+					sed_inplace "s|^${VAR_NAME}=.*|${VAR_NAME}=${VAR_VALUE}|" "$PROJECT_ROOT/.env"
+				else
+					echo "${VAR_NAME}=${VAR_VALUE}" >>"$PROJECT_ROOT/.env"
+				fi
+			done
+			echo -e "${GREEN}✓ Added AWS Bedrock credentials to .env${NC}"
+		else
+			echo -e "${RED}.env file not found. Add manually:${NC}"
+			echo "  AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
+			echo "  AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
+			echo "  AWS_REGION=us-east-1"
+		fi
+	else
+		echo -e "${YELLOW}Skipped - both Access Key ID and Secret are required${NC}"
+	fi
+fi
+
+# llama.cpp Edge Nodes
+if prompt_yes_no "Configure local llama.cpp edge nodes?"; then
+	"$SCRIPT_DIR/setup-edge-nodes.sh"
+fi
+
+echo ""
+
 # Make scripts executable
 chmod +x "$SCRIPT_DIR"/*.sh
 
