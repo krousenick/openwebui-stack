@@ -1,6 +1,6 @@
 # AGENTS.md - Agent Coding Guidelines
 
-This is a Docker Compose stack for Open WebUI with LiteLLM, observability, and security best practices. The main "code" consists of:
+This is a Docker Compose stack for Open WebUI with LiteLLM, Keycloak SSO, observability, and security best practices. The main "code" consists of:
 - Shell scripts (`*.sh`) for automation
 - YAML configuration files (`*.yml`, `*.yaml`) for Docker Compose, Traefik, Grafana, etc.
 - Environment files (`.env`)
@@ -16,6 +16,9 @@ docker compose --profile monitoring up -d
 # Start only core services (no monitoring)
 docker compose up -d
 
+# Start with GPU support
+docker compose --profile gpu up -d
+
 # View logs
 docker compose logs -f [service_name]
 
@@ -24,6 +27,30 @@ docker compose down
 
 # Run setup script to generate .env
 ./scripts/setup.sh
+```
+
+### Keycloak Commands
+
+```bash
+# Configure Keycloak OIDC clients (after stack is running)
+./scripts/configure-keycloak-clients.sh
+
+# Access Keycloak admin console
+# URL: https://auth.<domain>/admin
+# Credentials: admin / $KEYCLOAK_ADMIN_PASSWORD
+
+# Import realm on startup
+# Place realm-export.json in keycloak/import/ directory
+```
+
+### Backup Commands
+
+```bash
+# Run Keycloak database backup
+docker compose --profile backup up keycloak-backup
+
+# Schedule automated backups (add to crontab)
+# 0 2 * * * cd /path/to/project && docker compose --profile backup up -d keycloak-backup
 ```
 
 ### Linting & Quality Checks
@@ -61,9 +88,10 @@ docker compose pull
 - Include section headers with `====` for major sections
 - Always define `logging` configuration using anchors
 - Use `healthcheck` for all persistent services
-- Use `profiles` for optional features (monitoring, gpu)
+- Use `profiles` for optional features (monitoring, gpu, backup)
 - Set `security_opt` with `no-new-privileges:true`
 - Use internal networks for backend services
+- Add `deploy.resources` for production services (memory/CPU limits)
 
 ### Environment Variables
 
@@ -111,9 +139,13 @@ docker compose pull
 ├── litellm/config.yaml
 ├── otel/config.yaml
 ├── qdrant/config.yaml
+├── keycloak/
+│   └── import/          # Realm import files
 └── scripts/
     ├── setup.sh
     ├── generate-certs.sh
+    ├── configure-keycloak-clients.sh
+    ├── backup-keycloak.sh
     └── sync-ollama-models.sh
 ```
 
@@ -141,3 +173,5 @@ docker compose pull
 - Use strong, randomly generated passwords (see `scripts/setup.sh`)
 - Use `readonly` volumes where possible
 - Restrict network access using internal networks
+- Configure admin IP restriction for Keycloak via `KEYCLOAK_ADMIN_IP_RANGE`
+- Use OIDC for authentication instead of service-specific credentials
