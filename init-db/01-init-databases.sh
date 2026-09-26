@@ -9,13 +9,13 @@ set -e
 
 # Function to create database and user
 create_db_and_user() {
-    local db_name=$1
-    local db_user=$2
-    local db_password=$3
+	local db_name=$1
+	local db_user=$2
+	local db_password=$3
 
-    echo "Creating database '$db_name' with user '$db_user'..."
+	echo "Creating database '$db_name' with user '$db_user'..."
 
-    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<EOSQL
+	psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<EOSQL
         -- Create user if not exists
         DO \$\$
         BEGIN
@@ -33,12 +33,12 @@ create_db_and_user() {
         GRANT ALL PRIVILEGES ON DATABASE ${db_name} TO ${db_user};
 EOSQL
 
-    # Grant schema permissions
-    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$db_name" <<EOSQL
+	# Grant schema permissions
+	psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$db_name" <<EOSQL
         GRANT ALL ON SCHEMA public TO ${db_user};
 EOSQL
 
-    echo "Database '$db_name' created successfully."
+	echo "Database '$db_name' created successfully."
 }
 
 # Create Open WebUI database
@@ -46,5 +46,8 @@ create_db_and_user "$OPENWEBUI_DB_NAME" "$OPENWEBUI_DB_USER" "$OPENWEBUI_DB_PASS
 
 # Create LiteLLM database
 create_db_and_user "$LITELLM_DB_NAME" "$LITELLM_DB_USER" "$LITELLM_DB_PASSWORD"
+
+# Create Keycloak database
+create_db_and_user "$KEYCLOAK_DB_NAME" "$KEYCLOAK_DB_USER" "$KEYCLOAK_DB_PASSWORD"
 
 echo "All databases initialized successfully!"
