@@ -1,0 +1,81 @@
+# =============================================================================
+# Keycloak Prometheus Alerting Rules
+# =============================================================================
+# Based on Keycloak SLO recommendations
+# https://www.keycloak.org/guides#server
+
+groups:
+  - name: keycloak-slos
+    interval: 30s
+    rules:
+      # High login latency - warning when P95 exceeds 500ms
+      - alert: KeycloakHighLoginLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_server_requests_seconds_bucket{
+              uri=~"/realms/.*/(protocol|login-actions)/.*"
+            }[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Keycloak P95 login latency exceeds 500ms"
+          description: "P95 latency is {{ $value | humanizeDuration }} (threshold: 500ms)"
+
+      # High login latency - critical when P95 exceeds 1s
+      - alert: KeycloakCriticalLoginLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_server_requests_seconds_bucket{
+              uri=~"/realms/.*/(protocol|login-actions)/.*"
+            }[5m])) by (le)
+          ) > 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Keycloak P95 login latency exceeds 1s"
+          description: "P95 latency is {{ $value | humanizeDuration }} (threshold: 1s)"
+
+      # High error rate - server errors exceed 0.1%
+      - alert: KeycloakHighErrorRate
+        expr: |
+          sum(rate(http_server_requests_seconds_count{
+            uri=~"/realms/.*/(protocol|login-actions)/.*",
+            outcome="SERVER_ERROR"
+          }[5m]))
+          /
+          sum(rate(http_server_requests_seconds_count{
+            uri=~"/realms/.*/(protocol|login-actions)/.*"
+          }[5m])) > 0.001
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Keycloak server error rate exceeds 0.1%"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 0.1%)"
+
+      # Database connection pool exhausted
+      - alert: KeycloakDBPoolExhausted
+        expr: agroal_awaiting_count > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Threads waiting for database connections"
+          description: "{{ $value }} threads are waiting for database connections"
+
+      # High login failure ratio
+      - alert: KeycloakHighLoginFailureRatio
+        expr: |
+          sum(rate(keycloak_user_events_total{event="LOGIN_ERROR"}[5m]))
+          /
+          (sum(rate(keycloak_user_events_total{event="LOGIN"}[5m]))
+           + sum(rate(keycloak_user_events_total{event="LOGIN_ERROR"}[5m]))) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High login failure ratio detected"
+          description: "Login failure ratio is {{ $value | humanizePercentage }}"
