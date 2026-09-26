@@ -102,12 +102,26 @@ services:
       ENABLE_CODE_EXECUTION: "false"
       ENABLE_CODE_INTERPRETER: "false"
 
-      # OIDC/Keycloak Authentication
-      OIDC_PROVIDER_URL: "https://auth.${DOMAIN:-localhost}/realms/master"
-      OIDC_CLIENT_ID: "${OPENWEBUI_OIDC_CLIENT_ID:-open-webui}"
-      OIDC_CLIENT_SECRET: "${OPENWEBUI_OIDC_CLIENT_SECRET:?error}"
-      OIDC_SCOPES: "openid profile email"
-      ENABLE_OIDC: "true"
+      # OAuth2/OIDC Keycloak Authentication
+      # Use OAUTH_* vars per Open WebUI docs  
+      ENABLE_OAUTH_SIGNUP: "true"
+      OAUTH_PROVIDER_NAME: "Keycloak"
+      # Discovery URL - must be reachable from open-webui container
+      # Using internal Docker network for server-side discovery
+      OPENID_PROVIDER_URL: "http://openwebui-stack_keycloak:8080/realms/master/.well-known/openid-configuration"
+      # Redirect URI - public URL for browser callback
+      OAUTH_CLIENT_ID: "${OPENWEBUI_OIDC_CLIENT_ID:-open-webui}"
+      OAUTH_CLIENT_SECRET: "${OPENWEBUI_OIDC_CLIENT_SECRET:?error}"
+      # Group/Role management for SSO
+      ENABLE_OAUTH_GROUP_MANAGEMENT: "true"
+      ENABLE_OAUTH_GROUP_CREATION: "true"
+      OAUTH_GROUP_CLAIM: "groups"
+      # Role mapping - map Keycloak groups to Open WebUI roles
+      OAUTH_ROLES_CLAIM: "groups"
+      OAUTH_ADMIN_ROLES: "admin"
+      OAUTH_ALLOWED_ROLES: "admin,user"
+      # Default role for new SSO users
+      DEFAULT_USER_ROLE: "pending"
     networks:
       - frontend
       - backend
@@ -336,8 +350,11 @@ services:
       KC_PROXY_HEADERS: xforwarded
       KC_PROXY_TRUSTED_ADDRESSES: 172.16.0.0/12,10.0.0.0/8,192.168.0.0/16
 
-      # Hostname
+      # Hostname - use header-based resolution so internal requests work
       KC_HOSTNAME: auth.${DOMAIN:-localhost}
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_FORWARDED: "enabled"
 
       # Health and metrics (Prometheus-compatible)
       KC_HEALTH_ENABLED: "true"
@@ -436,17 +453,20 @@ services:
       # Disable anonymous access - require login
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_AUTH_DISABLE_LOGIN_FORM: "false"
-      # Keycloak OIDC Authentication
-      GF_AUTH_KEYCLOAK_ENABLED: "true"
-      GF_AUTH_KEYCLOAK_CLIENT_ID: "${GF_OIDC_CLIENT_ID:-grafana}"
-      GF_AUTH_KEYCLOAK_CLIENT_SECRET: "${GF_OIDC_CLIENT_SECRET:?error}"
-      GF_AUTH_KEYCLOAK_AUTH_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/auth"
-      GF_AUTH_KEYCLOAK_TOKEN_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/token"
-      GF_AUTH_KEYCLOAK_API_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/userinfo"
-      GF_AUTH_KEYCLOAK_SCOPES: "openid,profile,email"
-      GF_AUTH_KEYCLOAK_ALLOW_ASSIGN_GRAFANA_ADMIN: "true"
-      GF_AUTH_KEYCLOAK_AUTO_SIGN_UP: "false"
-      GF_AUTH_KEYCLOAK_ROLE_ATTRIBUTE_PATH: "hasRealmRole('admin') && 'Admin' || hasRealmRole('editor') && 'Editor' || 'Viewer'"
+      # Keycloak OIDC Authentication via Generic OAuth
+      GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
+      GF_AUTH_GENERIC_OAUTH_NAME: "Keycloak"
+      GF_AUTH_GENERIC_OAUTH_CLIENT_ID: "${GF_OIDC_CLIENT_ID:-grafana}"
+      GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: "${GF_OIDC_CLIENT_SECRET:?error}"
+      GF_AUTH_GENERIC_OAUTH_SCOPES: "openid,profile,email,roles"
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/auth"
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/token"
+      GF_AUTH_GENERIC_OAUTH_API_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/userinfo"
+      GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN: "true"
+      GF_AUTH_GENERIC_OAUTH_AUTO_SIGN_UP: "false"
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(roles[*], 'admin') && 'Admin' || contains(roles[*], 'editor') && 'Editor' || 'Viewer'"
+      # Backward compatibility - keep KEYCLOAK vars for ldap/other
+      GF_AUTH_KEYCLOAK_ENABLED: "false"
     networks:
       - frontend
       - backend
