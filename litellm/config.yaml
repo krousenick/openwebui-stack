@@ -44,6 +44,9 @@ litellm_settings:
   # Number of retries
   num_retries: 3
 
+  # Drop unsupported parameters for providers
+  drop_params: true
+
   # Fallback models configuration
   fallbacks: []
 
@@ -51,6 +54,93 @@ litellm_settings:
 router_settings:
   routing_strategy: simple-shuffle # Prevents latency-based routing checks
   enable_pre_call_checks: false # Disables checking model health before every call
+
+# =============================================================================
+# Model Providers Configuration
+# =============================================================================
+# Models are configured via environment variables set by setup script
+# Environment variables used:
+#   - GEMINI_API_KEY: Google Gemini API key
+#   - AWS_BEDROCK_API_KEY: AWS Bedrock API key (for OSS models)
+#   - AWS_REGION: AWS region (default: us-east-1)
+
+model_list:
+  # Google Gemini Models
+  - model_name: gemini-2.0-flash
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      description: "Google Gemini 2.0 Flash - Fast and efficient"
+
+  - model_name: gemini-2.0-flash-lite
+    litellm_params:
+      model: gemini/gemini-2.0-flash-lite
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      description: "Google Gemini 2.0 Flash Lite - Lightweight model"
+
+  - model_name: gemini-1.5-pro
+    litellm_params:
+      model: gemini/gemini-1.5-pro
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      description: "Google Gemini 1.5 Pro - Advanced reasoning"
+
+  - model_name: gemini-1.5-flash
+    litellm_params:
+      model: gemini/gemini-1.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      description: "Google Gemini 1.5 Flash - Balanced performance"
+
+  # AWS Bedrock OSS Models
+  # MiniMax M2.5
+  - model_name: minimax-m2.5
+    litellm_params:
+      model: bedrock/minimax/MiniMax-M2.5
+      aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
+      aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
+      aws_region_name: us-east-1
+    model_info:
+      description: "MiniMax M2.5 via AWS Bedrock"
+
+  # Qwen Models
+  - model_name: qwen-2.5
+    litellm_params:
+      model: bedrock/qwen/qwen2.5-72b-instruct
+      aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
+      aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
+      aws_region_name: us-east-1
+    model_info:
+      description: "Qwen 2.5 72B Instruct via AWS Bedrock"
+
+  - model_name: qwen-2.5-coder
+    litellm_params:
+      model: bedrock/qwen/qwen2.5-coder-32b-instruct
+      aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
+      aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
+      aws_region_name: us-east-1
+    model_info:
+      description: "Qwen 2.5 Coder 32B Instruct via AWS Bedrock"
+
+  # Kimi Models (if available in region)
+  - model_name: kimi-moonshot
+    litellm_params:
+      model: bedrock/moonshot/moonshot-v1-8k
+      aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
+      aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
+      aws_region_name: us-east-1
+    model_info:
+      description: "Kimi Moonshot v1 via AWS Bedrock"
+
+  # Local llama.cpp Edge Nodes (configured via setup script)
+  # Models are dynamically added based on LLAMA_CPP_EDGE_NODES env var
+  # Example edge node model config (template):
+  # - model_name: llama-3.1-8b-local
+  #   litellm_params:
+  #     model: openai/llama-3.1-8b-instruct
+  #     api_base: http://edge-node-hostname:8080/v1
 
 # MCP Servers Configuration
 mcp_servers:
