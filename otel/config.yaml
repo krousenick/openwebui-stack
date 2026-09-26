@@ -49,6 +49,15 @@ receivers:
               labels:
                 job: "postgres"
 
+        # Keycloak metrics (authentication, sessions, etc.)
+        - job_name: "keycloak"
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["keycloak:9000"]
+              labels:
+                job: "keycloak"
+          metrics_path: "/metrics"
+
   # OTLP receiver for traces and metrics from applications
   otlp:
     protocols:

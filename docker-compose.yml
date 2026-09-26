@@ -314,12 +314,18 @@ services:
     restart: unless-stopped
     command: start
     logging: *default-logging
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+      - ./keycloak/import:/opt/keycloak/data/import:ro
     environment:
       # Database
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/${KEYCLOAK_DB_NAME:-keycloak}
       KC_DB_USERNAME: ${KEYCLOAK_DB_USER:-keycloak}
       KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?error}
+      KC_DB_POOL_INITIAL_SIZE: 5
+      KC_DB_POOL_MIN_SIZE: 5
+      KC_DB_POOL_MAX_SIZE: 20
 
       # Admin credentials
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-admin}
@@ -338,9 +344,22 @@ services:
 
       # Logging
       KC_LOG_LEVEL: INFO
+      KC_LOG_CONSOLE_FORMAT: "%d{yyyy-MM-dd HH:mm:ss} %-5p [%c] (%t) %s%e%n"
+
+      # OpenTelemetry for authentication monitoring
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm:4317"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_SERVICE_NAME: "keycloak"
 
       # Cache configuration (standalone)
       KC_CACHE: local
+
+      # Java heap settings
+      JAVA_OPTS_KC_HEAP: "-XX:MaxRAMPercentage=70.0"
+
+      # Import realm on startup (if files exist in ./keycloak/import/)
+      KC_IMPORT: "/opt/keycloak/data/import/realm-export.json"
+
     networks:
       - frontend
       - backend
@@ -352,18 +371,31 @@ services:
       - "traefik.http.routers.keycloak.rule=Host(`auth.${DOMAIN:-localhost}`)"
       - "traefik.http.routers.keycloak.entrypoints=websecure"
       - "traefik.http.routers.keycloak.tls=true"
+      - "traefik.http.routers.keycloak.middlewares=keycloak-headers"
       - "traefik.http.services.keycloak.loadbalancer.server.port=8080"
       - "traefik.http.services.keycloak.loadbalancer.server.scheme=http"
       # Health check for sticky sessions
       - "traefik.http.services.keycloak.loadbalancer.healthcheck.path=/health/ready"
       - "traefik.http.services.keycloak.loadbalancer.healthcheck.port=9000"
       - "traefik.http.services.keycloak.loadbalancer.healthcheck.interval=10s"
+      # Admin console IP restriction (default: allow all, customize via KEYCLOAK_ADMIN_IP_RANGE)
+      - "traefik.http.routers.keycloak-admin.rule=Host(`auth.${DOMAIN:-localhost}`) && PathPrefix(`/admin`)"
+      - "traefik.http.routers.keycloak-admin.middlewares=admin-whitelist"
+      - "traefik.http.middlewares.admin-whitelist.ipwhitelist.sourcerange=${KEYCLOAK_ADMIN_IP_RANGE:-0.0.0.0/0}"
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '1.0'
     healthcheck:
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && cat <&3 | grep -q '200 OK'"]
-      interval: 10s
+      interval: 15s
       timeout: 5s
       retries: 10
-      start_period: 60s
+      start_period: 120s
 
   # ===========================================================================
   # LGTM Stack (Loki, Grafana, Tempo, Mimir/Prometheus)
@@ -511,6 +543,32 @@ services:
     profiles:
       - monitoring
 
+  # ===========================================================================
+  # Keycloak Backup Service
+  # ===========================================================================
+  keycloak-backup:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak-backup
+    restart: "no"
+    logging: *default-logging
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${KEYCLOAK_DB_NAME:-keycloak}
+      PGUSER: ${KEYCLOAK_DB_USER:-keycloak}
+      PGPASSWORD: ${KEYCLOAK_DB_PASSWORD:?error}
+      BACKUP_RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-7}"
+    volumes:
+      - keycloak_backups:/backups
+      - ./scripts/backup-keycloak.sh:/backup.sh:ro
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - backup
+
 # =============================================================================
 # Networks
 # =============================================================================
@@ -539,3 +597,7 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_lgtm_data
   traefik_logs:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_traefik_logs
+  keycloak_data:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak_data
+  keycloak_backups:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak_backups

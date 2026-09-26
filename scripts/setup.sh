@@ -175,6 +175,8 @@ if [ "$GENERATE_PASSWORDS" = true ]; then
 	sed_inplace "s|^OPENWEBUI_OIDC_CLIENT_SECRET=.*|OPENWEBUI_OIDC_CLIENT_SECRET=$OPENWEBUI_OIDC_SECRET|" "$PROJECT_ROOT/.env"
 	sed_inplace "s|^LITELLM_OIDC_CLIENT_SECRET=.*|LITELLM_OIDC_CLIENT_SECRET=$LITELLM_OIDC_SECRET|" "$PROJECT_ROOT/.env"
 	sed_inplace "s|^GF_OIDC_CLIENT_SECRET=.*|GF_OIDC_CLIENT_SECRET=$GF_OIDC_SECRET|" "$PROJECT_ROOT/.env"
+	sed_inplace "s|^KEYCLOAK_ADMIN_IP_RANGE=.*|KEYCLOAK_ADMIN_IP_RANGE=0.0.0.0/0|" "$PROJECT_ROOT/.env"
+	sed_inplace "s|^BACKUP_RETENTION_DAYS=.*|BACKUP_RETENTION_DAYS=7|" "$PROJECT_ROOT/.env"
 
 	# Generate Traefik dashboard password hash from the plain password we just set
 	TRAEFIK_HASH=$(generate_htpasswd "$TRAEFIK_PASS")

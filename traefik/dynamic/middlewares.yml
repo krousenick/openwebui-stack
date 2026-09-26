@@ -51,3 +51,20 @@ http:
         accessControlAllowCredentials: true
         accessControlAllowHeaders:
           - "*"
+
+    # Keycloak-specific security headers (stricter for auth service)
+    keycloak-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        frameDeny: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        contentSecurityPolicy: "frame-ancestors 'none'"
+
+    # Admin console IP whitelist for Keycloak
+    admin-whitelist:
+      ipWhiteList:
+        sourceRange: "${KEYCLOAK_ADMIN_IP_RANGE:-0.0.0.0/0}"
