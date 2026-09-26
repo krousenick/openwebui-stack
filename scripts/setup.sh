@@ -101,18 +101,96 @@ fi
 
 # 4. SSL Certificates (optional)
 echo -e "${YELLOW}Step 4: SSL Certificates${NC}"
-echo -e "  Traefik generates a self-signed certificate by default."
-echo -e "  It changes on every restart, requiring you to re-accept it in the browser."
-echo -e "  Generating persistent certificates avoids this."
+echo "  Select SSL certificate option:"
+echo "  1) Use existing wildcard certificates (cert/key files)"
+echo "  2) Generate persistent self-signed certificates"
+echo "  3) Use Traefik default (not recommended - changes on restart)"
+echo ""
+echo -n "Enter choice [1]: "
+read -r CERT_OPTION
+CERT_OPTION=${CERT_OPTION:-1}
+
 GENERATE_CERTS=false
-if [ -f "$PROJECT_ROOT/certs/server.crt" ] && [ -f "$PROJECT_ROOT/certs/server.key" ]; then
-	echo -e "${GREEN}✓ Custom certificates already exist${NC}"
-	if prompt_yes_no_default_no "Regenerate certificates?"; then
+USE_EXISTING_CERTS=false
+
+case "$CERT_OPTION" in
+1)
+	# Check if certs directory exists with files
+	if [ -d "$PROJECT_ROOT/certs" ]; then
+		# Find the first .crt and .key file
+		CERT_FILE=$(ls -1 "$PROJECT_ROOT/certs/"*.crt 2>/dev/null | head -1 | xargs basename 2>/dev/null || echo "")
+		KEY_FILE=$(ls -1 "$PROJECT_ROOT/certs/"*.key 2>/dev/null | head -1 | xargs basename 2>/dev/null || echo "")
+
+		if [ -n "$CERT_FILE" ] && [ -n "$KEY_FILE" ]; then
+			echo -e "${GREEN}✓ Found existing certificates in certs/${NC}"
+			echo "  Certificate: $CERT_FILE"
+			echo "  Private Key: $KEY_FILE"
+
+			# Update .env with the actual file paths
+			sed_inplace "s|^SSL_CERT_FILE=.*|SSL_CERT_FILE=certs/$CERT_FILE|" "$PROJECT_ROOT/.env"
+			sed_inplace "s|^SSL_KEY_FILE=.*|SSL_KEY_FILE=certs/$KEY_FILE|" "$PROJECT_ROOT/.env"
+
+			# Generate Traefik config for existing certs
+			DYNAMIC_CERTS_FILE="$PROJECT_ROOT/traefik/dynamic/certs.yml"
+			cat >"$DYNAMIC_CERTS_FILE" <<EOF
+# =============================================================================
+# Traefik Dynamic Configuration - Custom Certificates
+# =============================================================================
+
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/$CERT_FILE
+      keyFile: /etc/traefik/certs/$KEY_FILE
+
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /etc/traefik/certs/$CERT_FILE
+        keyFile: /etc/traefik/certs/$KEY_FILE
+EOF
+			echo -e "${GREEN}✓ Created Traefik certs config${NC}"
+		else
+			echo -e "${YELLOW}No certificate files found in certs/${NC}"
+			echo "  Please place your wildcard certificates in the certs/ directory:"
+			echo "    - certs/wildcard.crt (or fullchain.pem)"
+			echo "    - certs/wildcard.key (private key)"
+			echo ""
+			if prompt_yes_no_default_no "Generate self-signed certificates instead?"; then
+				GENERATE_CERTS=true
+			fi
+		fi
+	else
+		echo -e "${YELLOW}No certs directory found${NC}"
+		if prompt_yes_no_default_no "Create certs directory and generate self-signed certificates?"; then
+			mkdir -p "$PROJECT_ROOT/certs"
+			GENERATE_CERTS=true
+		else
+			echo -e "${YELLOW}Using Traefik default certificates${NC}"
+		fi
+	fi
+	;;
+2)
+	if prompt_yes_no "Generate persistent self-signed certificates?"; then
 		GENERATE_CERTS=true
 	fi
-else
-	if prompt_yes_no_default_no "Generate persistent self-signed certificates?"; then
-		GENERATE_CERTS=true
+	;;
+3)
+	echo -e "${YELLOW}Using Traefik default certificates (not persistent)${NC}"
+	;;
+*)
+	echo -e "${RED}Invalid option, using Traefik default${NC}"
+	;;
+esac
+
+# Update .env with certificate configuration
+if [ -f "$PROJECT_ROOT/.env" ]; then
+	if [ "$CERT_OPTION" -eq 1 ] && [ -n "$CERT_FILE" ] && [ -n "$KEY_FILE" ]; then
+		sed_inplace "s|^SSL_CERT_TYPE=.*|SSL_CERT_TYPE=existing|" "$PROJECT_ROOT/.env"
+		USE_EXISTING_CERTS=true
+	elif [ "$CERT_OPTION" -eq 2 ]; then
+		sed_inplace "s|^SSL_CERT_TYPE=.*|SSL_CERT_TYPE=selfsigned|" "$PROJECT_ROOT/.env"
+	else
+		sed_inplace "s|^SSL_CERT_TYPE=.*|SSL_CERT_TYPE=traefik|" "$PROJECT_ROOT/.env"
 	fi
 fi
 echo ""
@@ -192,6 +270,47 @@ fi
 if [ "$GENERATE_CERTS" = true ]; then
 	export DOMAIN
 	"$SCRIPT_DIR/generate-certs.sh"
+fi
+
+# Start Docker stack and configure Keycloak clients
+echo -e "${YELLOW}Step 5: Start Docker Stack${NC}"
+if prompt_yes_no_default_no "Start Docker stack and configure Keycloak clients?"; then
+	echo -e "${BLUE}Starting Docker stack...${NC}"
+	cd "$PROJECT_ROOT"
+	docker compose up -d
+
+	echo ""
+	echo -e "${YELLOW}Waiting for services to be ready...${NC}"
+	echo "This may take a few minutes..."
+
+	# Wait for Keycloak to be ready
+	echo "Waiting for Keycloak..."
+	max_attempts=60
+	attempt=0
+	KC_URL="https://auth.${DOMAIN:-localhost}"
+	while [ $attempt -lt $max_attempts ]; do
+		if curl -sf --resolve "auth.${DOMAIN:-localhost}:443:127.0.0.1" "$KC_URL/health/ready" >/dev/null 2>&1 ||
+			curl -sf "$KC_URL/health/ready" >/dev/null 2>&1; then
+			echo -e "${GREEN}Keycloak is ready!${NC}"
+			break
+		fi
+		attempt=$((attempt + 1))
+		echo "  Waiting... ($attempt/$max_attempts)"
+		sleep 3
+	done
+
+	if [ $attempt -eq $max_attempts ]; then
+		echo -e "${YELLOW}Keycloak did not respond yet. You can run the configuration later:${NC}"
+		echo "  ./scripts/configure-keycloak-clients.sh"
+	else
+		echo -e "${BLUE}Configuring Keycloak clients...${NC}"
+		"$SCRIPT_DIR/configure-keycloak-clients.sh"
+
+		echo ""
+		echo -e "${YELLOW}Restarting services to apply OIDC changes...${NC}"
+		docker compose restart grafana open-webui litellm
+		echo -e "${GREEN}Services restarted!${NC}"
+	fi
 fi
 
 # Make scripts executable
