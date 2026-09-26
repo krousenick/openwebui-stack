@@ -363,6 +363,25 @@ services:
       - monitoring
 
   # ===========================================================================
+  # Brave Search MCP Server - Web Search for LLM
+  # ===========================================================================
+  brave-search-mcp:
+    image: mcp/brave-search:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_brave-search-mcp
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - BRAVE_API_KEY=${BRAVE_SEARCH_API_KEY:?error}
+      - BRAVE_MCP_TRANSPORT=http
+      - BRAVE_MCP_HOST=0.0.0.0
+    ports:
+      - "8080:8080"
+    networks:
+      - backend
+    profiles:
+      - mcp
+
+  # ===========================================================================
   # NVIDIA GPU Exporter (Optional - requires NVIDIA runtime)
   # ===========================================================================
   nvidia-gpu-exporter:

@@ -51,3 +51,10 @@ litellm_settings:
 router_settings:
   routing_strategy: simple-shuffle # Prevents latency-based routing checks
   enable_pre_call_checks: false # Disables checking model health before every call
+
+# MCP Servers Configuration
+mcp_servers:
+  brave_search:
+    url: "http://brave-search-mcp:8080/mcp"
+    transport: "http"
+    auth_type: "none"
