@@ -102,7 +102,7 @@ services:
       ENABLE_CODE_EXECUTION: "false"
       ENABLE_CODE_INTERPRETER: "false"
 
-      # OAuth2/OIDC Keycloak Authentication
+# OAuth2/OIDC Keycloak Authentication
       # Use OAUTH_* vars per Open WebUI docs  
       ENABLE_OAUTH_SIGNUP: "true"
       OAUTH_PROVIDER_NAME: "Keycloak"
@@ -182,13 +182,24 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm:4317"
       OTEL_SERVICE_NAME: "litellm"
 
-      # OIDC/Keycloak Authentication (UI only)
+      # OIDC/Keycloak Authentication (SSO)
+      # Reference: https://docs.litellm.ai/docs/proxy/admin_ui_sso
       LITELLM_UI_USERNAME: "${KEYCLOAK_ADMIN_USER:-admin}"
       LITELLM_UI_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:?error}"
-      LITELLM_UI_SECURE: "true"
-      LITELLM_UI_OIDC_URL: "https://auth.${DOMAIN:-localhost}/realms/master"
-      LITELLM_UI_OIDC_CLIENT_ID: "${LITELLM_OIDC_CLIENT_ID:-litellm}"
-      LITELLM_UI_OIDC_CLIENT_SECRET: "${LITELLM_OIDC_CLIENT_SECRET:?error}"
+      # Generic OIDC SSO Configuration
+      GENERIC_CLIENT_ID: "${LITELLM_OIDC_CLIENT_ID:-litellm}"
+      GENERIC_CLIENT_SECRET: "${LITELLM_OIDC_CLIENT_SECRET:?error}"
+      GENERIC_AUTHORIZATION_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/auth"
+      GENERIC_TOKEN_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/token"
+      GENERIC_USERINFO_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/userinfo"
+      # User attribute mapping
+      GENERIC_USER_ID_ATTRIBUTE: "sub"
+      GENERIC_USER_EMAIL_ATTRIBUTE: "email"
+      GENERIC_USER_DISPLAY_NAME_ATTRIBUTE: "name"
+      # Role mapping from Keycloak groups
+      GENERIC_USER_ROLE_ATTRIBUTE: "groups"
+      # Callback URL
+      PROXY_BASE_URL: "https://litellm.${DOMAIN:-localhost}"
 
       # Logging
       LITELLM_LOG: "INFO"
