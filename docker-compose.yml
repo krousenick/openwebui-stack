@@ -106,8 +106,9 @@ services:
       # Use OAUTH_* vars per Open WebUI docs  
       ENABLE_OAUTH_SIGNUP: "true"
       OAUTH_PROVIDER_NAME: "Keycloak"
-      # Discovery URL - public URL for browser redirects
-      OPENID_PROVIDER_URL: "https://auth.${DOMAIN:-localhost}/realms/master/.well-known/openid-configuration"
+      # Discovery URL - internal container URL for server-side fetch
+      # Keycloak returns auth.localhost in discovery endpoints (browser redirects)
+      OPENID_PROVIDER_URL: "http://openwebui-stack_keycloak:8080/realms/master/.well-known/openid-configuration"
       OAUTH_CLIENT_ID: "${OPENWEBUI_OIDC_CLIENT_ID:-open-webui}"
       OAUTH_CLIENT_SECRET: "${OPENWEBUI_OIDC_CLIENT_SECRET:?error}"
       # Group/Role management for SSO
