@@ -102,7 +102,7 @@ services:
       ENABLE_CODE_EXECUTION: "false"
       ENABLE_CODE_INTERPRETER: "false"
 
-# OAuth2/OIDC Keycloak Authentication
+      # OAuth2/OIDC Keycloak Authentication
       # Use OAUTH_* vars per Open WebUI docs  
       ENABLE_OAUTH_SIGNUP: "true"
       OAUTH_PROVIDER_NAME: "Keycloak"
