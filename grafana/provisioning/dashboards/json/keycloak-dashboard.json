@@ -20,120 +20,17 @@
   "liveNow": false,
   "panels": [
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Failed"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
+      "collapsed": false,
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 1,
+        "w": 24,
         "x": 0,
         "y": 0
       },
-      "id": 1,
-      "options": {
-        "legend": {
-          "calcs": [
-            "max",
-            "mean"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(keycloak_login_attempts_total[5m]))",
-          "legendFormat": "Login Attempts",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(keycloak_failed_login_attempts_total[5m]))",
-          "legendFormat": "Failed",
-          "refId": "B"
-        }
-      ],
-      "title": "Login Attempts (5m rate)",
-      "type": "timeseries"
+      "id": 100,
+      "panels": [],
+      "title": "Overview",
+      "type": "row"
     },
     {
       "datasource": {
@@ -149,22 +46,61 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
+              {"color": "green", "value": null}
             ]
           },
-          "unit": "short"
+          "unit": "percentunit"
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 12,
-        "y": 0
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
       },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(http_server_requests_seconds_bucket{uri=~\"/realms/.*/(protocol|login-actions)/.*\", le=\"0.25\"}[5m])) / sum(rate(http_server_requests_seconds_count{uri=~\"/realms/.*/(protocol|login-actions)/.*\"}[5m]))",
+          "legendFormat": "SLO Compliance",
+          "refId": "A"
+        }
+      ],
+      "title": "Auth Latency SLO (95% < 250ms)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 0.001}
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
       "id": 2,
       "options": {
         "colorMode": "value",
@@ -172,27 +108,21 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
         "textMode": "auto"
       },
-      "pluginVersion": "9.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(keycloak_login_attempts_total)",
-          "legendFormat": "",
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(http_server_requests_seconds_count{uri=~\"/realms/.*/(protocol|login-actions)/.*\", outcome=\"SERVER_ERROR\"}[5m])) / sum(rate(http_server_requests_seconds_count{uri=~\"/realms/.*/(protocol|login-actions)/.*\"}[5m]))",
+          "legendFormat": "Error Rate",
           "refId": "A"
         }
       ],
-      "title": "Total Login Attempts",
+      "title": "Server Error Rate",
       "type": "stat"
     },
     {
@@ -209,26 +139,16 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 100
-              }
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 0.5},
+              {"color": "red", "value": 0.8}
             ]
           },
-          "unit": "short"
+          "unit": "percentunit"
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 0
-      },
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
       "id": 3,
       "options": {
         "colorMode": "value",
@@ -236,27 +156,21 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
         "textMode": "auto"
       },
-      "pluginVersion": "9.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(keycloak_failed_login_attempts_total[1m]))",
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "agroal_active_count / (agroal_active_count + agroal_available_count)",
           "legendFormat": "",
           "refId": "A"
         }
       ],
-      "title": "Failed Logins (per min)",
+      "title": "DB Pool Usage",
       "type": "stat"
     },
     {
@@ -267,8 +181,62 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 5},
+              {"color": "red", "value": 10}
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "http_server_active_requests",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "title": "Active Requests",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+      "id": 101,
+      "panels": [],
+      "title": "Authentication Events",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
@@ -278,76 +246,57 @@
             "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
             "lineInterpolation": "linear",
             "lineWidth": 2,
             "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
+            "scaleDistribution": {"type": "linear"},
             "showPoints": "never",
             "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
           },
           "mappings": [],
           "min": 0,
           "thresholds": {
             "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
+            "steps": [{"color": "green", "value": null}]
           },
-          "unit": "short"
+          "unit": "ops"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Failed Logins"},
+            "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]
+          }
+        ]
       },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 4
-      },
-      "id": 4,
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "id": 5,
       "options": {
         "legend": {
-          "calcs": [
-            "max",
-            "mean"
-          ],
+          "calcs": ["mean", "max"],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "keycloak_sessions_total",
-          "legendFormat": "Active Sessions",
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(keycloak_user_events_total{event=\"LOGIN\"}[5m]))",
+          "legendFormat": "Successful Logins",
           "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(keycloak_user_events_total{event=\"LOGIN_ERROR\"}[5m]))",
+          "legendFormat": "Failed Logins",
+          "refId": "B"
         }
       ],
-      "title": "Active Sessions",
+      "title": "Login Events (5m rate)",
       "type": "timeseries"
     },
     {
@@ -358,8 +307,61 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 0.1}
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "id": 6,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(keycloak_user_events_total{event=\"LOGIN_ERROR\"}[5m])) / (sum(rate(keycloak_user_events_total{event=\"LOGIN\"}[5m])) + sum(rate(keycloak_user_events_total{event=\"LOGIN_ERROR\"}[5m])))",
+          "legendFormat": "Login Failure Ratio",
+          "refId": "A"
+        }
+      ],
+      "title": "Login Failure Ratio",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14},
+      "id": 102,
+      "panels": [],
+      "title": "Latency",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
@@ -369,81 +371,147 @@
             "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
             "lineInterpolation": "linear",
             "lineWidth": 2,
             "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
+            "scaleDistribution": {"type": "linear"},
             "showPoints": "never",
             "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
           },
           "mappings": [],
           "min": 0,
           "thresholds": {
             "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
+            "steps": [{"color": "green", "value": null}]
           },
-          "unit": "bytes"
+          "unit": "s"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "P50"},
+            "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "P95"},
+            "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "P99"},
+            "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]
+          }
+        ]
       },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 8
-      },
-      "id": 5,
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 15},
+      "id": 7,
       "options": {
         "legend": {
-          "calcs": [
-            "max"
-          ],
+          "calcs": ["max"],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "keycloak_db_connection_pool_active",
-          "legendFormat": "Active Connections",
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.50, sum(rate(http_server_requests_seconds_bucket{uri=~\"/realms/.*/(protocol|login-actions)/.*\"}[5m])) by (le))",
+          "legendFormat": "P50",
           "refId": "A"
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "keycloak_db_connection_pool_idle",
-          "legendFormat": "Idle Connections",
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{uri=~\"/realms/.*/(protocol|login-actions)/.*\"}[5m])) by (le))",
+          "legendFormat": "P95",
           "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{uri=~\"/realms/.*/(protocol|login-actions)/.*\"}[5m])) by (le))",
+          "legendFormat": "P99",
+          "refId": "C"
+        }
+      ],
+      "title": "Authentication Latency Percentiles",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23},
+      "id": 103,
+      "panels": [],
+      "title": "Infrastructure",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": ["max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "agroal_active_count",
+          "legendFormat": "Active",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "agroal_available_count",
+          "legendFormat": "Available",
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "agroal_awaiting_count",
+          "legendFormat": "Waiting",
+          "refId": "C"
         }
       ],
       "title": "Database Connection Pool",
@@ -456,9 +524,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
+          "color": {"mode": "palette-classic"},
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
@@ -468,122 +534,156 @@
             "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
             "lineInterpolation": "linear",
             "lineWidth": 2,
             "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
+            "scaleDistribution": {"type": "linear"},
             "showPoints": "never",
             "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
           },
           "mappings": [],
           "min": 0,
           "thresholds": {
             "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
+            "steps": [{"color": "green", "value": null}]
           },
           "unit": "bytes"
         },
         "overrides": [
           {
-            "matcher": {
-              "id": "byName",
-              "options": "Limit"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "dash": [
-                    10,
-                    10
-                  ],
-                  "fill": "dash"
-                }
-              }
-            ]
+            "matcher": {"id": "byName", "options": "Limit"},
+            "properties": [{"id": "custom.lineStyle", "value": {"dash": [10, 10], "fill": "dash"}}]
           }
         ]
       },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 12
-      },
-      "id": 6,
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "id": 9,
       "options": {
         "legend": {
-          "calcs": [
-            "max"
-          ],
+          "calcs": ["max"],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "jvm_memory_used_bytes{job=\"keycloak\"}",
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "jvm_memory_used_bytes",
           "legendFormat": "Used",
           "refId": "A"
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "jvm_memory_max_bytes{job=\"keycloak\"}",
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "jvm_memory_max_bytes",
           "legendFormat": "Limit",
           "refId": "B"
         }
       ],
       "title": "JVM Memory Usage",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 32},
+      "id": 104,
+      "panels": [],
+      "title": "Password Hashing",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}]
+          },
+          "unit": "ops"
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "invalid"},
+            "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "error"},
+            "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}]
+          }
+        ]
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 33},
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(keycloak_credentials_password_hashing_validations_total{outcome=\"valid\"}[5m]))",
+          "legendFormat": "valid",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(keycloak_credentials_password_hashing_validations_total{outcome=\"invalid\"}[5m]))",
+          "legendFormat": "invalid",
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(keycloak_credentials_password_hashing_validations_total{outcome=\"error\"}[5m]))",
+          "legendFormat": "error",
+          "refId": "C"
+        }
+      ],
+      "title": "Password Hashing Validations (5m rate)",
+      "type": "timeseries"
     }
   ],
   "refresh": "10s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": [
-    "keycloak",
-    "authentication",
-    "security"
-  ],
+  "tags": ["keycloak", "authentication", "security"],
   "templating": {
     "list": [
       {
-        "current": {
-          "selected": false,
-          "text": "Prometheus",
-          "value": "Prometheus"
-        },
+        "current": {"selected": false, "text": "Prometheus", "value": "Prometheus"},
         "hide": 0,
         "includeAll": false,
         "label": "Data Source",
@@ -598,14 +698,11 @@
       }
     ]
   },
-  "time": {
-    "from": "now-1h",
-    "to": "now"
-  },
+  "time": {"from": "now-1h", "to": "now"},
   "timepicker": {},
   "timezone": "",
   "title": "Keycloak Authentication",
   "uid": "keycloak-auth",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

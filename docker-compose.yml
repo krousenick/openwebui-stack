@@ -309,7 +309,7 @@ services:
   # Keycloak - Identity Provider (SSO)
   # ===========================================================================
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0
+    image: quay.io/keycloak/keycloak:26.7.4
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak
     restart: unless-stopped
     command: start
@@ -338,9 +338,14 @@ services:
       # Hostname
       KC_HOSTNAME: auth.${DOMAIN:-localhost}
 
-      # Health and metrics
+      # Health and metrics (Prometheus-compatible)
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
+      KC_HTTP_METRICS_HISTOGRAMS_ENABLED: "true"
+      KC_HTTP_METRICS_SLOS: "250,500,1000,2500"
+      KC_EVENT_METRICS_USER_ENABLED: "true"
+      KC_EVENT_METRICS_USER_TAGS: "realm,idp,clientId"
+      KC_CACHE_METRICS_HISTOGRAMS_ENABLED: "true"
 
       # Logging
       KC_LOG_LEVEL: INFO
@@ -378,6 +383,13 @@ services:
       - "traefik.http.services.keycloak.loadbalancer.healthcheck.path=/health/ready"
       - "traefik.http.services.keycloak.loadbalancer.healthcheck.port=9000"
       - "traefik.http.services.keycloak.loadbalancer.healthcheck.interval=10s"
+      # Metrics endpoint (management port 9000)
+      - "traefik.http.routers.keycloak-metrics.rule=Host(`metrics.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.keycloak-metrics.entrypoints=websecure"
+      - "traefik.http.routers.keycloak-metrics.tls=true"
+      - "traefik.http.routers.keycloak-metrics.service=keycloak-metrics"
+      - "traefik.http.services.keycloak-metrics.loadbalancer.server.port=9000"
+      - "traefik.http.services.keycloak-metrics.loadbalancer.server.scheme=http"
       # Admin console IP restriction (default: allow all, customize via KEYCLOAK_ADMIN_IP_RANGE)
       - "traefik.http.routers.keycloak-admin.rule=Host(`auth.${DOMAIN:-localhost}`) && PathPrefix(`/admin`)"
       - "traefik.http.routers.keycloak-admin.middlewares=admin-whitelist"
@@ -408,6 +420,7 @@ services:
     volumes:
       - lgtm_data:/data
       - ./grafana/provisioning:/otel-lgtm/grafana/conf/provisioning:ro
+      - ./grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
     environment:
       GF_SECURITY_ADMIN_USER: "${GF_SECURITY_ADMIN_USER:-admin}"
       GF_SECURITY_ADMIN_PASSWORD: "${GF_SECURITY_ADMIN_PASSWORD:?error}"
