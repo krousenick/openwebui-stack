@@ -334,6 +334,7 @@ services:
       # HTTP settings (behind Traefik reverse proxy)
       KC_HTTP_ENABLED: "true"
       KC_PROXY_HEADERS: xforwarded
+      KC_PROXY_TRUSTED_ADDRESSES: 172.16.0.0/12,10.0.0.0/8,192.168.0.0/16
 
       # Hostname
       KC_HOSTNAME: auth.${DOMAIN:-localhost}
@@ -341,6 +342,9 @@ services:
       # Health and metrics (Prometheus-compatible)
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
+
+      # Graceful shutdown (allows Traefik to detect shutdown and drain connections)
+      KC_SHUTDOWN_DELAY: 16s
       KC_HTTP_METRICS_HISTOGRAMS_ENABLED: "true"
       KC_HTTP_METRICS_SLOS: "250,500,1000,2500"
       KC_EVENT_METRICS_USER_ENABLED: "true"
@@ -373,27 +377,32 @@ services:
         condition: service_healthy
     labels:
       - "traefik.enable=true"
+      # Router config (following Skycloak production setup)
       - "traefik.http.routers.keycloak.rule=Host(`auth.${DOMAIN:-localhost}`)"
       - "traefik.http.routers.keycloak.entrypoints=websecure"
       - "traefik.http.routers.keycloak.tls=true"
-      - "traefik.http.routers.keycloak.middlewares=keycloak-headers"
+      # Service config with sticky sessions and health check
       - "traefik.http.services.keycloak.loadbalancer.server.port=8080"
-      - "traefik.http.services.keycloak.loadbalancer.server.scheme=http"
-      # Health check for sticky sessions
+      - "traefik.http.services.keycloak.loadbalancer.sticky.cookie=true"
+      - "traefik.http.services.keycloak.loadbalancer.sticky.cookie.name=KC_ROUTE"
+      - "traefik.http.services.keycloak.loadbalancer.sticky.cookie.secure=true"
+      - "traefik.http.services.keycloak.loadbalancer.sticky.cookie.httpOnly=true"
       - "traefik.http.services.keycloak.loadbalancer.healthcheck.path=/health/ready"
       - "traefik.http.services.keycloak.loadbalancer.healthcheck.port=9000"
       - "traefik.http.services.keycloak.loadbalancer.healthcheck.interval=10s"
-      # Metrics endpoint (management port 9000)
-      - "traefik.http.routers.keycloak-metrics.rule=Host(`metrics.${DOMAIN:-localhost}`)"
-      - "traefik.http.routers.keycloak-metrics.entrypoints=websecure"
-      - "traefik.http.routers.keycloak-metrics.tls=true"
-      - "traefik.http.routers.keycloak-metrics.service=keycloak-metrics"
-      - "traefik.http.services.keycloak-metrics.loadbalancer.server.port=9000"
-      - "traefik.http.services.keycloak-metrics.loadbalancer.server.scheme=http"
-      # Admin console IP restriction (default: allow all, customize via KEYCLOAK_ADMIN_IP_RANGE)
+      # Admin console with IP restriction
       - "traefik.http.routers.keycloak-admin.rule=Host(`auth.${DOMAIN:-localhost}`) && PathPrefix(`/admin`)"
       - "traefik.http.routers.keycloak-admin.middlewares=admin-whitelist"
       - "traefik.http.middlewares.admin-whitelist.ipwhitelist.sourcerange=${KEYCLOAK_ADMIN_IP_RANGE:-0.0.0.0/0}"
+      # Security headers with X-Forwarded for OIDC
+      - "traefik.http.routers.keycloak.middlewares=keycloak-headers"
+      - "traefik.http.middlewares.keycloak-headers.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.keycloak-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.keycloak-headers.headers.stsPreload=true"
+      - "traefik.http.middlewares.keycloak-headers.headers.frameDeny=true"
+      - "traefik.http.middlewares.keycloak-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.keycloak-headers.headers.customRequestHeaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.keycloak-headers.headers.customRequestHeaders.X-Forwarded-Port=443"
     deploy:
       resources:
         limits:
@@ -417,11 +426,9 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_lgtm
     restart: unless-stopped
     logging: *default-logging
-    volumes:
-      - lgtm_data:/data
-      - ./grafana/provisioning:/otel-lgtm/grafana/conf/provisioning:ro
-      - ./grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
     environment:
+      ENABLE_LOGS_GRAFANA: "true"
+      GF_PATHS_PROVISIONING: "/etc/grafana/provisioning"
       GF_SECURITY_ADMIN_USER: "${GF_SECURITY_ADMIN_USER:-admin}"
       GF_SECURITY_ADMIN_PASSWORD: "${GF_SECURITY_ADMIN_PASSWORD:?error}"
       GF_PATHS_DATA: "/data/grafana"
@@ -439,7 +446,6 @@ services:
       GF_AUTH_KEYCLOAK_SCOPES: "openid,profile,email"
       GF_AUTH_KEYCLOAK_ALLOW_ASSIGN_GRAFANA_ADMIN: "true"
       GF_AUTH_KEYCLOAK_AUTO_SIGN_UP: "false"
-      # Role mapping - OIDC users get Viewer by default, can be changed in UI
       GF_AUTH_KEYCLOAK_ROLE_ATTRIBUTE_PATH: "hasRealmRole('admin') && 'Admin' || hasRealmRole('editor') && 'Editor' || 'Viewer'"
     networks:
       - frontend
@@ -449,6 +455,8 @@ services:
     depends_on:
       keycloak:
         condition: service_healthy
+    ports:
+      - "3000:3000"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN:-localhost}`)"

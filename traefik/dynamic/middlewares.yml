@@ -53,6 +53,7 @@ http:
           - "*"
 
     # Keycloak-specific security headers (stricter for auth service)
+    # Includes X-Forwarded headers for Keycloak OIDC compatibility
     keycloak-headers:
       headers:
         stsSeconds: 31536000
@@ -63,6 +64,10 @@ http:
         browserXssFilter: true
         referrerPolicy: "strict-origin-when-cross-origin"
         contentSecurityPolicy: "frame-ancestors 'none'"
+        # X-Forwarded headers - overwrite to prevent spoofing
+        customRequestHeaders:
+          X-Forwarded-Proto: "https"
+          X-Forwarded-Port: "443"
 
     # Admin console IP whitelist for Keycloak
     admin-whitelist:
