@@ -43,6 +43,27 @@ docker compose down
 # Place realm-export.json in keycloak/import/ directory
 ```
 
+### Testing SSO Integration
+
+```bash
+# Test Open WebUI OAuth redirect
+curl -skL -i "https://chat.localhost/oauth/oidc/login" | head -15
+
+# Test Keycloak discovery endpoint
+curl -sk "https://auth.localhost/realms/master/.well-known/openid-configuration"
+
+# Verify user token contains groups claim (after login)
+# Use Keycloak admin CLI or decode JWT at jwt.io
+```
+
+### SSO Configuration Notes
+
+- **Open WebUI**: Uses `OPENID_PROVIDER_URL` pointing to internal Keycloak URL for discovery
+- **LiteLLM**: Uses `GENERIC_*` OIDC environment variables for Generic SSO provider
+- **Grafana**: Uses `GF_AUTH_GENERIC_OAUTH_*` variables for OAuth integration
+- **Groups Mapper**: Automatically added by `configure-keycloak-clients.sh` to include group membership in tokens
+- **Required**: Add `auth.localhost` to `/etc/hosts` for browser access
+
 ### Backup Commands
 
 ```bash
@@ -80,6 +101,35 @@ docker compose pull
 1. **Configuration over Code**: Prefer declarative YAML configs over custom scripts.
 2. **Idempotency**: Scripts must be re-runnable without side effects.
 3. **Security First**: Never commit secrets. Use `.env` files and `${VAR:?error}` for required variables.
+
+### SSO/OIDC Configuration
+
+**Open WebUI OAuth:**
+```yaml
+ENABLE_OAUTH_SIGNUP: "true"
+OAUTH_PROVIDER_NAME: "Keycloak"
+OPENID_PROVIDER_URL: "http://openwebui-stack_keycloak:8080/realms/master/.well-known/openid-configuration"
+OAUTH_CLIENT_ID: "open-webui"
+OAUTH_CLIENT_SECRET: "${OPENWEBUI_OIDC_CLIENT_SECRET:?error}"
+ENABLE_OAUTH_GROUP_MANAGEMENT: "true"
+OAUTH_GROUP_CLAIM: "groups"
+OAUTH_ADMIN_ROLES: "admin"
+```
+
+**LiteLLM Generic OIDC:**
+```yaml
+GENERIC_CLIENT_ID: "litellm"
+GENERIC_CLIENT_SECRET: "${LITELLM_OIDC_CLIENT_SECRET:?error}"
+GENERIC_AUTHORIZATION_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/auth"
+GENERIC_TOKEN_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/token"
+GENERIC_USERINFO_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/userinfo"
+PROXY_BASE_URL: "https://litellm.${DOMAIN:-localhost}"
+```
+
+**Notes:**
+- Open WebUI uses internal container URL for discovery (server-side fetch)
+- LiteLLM uses public URLs (browser redirects)
+- Groups must be mapped in Keycloak client scope to appear in tokens
 
 ### YAML Configuration
 

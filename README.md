@@ -137,11 +137,11 @@ This stack includes **Keycloak** for centralized authentication (Single Sign-On)
 
 ### Services Integrated with Keycloak
 
-| Service | URL | Client ID |
-|---------|-----|-----------|
-| Open WebUI | https://chat.example.com | `open-webui` |
-| Grafana | https://grafana.example.com | `grafana` |
-| LiteLLM | https://litellm.example.com | `litellm` |
+| Service | URL | Client ID | Redirect URI |
+|---------|-----|-----------|--------------|
+| Open WebUI | https://chat.example.com | `open-webui` | `/oauth/oidc/callback` |
+| Grafana | https://grafana.example.com | `grafana` | `/login/generic_oauth` |
+| LiteLLM | https://litellm.example.com | `litellm` | `/sso/callback` |
 
 ### Keycloak Administration
 
@@ -157,9 +157,49 @@ Access the Keycloak Admin Console to manage users and applications:
    ```bash
    ./scripts/configure-keycloak-clients.sh
    ```
-   This automatically creates OIDC clients for Grafana, Open WebUI, and LiteLLM.
+   This automatically:
+   - Creates OIDC clients for Grafana, Open WebUI, and LiteLLM
+   - Creates `admin` and `user` groups
+   - Adds a groups protocol mapper to include group membership in tokens
+   - Saves client secrets to `.env`
 
 2. Alternatively, the setup script can do this automatically when prompted.
+
+### Role Mapping
+
+Users are assigned roles based on their Keycloak group membership:
+
+| Keycloak Group | Open WebUI Role | LiteLLM Role |
+|----------------|-----------------|--------------|
+| `admin` | Admin | `proxy_admin` |
+| `user` | User | `internal_user` |
+
+**Creating Users:**
+
+1. Go to Keycloak Admin Console → Users → Add user
+2. Fill in user details and save
+3. Go to Credentials tab → Set password (uncheck "Temporary")
+4. Go to Groups tab → Join the appropriate group (`admin` or `user`)
+
+### SSO Login Flow
+
+**Open WebUI:**
+1. Navigate to https://chat.localhost
+2. Click "Continue with Keycloak"
+3. Enter Keycloak credentials
+4. Redirected back to Open WebUI, logged in
+
+**LiteLLM:**
+1. Navigate to https://litellm.localhost/ui
+2. Click SSO login button
+3. Enter Keycloak credentials
+4. Redirected back to LiteLLM, logged in
+
+**Grafana:**
+1. Navigate to https://grafana.localhost
+2. Click "Sign in with Keycloak"
+3. Enter Keycloak credentials
+4. Redirected back to Grafana, logged in
 
 ### Security Features
 
