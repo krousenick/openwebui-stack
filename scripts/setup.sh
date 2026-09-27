@@ -289,8 +289,8 @@ if prompt_yes_no_default_no "Start Docker stack and configure Keycloak clients?"
 	attempt=0
 	KC_URL="https://auth.${DOMAIN:-localhost}"
 	while [ $attempt -lt $max_attempts ]; do
-		if curl -sf --resolve "auth.${DOMAIN:-localhost}:443:127.0.0.1" "$KC_URL/health/ready" >/dev/null 2>&1 ||
-			curl -sf "$KC_URL/health/ready" >/dev/null 2>&1; then
+		if curl -skf --resolve "auth.${DOMAIN:-localhost}:443:127.0.0.1" "$KC_URL/realms/master" >/dev/null 2>&1 ||
+			curl -skf "$KC_URL/realms/master" >/dev/null 2>&1; then
 			echo -e "${GREEN}Keycloak is ready!${NC}"
 			break
 		fi
@@ -389,7 +389,7 @@ fi
 echo ""
 
 # Make scripts executable
-chmod +x "$SCRIPT_DIR"/*.sh
+# chmod +x "$SCRIPT_DIR"/*.sh
 
 echo ""
 echo -e "${GREEN}✓ Setup complete!${NC}"
