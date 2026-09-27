@@ -268,7 +268,7 @@ services:
     networks:
       - backend
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} && psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -tc \"SELECT 1 FROM pg_roles WHERE rolname = '${LITELLM_DB_USER}'\" | grep -q 1 && psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -tc \"SELECT 1 FROM pg_roles WHERE rolname = '${OPENWEBUI_DB_USER}'\" | grep -q 1" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} && psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -tc \"SELECT 1 FROM pg_roles WHERE rolname = '${KEYCLOAK_DB_USER}'\" | grep -q 1 && psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -tc \"SELECT 1 FROM pg_roles WHERE rolname = '${LITELLM_DB_USER}'\" | grep -q 1 && psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -tc \"SELECT 1 FROM pg_roles WHERE rolname = '${OPENWEBUI_DB_USER}'\" | grep -q 1" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -408,6 +408,8 @@ services:
     networks:
       - frontend
       - backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
