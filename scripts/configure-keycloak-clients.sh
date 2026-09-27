@@ -46,15 +46,16 @@ echo ""
 echo "[1/4] Waiting for Keycloak to be ready..."
 max_attempts=60
 attempt=0
+KC_URL="https://auth.${DOMAIN:-localhost}"
 while [ $attempt -lt $max_attempts ]; do
-	# Check Keycloak health directly via container or via metrics endpoint
-	if curl -skf "$KC_URL/realms/master" >/dev/null 2>&1; then
-		echo "Keycloak is ready!"
+	if curl -skf --resolve "auth.${DOMAIN:-localhost}:443:127.0.0.1" "$KC_URL/realms/master" >/dev/null 2>&1 ||
+		curl -skf "$KC_URL/realms/master" >/dev/null 2>&1; then
+		echo -e "${GREEN}Keycloak is ready!${NC}"
 		break
 	fi
 	attempt=$((attempt + 1))
 	echo "  Waiting... ($attempt/$max_attempts)"
-	sleep 2
+	sleep 3
 done
 
 if [ $attempt -eq $max_attempts ]; then
