@@ -69,21 +69,22 @@ echo "  User: $KC_ADMIN_USER"
 echo "  Pass length: ${#KC_ADMIN_PASSWORD}"
 
 # Debug: Try directly first
-TOKEN_RESPONSE=$(curl -sf -X POST "$KC_URL/realms/master/protocol/openid-connect/token" \
+TOKEN_RESPONSE=$(curl -skf --max-time 30 -X POST "$KC_URL/realms/master/protocol/openid-connect/token" \
 	-H "Content-Type: application/x-www-form-urlencoded" \
 	-d "username=$KC_ADMIN_USER" \
 	-d "password=$KC_ADMIN_PASSWORD" \
 	-d "grant_type=password" \
 	-d "client_id=admin-cli" 2>&1)
 
-echo "  Token response: ${TOKEN_RESPONSE:0:100}..."
+echo "  Token response preview: $(echo "$TOKEN_RESPONSE" | head -c 100)..."
+
+# Debug: Print full response if no token
+if ! echo "$TOKEN_RESPONSE" | jq -e '.access_token' >/dev/null 2>&1; then
+	echo "  ERROR: Full response:"
+	echo "$TOKEN_RESPONSE"
+fi
 
 ADMIN_TOKEN=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null)
-	-H "Content-Type: application/x-www-form-urlencoded" \
-	-d "username=$KC_ADMIN_USER" \
-	-d "password=$KC_ADMIN_PASSWORD" \
-	-d "grant_type=password" \
-	-d "client_id=admin-cli" | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null)
 
 if [ -z "$ADMIN_TOKEN" ]; then
 	echo "ERROR: Failed to get admin token"
@@ -96,35 +97,35 @@ echo "Admin token obtained!"
 echo "[3/5] Creating groups and roles..."
 
 # Create admin group if it doesn't exist
-ADMIN_GROUP=$(curl -sf -X GET "$KC_URL/admin/realms/$REALM/groups?search=admin" \
-    -H "Authorization: Bearer $ADMIN_TOKEN" | python3 -c "import sys, json; groups = json.load(sys.stdin); print(groups[0]['id'] if groups else '')" 2>/dev/null || echo "")
+ADMIN_GROUP=$(curl -skf -X GET "$KC_URL/admin/realms/$REALM/groups?search=admin" \
+	-H "Authorization: Bearer $ADMIN_TOKEN" | python3 -c "import sys, json; groups = json.load(sys.stdin); print(groups[0]['id'] if groups else '')" 2>/dev/null || echo "")
 
 if [ -z "$ADMIN_GROUP" ]; then
-    echo "  Creating admin group..."
-    curl -sf -X POST "$KC_URL/admin/realms/$REALM/groups" \
-        -H "Authorization: Bearer $ADMIN_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d '{"name": "admin"}' >/dev/null
-    ADMIN_GROUP=$(curl -sf -X GET "$KC_URL/admin/realms/$REALM/groups?search=admin" \
-        -H "Authorization: Bearer $ADMIN_TOKEN" | python3 -c "import sys, json; print(json.load(sys.stdin)[0]['id'])")
+	echo "  Creating admin group..."
+	curl -skf -X POST "$KC_URL/admin/realms/$REALM/groups" \
+		-H "Authorization: Bearer $ADMIN_TOKEN" \
+		-H "Content-Type: application/json" \
+		-d '{"name": "admin"}' >/dev/null
+	ADMIN_GROUP=$(curl -skf -X GET "$KC_URL/admin/realms/$REALM/groups?search=admin" \
+		-H "Authorization: Bearer $ADMIN_TOKEN" | python3 -c "import sys, json; print(json.load(sys.stdin)[0]['id'])")
 else
-    echo "  Admin group already exists"
+	echo "  Admin group already exists"
 fi
 
 # Create user group if it doesn't exist
-USER_GROUP=$(curl -sf -X GET "$KC_URL/admin/realms/$REALM/groups?search=user" \
-    -H "Authorization: Bearer $ADMIN_TOKEN" | python3 -c "import sys, json; groups = json.load(sys.stdin); print(groups[0]['id'] if groups else '')" 2>/dev/null || echo "")
+USER_GROUP=$(curl -skf -X GET "$KC_URL/admin/realms/$REALM/groups?search=user" \
+	-H "Authorization: Bearer $ADMIN_TOKEN" | python3 -c "import sys, json; groups = json.load(sys.stdin); print(groups[0]['id'] if groups else '')" 2>/dev/null || echo "")
 
 if [ -z "$USER_GROUP" ]; then
-    echo "  Creating user group..."
-    curl -sf -X POST "$KC_URL/admin/realms/$REALM/groups" \
-        -H "Authorization: Bearer $ADMIN_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d '{"name": "user"}' >/dev/null
-    USER_GROUP=$(curl -sf -X GET "$KC_URL/admin/realms/$REALM/groups?search=user" \
-        -H "Authorization: Bearer $ADMIN_TOKEN" | python3 -c "import sys, json; print(json.load(sys.stdin)[0]['id'])")
+	echo "  Creating user group..."
+	curl -skf -X POST "$KC_URL/admin/realms/$REALM/groups" \
+		-H "Authorization: Bearer $ADMIN_TOKEN" \
+		-H "Content-Type: application/json" \
+		-d '{"name": "user"}' >/dev/null
+	USER_GROUP=$(curl -skf -X GET "$KC_URL/admin/realms/$REALM/groups?search=user" \
+		-H "Authorization: Bearer $ADMIN_TOKEN" | python3 -c "import sys, json; print(json.load(sys.stdin)[0]['id'])")
 else
-    echo "  User group already exists"
+	echo "  User group already exists"
 fi
 
 echo "  Groups created: admin ($ADMIN_GROUP), user ($USER_GROUP)"
@@ -138,7 +139,7 @@ for client_spec in "${CLIENTS[@]}"; do
 	echo "  Configuring $client_name ($client_id)..."
 
 	# Check if client exists
-	existing=$(curl -sf -X GET "$KC_URL/admin/realms/$REALM/clients?clientId=$client_id" \
+	existing=$(curl -skf -X GET "$KC_URL/admin/realms/$REALM/clients?clientId=$client_id" \
 		-H "Authorization: Bearer $ADMIN_TOKEN")
 
 	if echo "$existing" | python3 -c "import sys, json; exit(0 if len(json.load(sys.stdin)) > 0 else 1)" 2>/dev/null; then
@@ -191,19 +192,19 @@ EOF
 
 	if [ -n "${client_uuid:-}" ]; then
 		# Update existing client
-		curl -sf -X PUT "$KC_URL/admin/realms/$REALM/clients/$client_uuid" \
+		curl -skf -X PUT "$KC_URL/admin/realms/$REALM/clients/$client_uuid" \
 			-H "Authorization: Bearer $ADMIN_TOKEN" \
 			-H "Content-Type: application/json" \
 			-d "$client_payload" >/dev/null
 	else
 		# Create new client
-		curl -sf -X POST "$KC_URL/admin/realms/$REALM/clients" \
+		curl -skf -X POST "$KC_URL/admin/realms/$REALM/clients" \
 			-H "Authorization: Bearer $ADMIN_TOKEN" \
 			-H "Content-Type: application/json" \
 			-d "$client_payload" >/dev/null
 
 		# Get the new client UUID
-		client_uuid=$(curl -sf -X GET "$KC_URL/admin/realms/$REALM/clients?clientId=$client_id" \
+		client_uuid=$(curl -skf -X GET "$KC_URL/admin/realms/$REALM/clients?clientId=$client_id" \
 			-H "Authorization: Bearer $ADMIN_TOKEN" | python3 -c "import sys, json; print(json.load(sys.stdin)[0]['id'])")
 	fi
 
@@ -211,15 +212,15 @@ EOF
 	if [ "$client_id" = "open-webui" ]; then
 		echo "    Adding groups mapper for Open WebUI..."
 		# Get the client scope UUID
-		client_scope_uuid=$(curl -sf -X GET "$KC_URL/admin/realms/$REALM/client-scopes" \
-			-H "Authorization: Bearer $ADMIN_TOKEN" | \
+		client_scope_uuid=$(curl -skf -X GET "$KC_URL/admin/realms/$REALM/client-scopes" \
+			-H "Authorization: Bearer $ADMIN_TOKEN" |
 			python3 -c "import sys, json; scopes = json.load(sys.stdin); print([s['id'] for s in scopes if s['name'] == 'profile'][0] if any(s['name'] == 'profile' for s in scopes) else '')")
-		
+
 		if [ -n "$client_scope_uuid" ]; then
 			# Create/Update groups mapper
 			mapper_payload='{"name":"groups","protocol":"openid-connect","protocolMapper":"oidc-group-membership-mapper","consentRequired":false,"config":{"full.path":"false","introspection.token.claim":"true","userinfo.token.claim":"true","id.token.claim":"true","access.token.claim":"true","claim.name":"groups","jsonType.label":"String"}}'
-			
-			curl -sf -X POST "$KC_URL/admin/realms/$REALM/client-scopes/$client_scope_uuid/protocol-mappers/models" \
+
+			curl -skf -X POST "$KC_URL/admin/realms/$REALM/client-scopes/$client_scope_uuid/protocol-mappers/models" \
 				-H "Authorization: Bearer $ADMIN_TOKEN" \
 				-H "Content-Type: application/json" \
 				-d "$mapper_payload" >/dev/null 2>&1 || echo "    (Mapper may already exist)"
@@ -227,7 +228,7 @@ EOF
 	fi
 
 	# Get client secret
-	secret_payload=$(curl -sf -X GET "$KC_URL/admin/realms/$REALM/clients/$client_uuid/client-secret" \
+	secret_payload=$(curl -skf -X GET "$KC_URL/admin/realms/$REALM/clients/$client_uuid/client-secret" \
 		-H "Authorization: Bearer $ADMIN_TOKEN")
 
 	client_secret=$(echo "$secret_payload" | python3 -c "import sys, json; print(json.load(sys.stdin).get('value', ''))" 2>/dev/null || echo "")

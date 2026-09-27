@@ -108,9 +108,11 @@ services:
       OAUTH_PROVIDER_NAME: "Keycloak"
       # Discovery URL - internal container URL for server-side fetch
       # Keycloak returns auth.localhost in discovery endpoints (browser redirects)
-      OPENID_PROVIDER_URL: "http://openwebui-stack_keycloak:8080/realms/master/.well-known/openid-configuration"
+      OPENID_PROVIDER_URL: "http://keycloak:8080/realms/master/.well-known/openid-configuration"
       OAUTH_CLIENT_ID: "${OPENWEBUI_OIDC_CLIENT_ID:-open-webui}"
       OAUTH_CLIENT_SECRET: "${OPENWEBUI_OIDC_CLIENT_SECRET:?error}"
+      # (Optional) OAuth Callback URL
+      # OPENID_REDIRECT_URI: http://keycloak:8080/oauth/oidc/callback
       # Group/Role management for SSO
       ENABLE_OAUTH_GROUP_MANAGEMENT: "true"
       ENABLE_OAUTH_GROUP_CREATION: "true"
@@ -185,14 +187,19 @@ services:
       # Reference: https://docs.litellm.ai/docs/proxy/admin_ui_sso
       LITELLM_UI_USERNAME: "${KEYCLOAK_ADMIN_USER:-admin}"
       LITELLM_UI_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:?error}"
+
       # Generic OIDC SSO Configuration
+      # AUTO_REDIRECT_UI_LOGIN_TO_SSO: true
       GENERIC_CLIENT_ID: "${LITELLM_OIDC_CLIENT_ID:-litellm}"
       GENERIC_CLIENT_SECRET: "${LITELLM_OIDC_CLIENT_SECRET:?error}"
-      GENERIC_AUTHORIZATION_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/auth"
-      GENERIC_TOKEN_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/token"
-      GENERIC_USERINFO_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/userinfo"
+      GENERIC_SKIP_SSL_VERIFY: "true"
+      GENERIC_TOKEN_ENDPOINT: "https://keycloak:8080/realms/master/protocol/openid-connect/token"
+      GENERIC_USERINFO_ENDPOINT: "https://keycloak:8080/realms/master/protocol/openid-connect/userinfo"
+      GENERIC_AUTHORIZATION_ENDPOINT: "https://keycloak:8080/realms/master/protocol/openid-connect/auth"
       # User attribute mapping
       GENERIC_USER_ID_ATTRIBUTE: "sub"
+      ENABLE_SSO_DEBUG: "true"
+      GENERIC_CLIENT_STATE: "random-secret-state"
       GENERIC_USER_EMAIL_ATTRIBUTE: "email"
       GENERIC_USER_DISPLAY_NAME_ATTRIBUTE: "name"
       # Role mapping from Keycloak groups
@@ -359,6 +366,8 @@ services:
       KC_HTTP_ENABLED: "true"
       KC_PROXY_HEADERS: xforwarded
       KC_PROXY_TRUSTED_ADDRESSES: 172.16.0.0/12,10.0.0.0/8,192.168.0.0/16
+      # KC_HTTP_PORT: 9090
+      # KC_HTTPS_PORT: 9443
 
       # Hostname - use header-based resolution so internal requests work
       KC_HOSTNAME: auth.${DOMAIN:-localhost}
@@ -428,8 +437,8 @@ services:
       - "traefik.http.middlewares.keycloak-headers.headers.stsPreload=true"
       - "traefik.http.middlewares.keycloak-headers.headers.frameDeny=true"
       - "traefik.http.middlewares.keycloak-headers.headers.contentTypeNosniff=true"
-      - "traefik.http.middlewares.keycloak-headers.headers.customRequestHeaders.X-Forwarded-Proto=https"
-      - "traefik.http.middlewares.keycloak-headers.headers.customRequestHeaders.X-Forwarded-Port=443"
+      # - "traefik.http.middlewares.keycloak-headers.headers.customRequestHeaders.X-Forwarded-Proto=https"
+      # - "traefik.http.middlewares.keycloak-headers.headers.customRequestHeaders.X-Forwarded-Port=443"
     deploy:
       resources:
         limits:
@@ -469,11 +478,11 @@ services:
       GF_AUTH_GENERIC_OAUTH_CLIENT_ID: "${GF_OIDC_CLIENT_ID:-grafana}"
       GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: "${GF_OIDC_CLIENT_SECRET:?error}"
       GF_AUTH_GENERIC_OAUTH_SCOPES: "openid,profile,email,roles"
-      GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/auth"
-      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/token"
-      GF_AUTH_GENERIC_OAUTH_API_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/userinfo"
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: "http://keycloak:8080/realms/master/protocol/openid-connect/auth"
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "http://keycloak:8080/realms/master/protocol/openid-connect/token"
+      GF_AUTH_GENERIC_OAUTH_API_URL: "http://keycloak:8080/realms/master/protocol/openid-connect/userinfo"
       GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN: "true"
-      GF_AUTH_GENERIC_OAUTH_AUTO_SIGN_UP: "false"
+      GF_AUTH_GENERIC_OAUTH_AUTO_SIGN_UP: "true"
       GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(roles[*], 'admin') && 'Admin' || contains(roles[*], 'editor') && 'Editor' || 'Viewer'"
       # Backward compatibility - keep KEYCLOAK vars for ldap/other
       GF_AUTH_KEYCLOAK_ENABLED: "false"
@@ -589,6 +598,7 @@ services:
       - backend
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "auth.localhost:host-gateway"
     depends_on:
       - lgtm
     profiles:
