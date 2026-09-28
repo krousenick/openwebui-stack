@@ -301,10 +301,10 @@ if prompt_yes_no_default_no "Start Docker stack and configure Keycloak clients?"
 
 	if [ $attempt -eq $max_attempts ]; then
 		echo -e "${YELLOW}Keycloak did not respond yet. You can run the configuration later:${NC}"
-		echo "  ./scripts/configure-keycloak-clients.sh"
+		echo "  ./scripts/configure-keycloak-clients.py"
 	else
 		echo -e "${BLUE}Configuring Keycloak clients...${NC}"
-		"$SCRIPT_DIR/configure-keycloak-clients.sh"
+		python3 "$SCRIPT_DIR/configure-keycloak-clients.py"
 
 		echo ""
 		echo -e "${YELLOW}Restarting services to apply OIDC changes...${NC}"
