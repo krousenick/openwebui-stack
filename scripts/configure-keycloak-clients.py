@@ -32,17 +32,30 @@ def load_env(project_root: Path) -> dict:
 
 
 def get_admin_token(kc_url: str, username: str, password: str, verify: bool = True) -> str:
-    """Get admin access token from Keycloak."""
+    """Get admin access token from Keycloak using curl."""
+    import subprocess
+    
     token_url = f"{kc_url}/realms/master/protocol/openid-connect/token"
-    data = {
-        "username": username,
-        "password": password,
-        "grant_type": "password",
-        "client_id": "admin-cli"
-    }
-    response = requests.post(token_url, data=data, verify=verify, timeout=30)
-    response.raise_for_status()
-    return response.json()["access_token"]
+    
+    curl_cmd = [
+        "curl", "-sk", "-X", "POST", token_url,
+        "-H", "Content-Type: application/x-www-form-urlencoded",
+        "-d", f"username={username}",
+        "-d", f"password={password}",
+        "-d", "grant_type=password",
+        "-d", "client_id=admin-cli"
+    ]
+    
+    result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=30)
+    
+    import json
+    try:
+        data = json.loads(result.stdout)
+        if "access_token" in data:
+            return data["access_token"]
+        raise Exception(f"No access_token in response: {data}")
+    except json.JSONDecodeError:
+        raise Exception(f"Failed to parse response: {result.stdout[:200]}")
 
 
 class KeycloakClient:
@@ -55,6 +68,10 @@ class KeycloakClient:
         self.verify = verify
         self.base_url = f"{kc_url}/admin/realms/{realm}"
         self.session = requests.Session()
+        
+        # Disable proxy to avoid issues
+        self.session.trust_env = False
+        
         retry_strategy = Retry(
             total=3,
             backoff_factor=1,
@@ -371,20 +388,87 @@ class KeycloakClient:
         return response.json()
 
 
+def update_hosts_file(domain: str) -> None:
+    """Add required hostnames to /etc/hosts if not already present."""
+    import subprocess
+    
+    hosts_to_add = [
+        f"127.0.0.1 auth.{domain}",
+        f"127.0.0.1 chat.{domain}",
+        f"127.0.0.1 grafana.{domain}",
+        f"127.0.0.1 litellm.{domain}",
+    ]
+    
+    # Check current hosts file
+    try:
+        result = subprocess.run(
+            ["cat", "/etc/hosts"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        current_hosts = result.stdout
+    except Exception:
+        return
+    
+    modified = False
+    for host_entry in hosts_to_add:
+        hostname = host_entry.split()[1]
+        if hostname not in current_hosts:
+            try:
+                with open("/etc/hosts", "a") as f:
+                    f.write(f"{host_entry}\n")
+                print(f"  Added {hostname} to /etc/hosts")
+                modified = True
+            except PermissionError:
+                # Try with sudo
+                try:
+                    result = subprocess.run(
+                        ["sudo", "sh", "-c", f"echo '{host_entry}' >> /etc/hosts"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if result.returncode == 0:
+                        print(f"  Added {hostname} to /etc/hosts (sudo)")
+                        modified = True
+                except Exception:
+                    pass
+    
+    if modified:
+        print()
+
+
 def wait_for_keycloak(kc_url: str, max_attempts: int = 60, verify: bool = True) -> bool:
     """Wait for Keycloak to be ready."""
+    import subprocess
+    
     print(f"Waiting for Keycloak at {kc_url}...")
+    curl_opts = "-sk"
+    if not verify:
+        curl_opts = "-sk"
+    
     for attempt in range(max_attempts):
         try:
-            response = requests.get(
-                f"{kc_url}/realms/master",
-                verify=verify,
-                timeout=5
+            result = subprocess.run(
+                ["curl", curl_opts, "--max-time", "5", f"{kc_url}/realms/master"],
+                capture_output=True,
+                text=True,
+                timeout=10
             )
-            if response.status_code == 200:
+            if result.returncode == 0 and '"realm"' in result.stdout:
                 print("Keycloak is ready!")
                 return True
-        except requests.RequestException:
+            if result.returncode == 0:
+                import json
+                try:
+                    data = json.loads(result.stdout)
+                    if data.get("realm"):
+                        print("Keycloak is ready!")
+                        return True
+                except:
+                    pass
+        except Exception:
             pass
         print(f"  Attempt {attempt + 1}/{max_attempts}...")
         import time
@@ -435,9 +519,32 @@ def main():
     print("Keycloak Client Configuration")
     print("=" * 60)
 
-    if not wait_for_keycloak(kc_url, verify=verify):
-        print("ERROR: Keycloak not ready")
+    if args.kc_url:
+        kc_urls_to_try = [args.kc_url]
+    elif env.get("KEYCLOAK_URL"):
+        kc_urls_to_try = [env.get("KEYCLOAK_URL")]
+    else:
+        print(f"\nUpdating /etc/hosts for domain '{domain}'...")
+        update_hosts_file(domain)
+        
+        kc_external_url = f"https://auth.{domain}"
+        kc_urls_to_try = [kc_external_url]
+
+    kc_url = None
+    for url in kc_urls_to_try:
+        print(f"\nTrying Keycloak at {url}...")
+        if wait_for_keycloak(url, max_attempts=10, verify=verify):
+            kc_url = url
+            break
+        print(f"  Failed to connect to {url}")
+
+    if not kc_url:
+        print("\nERROR: Could not connect to Keycloak at any URL:")
+        for url in kc_urls_to_try:
+            print(f"  - {url}")
         sys.exit(1)
+
+    print(f"\nUsing Keycloak URL: {kc_url}")
 
     print("\n[1/8] Getting admin token...")
     try:
