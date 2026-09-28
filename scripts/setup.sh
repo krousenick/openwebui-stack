@@ -33,6 +33,49 @@ generate_password() {
 	openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 32
 }
 
+# Helper function to update /etc/hosts with required FQDNs
+update_hosts_file() {
+	local domain="$1"
+
+	# Skip if domain is localhost
+	[[ "$domain" == "localhost" ]] && return
+
+	local hosts_to_add=(
+		"127.0.0.1 traefik.${domain}"
+		"127.0.0.1 chat.${domain}"
+		"127.0.0.1 litellm.${domain}"
+		"127.0.0.1 auth.${domain}"
+		"127.0.0.1 grafana.${domain}"
+	)
+
+	# Check if we can write to /etc/hosts
+	local hosts_file="/etc/hosts"
+	local needs_sudo=false
+
+	for entry in "${hosts_to_add[@]}"; do
+		local hostname="${entry##* }"
+		if ! grep -q "$hostname" "$hosts_file" 2>/dev/null; then
+			if [[ ! -w "$hosts_file" ]]; then
+				needs_sudo=true
+			fi
+			break
+		fi
+	done
+
+	# Add entries
+	for entry in "${hosts_to_add[@]}"; do
+		local hostname="${entry##* }"
+		if ! grep -q "$hostname" "$hosts_file" 2>/dev/null; then
+			if [[ "$needs_sudo" == "true" ]]; then
+				echo "$entry" | sudo tee -a "$hosts_file" >/dev/null 2>&1
+			else
+				echo "$entry" >>"$hosts_file"
+			fi
+			echo -e "  ${GREEN}Added${NC} $hostname to /etc/hosts"
+		fi
+	done
+}
+
 # Helper function for yes/no prompt (defaults to yes)
 prompt_yes_no() {
 	local prompt="$1"
@@ -87,6 +130,12 @@ echo -e "${YELLOW}Step 2: Domain Configuration${NC}"
 read -rp "Enter your domain (default: localhost): " DOMAIN
 DOMAIN=${DOMAIN:-localhost}
 echo -e "${GREEN}✓ Domain: $DOMAIN${NC}"
+
+# Update /etc/hosts with required FQDNs
+if [[ "$DOMAIN" != "localhost" ]]; then
+	echo -e "\n${YELLOW}Updating /etc/hosts...${NC}"
+	update_hosts_file "$DOMAIN"
+fi
 echo ""
 
 # 3. Generate passwords
