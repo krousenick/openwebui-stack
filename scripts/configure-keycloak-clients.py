@@ -9,12 +9,15 @@ import sys
 import json
 import secrets
 import argparse
+import warnings
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
 
 def load_env(project_root: Path) -> dict:
@@ -112,33 +115,50 @@ class KeycloakClient:
         group = self.get_group_by_name(name)
         return group.get("id") if group else None
 
-    def create_group(self, name: str) -> dict:
+    def create_group(self, name: str) -> Optional[dict]:
         """Create a new group."""
-        existing = self.get_group_by_name(name)
-        if existing:
-            print(f"  Group '{name}' already exists")
-            return existing
+        try:
+            existing = self.get_group_by_name(name)
+            if existing:
+                print(f"  Group '{name}' already exists")
+                return existing
 
-        response = self.session.post(
-            f"{self.base_url}/groups",
-            json={"name": name},
-            headers=self._headers(),
-            verify=self.verify
-        )
-        response.raise_for_status()
-        print(f"  Created group: {name}")
-        return self.get_group_by_name(name)
+            response = self.session.post(
+                f"{self.base_url}/groups",
+                json={"name": name},
+                headers=self._headers(),
+                verify=self.verify,
+                timeout=30
+            )
+            response.raise_for_status()
+            print(f"  Created group: {name}")
+            return self.get_group_by_name(name)
+        except requests.exceptions.RequestException as e:
+            print(f"  ERROR: Failed to create group '{name}': {e}")
+            return None
 
-    def assign_group_role(self, group_id: str, role: dict) -> None:
+    def assign_group_role(self, group_id: str, role: dict) -> bool:
         """Assign a realm role to a group."""
-        response = self.session.post(
-            f"{self.base_url}/groups/{group_id}/role-mappings/realm",
-            json=[role],
-            headers=self._headers(),
-            verify=self.verify
-        )
-        if response.status_code == 204:
-            print(f"    Assigned role '{role.get('name')}' to group")
+        if not role.get("id"):
+            print(f"    ERROR: Role '{role.get('name')}' missing ID field")
+            return False
+        try:
+            response = self.session.post(
+                f"{self.base_url}/groups/{group_id}/role-mappings/realm",
+                json=[{"id": role["id"], "name": role["name"]}],
+                headers=self._headers(),
+                verify=self.verify,
+                timeout=30
+            )
+            if response.status_code == 204:
+                print(f"    Assigned role '{role.get('name')}' to group")
+                return True
+            else:
+                print(f"    ERROR: Failed to assign role '{role.get('name')}': HTTP {response.status_code}")
+                return False
+        except requests.exceptions.RequestException as e:
+            print(f"    ERROR: Exception assigning role '{role.get('name')}': {e}")
+            return False
 
     def get_group_assigned_roles(self, group_id: str) -> list:
         """Get roles assigned to a group."""
@@ -168,25 +188,30 @@ class KeycloakClient:
                 return role
         return None
 
-    def create_role(self, name: str, description: str = "") -> dict:
+    def create_role(self, name: str, description: str = "") -> Optional[dict]:
         """Create a new realm role."""
-        existing = self.get_role_by_name(name)
-        if existing:
-            print(f"  Role '{name}' already exists")
-            return existing
+        try:
+            existing = self.get_role_by_name(name)
+            if existing:
+                print(f"  Role '{name}' already exists")
+                return existing
 
-        response = self.session.post(
-            f"{self.base_url}/roles",
-            json={"name": name, "description": description},
-            headers=self._headers(),
-            verify=self.verify
-        )
-        if response.status_code == 409:
-            print(f"  Role '{name}' already exists (409)")
+            response = self.session.post(
+                f"{self.base_url}/roles",
+                json={"name": name, "description": description},
+                headers=self._headers(),
+                verify=self.verify,
+                timeout=30
+            )
+            if response.status_code == 409:
+                print(f"  Role '{name}' already exists (409)")
+                return self.get_role_by_name(name)
+            response.raise_for_status()
+            print(f"  Created role: {name}")
             return self.get_role_by_name(name)
-        response.raise_for_status()
-        print(f"  Created role: {name}")
-        return {"name": name}
+        except requests.exceptions.RequestException as e:
+            print(f"  ERROR: Failed to create role '{name}': {e}")
+            return None
 
     def get_clients(self, client_id: Optional[str] = None) -> list:
         """Get all clients or filter by client_id."""
@@ -886,4 +911,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n{'='*60}")
+        print(f"ERROR: {e}")
+        print(f"{'='*60}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

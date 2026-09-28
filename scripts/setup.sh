@@ -3,6 +3,8 @@
 # Open WebUI Stack - Setup Script
 # =============================================================================
 
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
@@ -13,6 +15,12 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# Error handling
+error_exit() {
+	echo -e "${RED}ERROR: $1${NC}" >&2
+	exit 1
+}
+
 # Cross-platform sed in-place editing (macOS BSD sed vs GNU sed)
 sed_inplace() {
 	if [[ $OSTYPE == "darwin"* ]]; then
@@ -20,6 +28,100 @@ sed_inplace() {
 	else
 		sed -i "$@"
 	fi
+}
+
+# Check directory exists and has correct permissions
+check_directory() {
+	local dir="$1"
+	local desc="$2"
+	local required_perms="${3:-755}"
+
+	if [[ ! -d "$dir" ]]; then
+		echo -e "${YELLOW}Creating directory: $dir${NC}"
+		mkdir -p "$dir" || error_exit "Failed to create $desc directory: $dir"
+	fi
+
+	# Ensure directory is executable (can be traversed)
+	chmod "$required_perms" "$dir" 2>/dev/null || true
+
+	if [[ ! -r "$dir" ]]; then
+		error_exit "$desc directory not readable: $dir"
+	fi
+
+	if [[ ! -x "$dir" ]]; then
+		error_exit "$desc directory not executable (traversable): $dir"
+	fi
+
+	return 0
+}
+
+# Check file has correct permissions
+check_script_permissions() {
+	local file="$1"
+
+	if [[ ! -f "$file" ]]; then
+		return 1
+	fi
+
+	# Make sure script is executable
+	if [[ ! -x "$file" ]]; then
+		chmod +x "$file" || echo -e "${YELLOW}Warning: Could not make $file executable${NC}"
+	fi
+
+	return 0
+}
+
+# Verify required directories and permissions
+verify_directories() {
+	echo -e "${YELLOW}Verifying directory structure and permissions...${NC}"
+
+	# Required directories to check
+	local dirs=(
+		"$PROJECT_ROOT/traefik"
+		"$PROJECT_ROOT/traefik/dynamic"
+		"$PROJECT_ROOT/init-db"
+		"$PROJECT_ROOT/certs"
+		"$PROJECT_ROOT/grafana"
+		"$PROJECT_ROOT/litellm"
+		"$PROJECT_ROOT/keycloak"
+		"$PROJECT_ROOT/scripts"
+	)
+
+	local errors=0
+	for dir in "${dirs[@]}"; do
+		if [[ -d "$dir" ]]; then
+			check_directory "$dir" "$(basename "$dir")" 755
+		else
+			echo -e "${YELLOW}  Directory will be created: $dir${NC}"
+		fi
+	done
+
+	# Check init-db scripts are executable
+	if [[ -d "$PROJECT_ROOT/init-db" ]]; then
+		for script in "$PROJECT_ROOT/init-db"/*.sh; do
+			if [[ -f "$script" ]]; then
+				check_script_permissions "$script"
+				echo -e "${GREEN}  ✓ $(basename "$script") is executable${NC}"
+			fi
+		done
+	fi
+
+	# Check scripts are executable
+	for script in "$PROJECT_ROOT/scripts"/*.sh "$PROJECT_ROOT/scripts"/*.py; do
+		if [[ -f "$script" ]]; then
+			check_script_permissions "$script"
+		fi
+	done
+
+	# Ensure init-db directory permissions (postgres needs to read)
+	if [[ -d "$PROJECT_ROOT/init-db" ]]; then
+		chmod 755 "$PROJECT_ROOT/init-db"
+		chmod 644 "$PROJECT_ROOT/init-db"/*.sh 2>/dev/null || true
+		chmod 755 "$PROJECT_ROOT/init-db"/*.sh 2>/dev/null || true
+		echo -e "${GREEN}  ✓ init-db scripts have correct permissions${NC}"
+	fi
+
+	return 0
 }
 
 # Helper function to generate htpasswd hash (apr1 format)
@@ -107,6 +209,10 @@ echo -e "${BLUE}  Open WebUI Stack - Setup${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
+# Verify directories and permissions
+verify_directories
+echo ""
+
 # 1. Initialize .env file
 echo -e "${YELLOW}Step 1: Environment File${NC}"
 if [ -f "$PROJECT_ROOT/.env" ]; then
@@ -123,13 +229,37 @@ else
 		INIT_ENV=false
 	fi
 fi
+
 echo ""
 
 # 2. Domain
 echo -e "${YELLOW}Step 2: Domain Configuration${NC}"
-read -rp "Enter your domain (default: localhost): " DOMAIN
-DOMAIN=${DOMAIN:-localhost}
-echo -e "${GREEN}✓ Domain: $DOMAIN${NC}"
+
+# Check if DOMAIN is already set in .env
+EXISTING_DOMAIN=""
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+	EXISTING_DOMAIN=$(grep "^DOMAIN=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d'=' -f2 | tr -d ' "' || echo "")
+fi
+
+if [[ -n "$EXISTING_DOMAIN" && "$EXISTING_DOMAIN" != "localhost" ]]; then
+	echo -e "${GREEN}Found existing domain: $EXISTING_DOMAIN${NC}"
+	read -rp "Keep existing domain? (Y/n): " KEEP_DOMAIN
+	KEEP_DOMAIN=${KEEP_DOMAIN:-y}
+	case "$KEEP_DOMAIN" in
+	[yY][eE][sS] | [yY])
+		DOMAIN="$EXISTING_DOMAIN"
+		echo -e "${GREEN}✓ Using existing domain: $DOMAIN${NC}"
+		;;
+	*)
+		read -rp "Enter new domain (default: localhost): " DOMAIN
+		DOMAIN=${DOMAIN:-localhost}
+		;;
+	esac
+else
+	read -rp "Enter your domain (default: localhost): " DOMAIN
+	DOMAIN=${DOMAIN:-localhost}
+	echo -e "${GREEN}✓ Domain: $DOMAIN${NC}"
+fi
 
 # Update /etc/hosts with required FQDNs
 if [[ "$DOMAIN" != "localhost" ]]; then
@@ -326,7 +456,20 @@ echo -e "${YELLOW}Step 5: Start Docker Stack${NC}"
 if prompt_yes_no_default_no "Start Docker stack and configure Keycloak clients?"; then
 	echo -e "${BLUE}Starting Docker stack...${NC}"
 	cd "$PROJECT_ROOT"
-	docker compose up -d
+
+	# Pull images first
+	echo "Pulling latest images..."
+	if ! docker compose pull 2>&1; then
+		echo -e "${YELLOW}Warning: Some images failed to pull, continuing with existing images${NC}"
+	fi
+
+	# Start services
+	echo "Starting services..."
+	if ! docker compose up -d 2>&1; then
+		echo -e "${RED}Failed to start Docker stack!${NC}"
+		echo "Check logs with: docker compose logs"
+		error_exit "Docker compose failed"
+	fi
 
 	echo ""
 	echo -e "${YELLOW}Waiting for services to be ready...${NC}"
