@@ -419,7 +419,7 @@ def update_hosts_file(domain: str) -> None:
     
     hosts_to_add = [
         f"127.0.0.1 auth.{domain}",
-        f"127.0.0.1 chat.{domain}",
+        f"127.0.0.1 chatbot.{domain}",
         f"127.0.0.1 grafana.{domain}",
         f"127.0.0.1 litellm.{domain}",
     ]
@@ -616,7 +616,7 @@ def main():
     print("\n[4/8] Creating OIDC clients...")
 
     grafana_base = f"https://grafana.{domain}"
-    openwebui_base = f"https://chat.{domain}"
+    openwebui_base = f"https://chatbot.{domain}"
     litellm_base = f"https://litellm.{domain}"
 
     clients_config = [

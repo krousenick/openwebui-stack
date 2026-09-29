@@ -47,7 +47,7 @@ docker compose down
 
 ```bash
 # Test Open WebUI OAuth redirect
-curl -skL -i "https://chat.localhost/oauth/oidc/login" | head -15
+curl -skL -i "https://chatbot.localhost/oauth/oidc/login" | head -15
 
 # Test Keycloak discovery endpoint
 curl -sk "https://auth.localhost/realms/master/.well-known/openid-configuration"

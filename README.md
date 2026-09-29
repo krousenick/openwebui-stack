@@ -20,7 +20,7 @@ graph TB
     end
 
     subgraph Core [Core Applications]
-        OpenWebUI[Open WebUI<br/>chat.domain.com]:::app
+        OpenWebUI[Open WebUI<br/>chatbot.domain.com]:::app
         LiteLLM[LiteLLM<br/>litellm.domain.com]:::app
         Grafana[Grafana<br/>grafana.domain.com]:::app
     end
@@ -119,7 +119,7 @@ In `docker-compose.yml` change `ENABLE_SIGNUP` to `true` if you want to register
    ```
 
 4. **Access the services**
-   - Open WebUI: https://chat.localhost
+   - Open WebUI: https://chatbot.localhost
    - Grafana: https://grafana.localhost
    - LiteLLM: https://litellm.localhost
    - Keycloak (admin): https://auth.localhost/admin
@@ -128,7 +128,7 @@ In `docker-compose.yml` change `ENABLE_SIGNUP` to `true` if you want to register
 
 Add these entries to your `/etc/hosts`:
 ```
-127.0.0.1 localhost chat.localhost grafana.localhost litellm.localhost auth.localhost traefik.localhost
+127.0.0.1 localhost chatbot.localhost grafana.localhost litellm.localhost auth.localhost traefik.localhost
 ```
 
 ## Keycloak SSO
@@ -139,7 +139,7 @@ This stack includes **Keycloak** for centralized authentication (Single Sign-On)
 
 | Service | URL | Client ID | Redirect URI |
 |---------|-----|-----------|--------------|
-| Open WebUI | https://chat.example.com | `open-webui` | `/oauth/oidc/callback` |
+| Open WebUI | https://chatbot.example.com | `open-webui` | `/oauth/oidc/callback` |
 | Grafana | https://grafana.example.com | `grafana` | `/login/generic_oauth` |
 | LiteLLM | https://litellm.example.com | `litellm` | `/sso/callback` |
 
@@ -184,7 +184,7 @@ Users are assigned roles based on their Keycloak group membership:
 ### SSO Login Flow
 
 **Open WebUI:**
-1. Navigate to https://chat.localhost
+1. Navigate to https://chatbot.localhost
 2. Click "Continue with Keycloak"
 3. Enter Keycloak credentials
 4. Redirected back to Open WebUI, logged in
@@ -270,7 +270,7 @@ Key environment variables in `.env`:
 #### Core Services
 
 - **Traefik**: Reverse proxy with automatic HTTPS, routing, and load balancing
-- **Open WebUI**: Web UI for interacting with LLMs (chat.domain.com)
+- **Open WebUI**: Web UI for interacting with LLMs (chatbot.domain.com)
 - **LiteLLM**: Unified gateway for multiple LLM providers (litellm.domain.com)
 - **Keycloak**: Identity provider for SSO (auth.domain.com)
 - **PostgreSQL**: Shared relational database for Open WebUI, LiteLLM, and Keycloak
