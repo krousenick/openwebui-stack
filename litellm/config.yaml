@@ -147,4 +147,5 @@ mcp_servers:
   brave_search:
     url: "http://brave-search-mcp:8080/mcp"
     transport: "http"
-    auth_type: "none"
+    auth_type: "bearer_token"
+    auth_token: os.environ/BRAVE_SEARCH_API_KEY

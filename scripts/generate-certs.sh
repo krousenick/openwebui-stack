@@ -53,9 +53,9 @@ CN = $DOMAIN
 
 [v3_req]
 subjectAltName = @alt_names
-basicConstraints = CA:FALSE
-keyUsage = nonRepudiation, digitalSignature, keyEncipherment
-extendedKeyUsage = serverAuth
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, keyCertSign, cRLSign, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
 
 [alt_names]
 DNS.1 = $DOMAIN
@@ -69,10 +69,10 @@ EOF
 # Generate self-signed certificate
 echo -e "${YELLOW}Generating self-signed certificate...${NC}"
 openssl req -new -x509 \
-    -key "$CERTS_DIR/server.key" \
-    -out "$CERTS_DIR/server.crt" \
-    -days $DAYS_VALID \
-    -config "$CERTS_DIR/openssl.cnf"
+	-key "$CERTS_DIR/server.key" \
+	-out "$CERTS_DIR/server.crt" \
+	-days $DAYS_VALID \
+	-config "$CERTS_DIR/openssl.cnf"
 
 # Set appropriate permissions
 chmod 600 "$CERTS_DIR/server.key"

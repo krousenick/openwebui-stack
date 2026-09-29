@@ -170,6 +170,40 @@ class KeycloakClient:
         response.raise_for_status()
         return response.json()
 
+    def get_user_by_username(self, username: str) -> Optional[dict]:
+        """Get a user by username."""
+        response = self.session.get(
+            f"{self.base_url}/users",
+            params={"username": username},
+            headers=self._headers(),
+            verify=self.verify
+        )
+        response.raise_for_status()
+        users = response.json()
+        for user in users:
+            if user.get("username") == username:
+                return user
+        return None
+
+    def add_user_to_group(self, user_id: str, group_id: str) -> bool:
+        """Add a user to a group."""
+        try:
+            response = self.session.put(
+                f"{self.base_url}/users/{user_id}/groups/{group_id}",
+                headers=self._headers(),
+                verify=self.verify,
+                timeout=30
+            )
+            if response.status_code == 204:
+                print(f"    Added user to group")
+                return True
+            else:
+                print(f"    ERROR: Failed to add user to group: HTTP {response.status_code}")
+                return False
+        except requests.exceptions.RequestException as e:
+            print(f"    ERROR: Exception adding user to group: {e}")
+            return False
+
     def get_roles(self) -> list:
         """Get all realm roles."""
         response = self.session.get(
@@ -225,6 +259,73 @@ class KeycloakClient:
         response.raise_for_status()
         return response.json()
 
+    def create_client_role(self, client_uuid: str, role_name: str, description: str = "") -> Optional[dict]:
+        """Create a client role."""
+        try:
+            response = self.session.post(
+                f"{self.base_url}/clients/{client_uuid}/roles",
+                json={"name": role_name, "description": description},
+                headers=self._headers(),
+                verify=self.verify,
+                timeout=30
+            )
+            if response.status_code == 409:
+                print(f"    Client role '{role_name}' already exists")
+                return self.get_client_role_by_name(client_uuid, role_name)
+            response.raise_for_status()
+            print(f"    Created client role: {role_name}")
+            return self.get_client_role_by_name(client_uuid, role_name)
+        except requests.exceptions.RequestException as e:
+            print(f"    ERROR: Failed to create client role '{role_name}': {e}")
+            return None
+
+    def get_client_role_by_name(self, client_uuid: str, role_name: str) -> Optional[dict]:
+        """Get a client role by name."""
+        response = self.session.get(
+            f"{self.base_url}/clients/{client_uuid}/roles",
+            headers=self._headers(),
+            verify=self.verify
+        )
+        response.raise_for_status()
+        roles = response.json()
+        for role in roles:
+            if role.get("name") == role_name:
+                return role
+        return None
+
+    def assign_client_role_to_group(self, group_id: str, client_uuid: str, role: dict) -> bool:
+        """Assign a client role to a group."""
+        if not role.get("id"):
+            print(f"    ERROR: Client role '{role.get('name')}' missing ID field")
+            return False
+        try:
+            response = self.session.post(
+                f"{self.base_url}/groups/{group_id}/role-mappings/clients/{client_uuid}",
+                json=[{"id": role["id"], "name": role["name"]}],
+                headers=self._headers(),
+                verify=self.verify,
+                timeout=30
+            )
+            if response.status_code == 204:
+                print(f"    Assigned client role '{role.get('name')}' to group")
+                return True
+            else:
+                print(f"    ERROR: Failed to assign client role '{role.get('name')}': HTTP {response.status_code}")
+                return False
+        except requests.exceptions.RequestException as e:
+            print(f"    ERROR: Exception assigning client role '{role.get('name')}': {e}")
+            return False
+
+    def get_group_client_roles(self, group_id: str, client_uuid: str) -> list:
+        """Get client roles assigned to a group."""
+        response = self.session.get(
+            f"{self.base_url}/groups/{group_id}/role-mappings/clients/{client_uuid}",
+            headers=self._headers(),
+            verify=self.verify
+        )
+        response.raise_for_status()
+        return response.json()
+
     def get_client_by_client_id(self, client_id: str) -> Optional[dict]:
         """Get a client by its clientId."""
         clients = self.get_clients(client_id=client_id)
@@ -257,10 +358,16 @@ class KeycloakClient:
             return {}
 
     def update_client(self, client_uuid: str, client_data: dict) -> None:
-        """Update an existing client."""
+        """Update an existing client (merges with existing data)."""
+        existing = self.get_client_by_client_id(client_data.get("clientId"))
+        if not existing:
+            existing = {}
+        merged = {**existing, **client_data}
+        if "id" in merged and merged["id"] != client_uuid:
+            merged["id"] = client_uuid
         response = self.session.put(
             f"{self.base_url}/clients/{client_uuid}",
-            json=client_data,
+            json=merged,
             headers=self._headers(),
             verify=self.verify
         )
@@ -596,6 +703,14 @@ def main():
         if group:
             created_groups[group_name] = group
 
+    print("\n[2.5/8] Adding admin user to admin group...")
+    admin_user = kc.get_user_by_username("admin")
+    admin_group_id = kc.get_group_id("admin")
+    if admin_user and admin_group_id:
+        kc.add_user_to_group(admin_user["id"], admin_group_id)
+    else:
+        print("    Warning: Could not add admin user to admin group")
+
     print("\n[3/8] Creating realm roles...")
     roles_to_create = [
         ("admin", "Admin role"),
@@ -749,6 +864,27 @@ def main():
         }
         kc.add_client_scope_mapper("profile", roles_mapper)
 
+    print("\n[4.5/8] Creating client roles...")
+    client_roles_config = {
+        "grafana": ["admin", "editor", "viewer"],
+        "open-webui": ["admin", "user"],
+        "litellm": ["proxy_admin", "proxy_admin_viewer", "internal_user", "internal_user_viewer"],
+    }
+    
+    client_roles = {}
+    for client_id, roles in client_roles_config.items():
+        print(f"  {client_id}:")
+        client_uuid = client_uuids.get(client_id)
+        if not client_uuid:
+            print(f"    Warning: Client {client_id} not found")
+            continue
+        
+        client_roles[client_id] = {}
+        for role_name in roles:
+            role = kc.create_client_role(client_uuid, role_name, f"{role_name} role for {client_id}")
+            if role:
+                client_roles[client_id][role_name] = role
+
     print("\n[5/8] Assigning group-role mappings...")
     
     group_role_mappings = {
@@ -772,6 +908,33 @@ def main():
                 kc.assign_group_role(group_id, role)
             else:
                 print(f"  Warning: Role '{role_name}' not found for group '{group_name}'")
+
+    print("\n[5.5/8] Assigning client roles to groups...")
+    group_client_role_mappings = {
+        "admin": [("grafana", "admin"), ("open-webui", "admin"), ("litellm", "proxy_admin")],
+        "editor": [("grafana", "editor")],
+        "viewer": [("grafana", "viewer"), ("litellm", "proxy_admin_viewer")],
+        "user": [("open-webui", "user")],
+        "litellm-admin": [("litellm", "proxy_admin")],
+        "litellm-viewer": [("litellm", "proxy_admin_viewer")],
+    }
+    
+    for group_name, client_role_list in group_client_role_mappings.items():
+        group_id = kc.get_group_id(group_name)
+        if not group_id:
+            print(f"  Warning: Group '{group_name}' not found")
+            continue
+        
+        for client_id, role_name in client_role_list:
+            client_uuid = client_uuids.get(client_id)
+            if not client_uuid:
+                continue
+            
+            role = client_roles.get(client_id, {}).get(role_name)
+            if role:
+                kc.assign_client_role_to_group(group_id, client_uuid, role)
+            else:
+                print(f"  Warning: Client role '{role_name}' not found for client '{client_id}'")
 
     print("\n[6/8] Assigning client scopes to clients...")
     
