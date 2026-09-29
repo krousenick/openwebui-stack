@@ -304,10 +304,7 @@ case "$CERT_OPTION" in
 			echo -e "${GREEN}✓ Found existing certificates in certs/${NC}"
 			echo "  Certificate: $CERT_FILE"
 			echo "  Private Key: $KEY_FILE"
-
-			# Update .env with the actual file paths
-			sed_inplace "s|^SSL_CERT_FILE=.*|SSL_CERT_FILE=certs/$CERT_FILE|" "$PROJECT_ROOT/.env"
-			sed_inplace "s|^SSL_KEY_FILE=.*|SSL_KEY_FILE=certs/$KEY_FILE|" "$PROJECT_ROOT/.env"
+			USE_EXISTING_CERTS=true
 
 			# Generate Traefik config for existing certs
 			DYNAMIC_CERTS_FILE="$PROJECT_ROOT/traefik/dynamic/certs.yml"
@@ -333,6 +330,12 @@ EOF
 			echo "  Please place your wildcard certificates in the certs/ directory:"
 			echo "    - certs/wildcard.crt (or fullchain.pem)"
 			echo "    - certs/wildcard.key (private key)"
+			echo ""
+			echo "  Ensure certificate covers:"
+			echo "    - auth.\${DOMAIN}"
+			echo "    - chat.\${DOMAIN}"
+			echo "    - litellm.\${DOMAIN}"
+			echo "    - grafana.\${DOMAIN}"
 			echo ""
 			if prompt_yes_no_default_no "Generate self-signed certificates instead?"; then
 				GENERATE_CERTS=true
@@ -360,25 +363,6 @@ EOF
 	echo -e "${RED}Invalid option, using Traefik default${NC}"
 	;;
 esac
-
-# Update .env with certificate configuration
-if [ -f "$PROJECT_ROOT/.env" ]; then
-	if [ "$CERT_OPTION" -eq 1 ] && [ -n "$CERT_FILE" ] && [ -n "$KEY_FILE" ]; then
-		sed_inplace "s|^SSL_CERT_TYPE=.*|SSL_CERT_TYPE=existing|" "$PROJECT_ROOT/.env"
-		USE_EXISTING_CERTS=true
-	elif [ "$CERT_OPTION" -eq 2 ]; then
-		sed_inplace "s|^SSL_CERT_TYPE=.*|SSL_CERT_TYPE=selfsigned|" "$PROJECT_ROOT/.env"
-	else
-		sed_inplace "s|^SSL_CERT_TYPE=.*|SSL_CERT_TYPE=traefik|" "$PROJECT_ROOT/.env"
-	fi
-fi
-echo ""
-
-# Execute steps
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "Executing setup..."
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
 
 # Initialize .env
 if [ "$INIT_ENV" = true ]; then
@@ -445,6 +429,21 @@ if [ "$GENERATE_PASSWORDS" = true ]; then
 	echo -e "${GREEN}✓ Generated secure passwords${NC}"
 fi
 
+# Update .env with certificate configuration
+if [ -f "$PROJECT_ROOT/.env" ]; then
+	if [ "$CERT_OPTION" -eq 1 ] && [ "$USE_EXISTING_CERTS" = true ] && [ -n "$CERT_FILE" ] && [ -n "$KEY_FILE" ]; then
+		sed_inplace "s|^SSL_CERT_TYPE=.*|SSL_CERT_TYPE=existing|" "$PROJECT_ROOT/.env"
+		sed_inplace "s|^SSL_CERT_FILE=.*|SSL_CERT_FILE=certs/$CERT_FILE|" "$PROJECT_ROOT/.env"
+		sed_inplace "s|^SSL_KEY_FILE=.*|SSL_KEY_FILE=certs/$KEY_FILE|" "$PROJECT_ROOT/.env"
+	elif [ "$CERT_OPTION" -eq 2 ] || [ "$GENERATE_CERTS" = true ]; then
+		sed_inplace "s|^SSL_CERT_TYPE=.*|SSL_CERT_TYPE=selfsigned|" "$PROJECT_ROOT/.env"
+		sed_inplace "s|^SSL_CERT_FILE=.*|SSL_CERT_FILE=certs/server.crt|" "$PROJECT_ROOT/.env"
+		sed_inplace "s|^SSL_KEY_FILE=.*|SSL_KEY_FILE=certs/server.key|" "$PROJECT_ROOT/.env"
+	else
+		sed_inplace "s|^SSL_CERT_TYPE=.*|SSL_CERT_TYPE=traefik|" "$PROJECT_ROOT/.env"
+	fi
+fi
+
 # Generate SSL certificates
 if [ "$GENERATE_CERTS" = true ]; then
 	export DOMAIN
@@ -465,7 +464,7 @@ if prompt_yes_no_default_no "Start Docker stack and configure Keycloak clients?"
 
 	# Start services
 	echo "Starting services..."
-	if ! docker compose up -d 2>&1; then
+	if ! docker compose --profile monitoring up -d 2>&1; then
 		echo -e "${RED}Failed to start Docker stack!${NC}"
 		echo "Check logs with: docker compose logs"
 		error_exit "Docker compose failed"
@@ -500,7 +499,7 @@ if prompt_yes_no_default_no "Start Docker stack and configure Keycloak clients?"
 
 		echo ""
 		echo -e "${YELLOW}Restarting services to apply OIDC changes...${NC}"
-		docker compose restart grafana open-webui litellm
+		docker compose restart lgtm open-webui litellm
 		echo -e "${GREEN}Services restarted!${NC}"
 	fi
 fi
