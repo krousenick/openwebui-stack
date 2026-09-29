@@ -33,6 +33,9 @@ services:
     networks:
       - frontend
       - backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "auth.${DOMAIN:-localhost}:host-gateway"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN:-localhost}`)"
@@ -59,6 +62,7 @@ services:
     logging: *default-logging
     volumes:
       - openwebui_data:/app/backend/data
+      - ./${SSL_CERT_FILE:-certs/server.crt}:/usr/local/share/ca-certificates/keycloak.crt:ro
     environment:
       # Database configuration
       DATABASE_URL: "postgresql://${OPENWEBUI_DB_USER:-openwebui}:${OPENWEBUI_DB_PASSWORD:?error}@postgres:5432/${OPENWEBUI_DB_NAME:-openwebui}"
@@ -106,9 +110,10 @@ services:
       # Use OAUTH_* vars per Open WebUI docs  
       ENABLE_OAUTH_SIGNUP: "true"
       OAUTH_PROVIDER_NAME: "Keycloak"
-      # Discovery URL - internal container URL for server-side fetch
-      # Keycloak returns auth.localhost in discovery endpoints (browser redirects)
-      OPENID_PROVIDER_URL: "http://keycloak:8080/realms/master/.well-known/openid-configuration"
+      # Discovery URL - uses internal URL (no SSL issues)
+      OPENID_PROVIDER_URL: "https://auth.${DOMAIN:-localhost}/realms/master/.well-known/openid-configuration"
+      # SSL cert for https connections to Keycloak
+      SSL_CERT_FILE: /usr/local/share/ca-certificates/keycloak.crt
       OAUTH_CLIENT_ID: "${OPENWEBUI_OIDC_CLIENT_ID:-open-webui}"
       OAUTH_CLIENT_SECRET: "${OPENWEBUI_OIDC_CLIENT_SECRET:?error}"
       # (Optional) OAuth Callback URL
@@ -137,6 +142,7 @@ services:
         condition: service_started
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "auth.${DOMAIN:-localhost}:host-gateway"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.openwebui.rule=Host(`chat.${DOMAIN:-localhost}`)"
@@ -163,6 +169,7 @@ services:
     logging: *default-logging
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
+      - ./${SSL_CERT_FILE:-certs/server.crt}:/usr/local/share/ca-certificates/keycloak.crt:ro
     environment:
       # Database for LiteLLM
       DATABASE_URL: "postgresql://${LITELLM_DB_USER:-litellm}:${LITELLM_DB_PASSWORD:?error}@postgres:5432/${LITELLM_DB_NAME:-litellm}"
@@ -193,9 +200,9 @@ services:
       GENERIC_CLIENT_ID: "${LITELLM_OIDC_CLIENT_ID:-litellm}"
       GENERIC_CLIENT_SECRET: "${LITELLM_OIDC_CLIENT_SECRET:?error}"
       GENERIC_SKIP_SSL_VERIFY: "true"
-      GENERIC_TOKEN_ENDPOINT: "https://keycloak:8080/realms/master/protocol/openid-connect/token"
-      GENERIC_USERINFO_ENDPOINT: "https://keycloak:8080/realms/master/protocol/openid-connect/userinfo"
-      GENERIC_AUTHORIZATION_ENDPOINT: "https://keycloak:8080/realms/master/protocol/openid-connect/auth"
+      GENERIC_TOKEN_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/token"
+      GENERIC_USERINFO_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/userinfo"
+      GENERIC_AUTHORIZATION_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/auth"
       # User attribute mapping
       GENERIC_USER_ID_ATTRIBUTE: "sub"
       ENABLE_SSO_DEBUG: "true"
@@ -223,6 +230,7 @@ services:
         condition: service_started
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "auth.${DOMAIN:-localhost}:host-gateway"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.litellm.rule=Host(`litellm.${DOMAIN:-localhost}`)"
@@ -369,11 +377,10 @@ services:
       # KC_HTTP_PORT: 9090
       # KC_HTTPS_PORT: 9443
 
-      # Hostname - use header-based resolution so internal requests work
-      KC_HOSTNAME: auth.${DOMAIN:-localhost}
-      KC_HOSTNAME_STRICT: "false"
-      KC_HOSTNAME_STRICT_HTTPS: "false"
-      KC_HTTP_FORWARDED: "enabled"
+      # Hostname - use full URL to avoid port 8080 in discovery
+      KC_HOSTNAME: https://auth.${DOMAIN:-localhost}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HOSTNAME_DEBUG: "true"
 
       # Health and metrics (Prometheus-compatible)
       KC_HEALTH_ENABLED: "true"
@@ -472,12 +479,14 @@ services:
       GF_AUTH_GENERIC_OAUTH_CLIENT_ID: "${GF_OIDC_CLIENT_ID:-grafana}"
       GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: "${GF_OIDC_CLIENT_SECRET:?error}"
       GF_AUTH_GENERIC_OAUTH_SCOPES: "openid,profile,email,roles"
-      GF_AUTH_GENERIC_OAUTH_AUTH_URL: "http://keycloak:8080/realms/master/protocol/openid-connect/auth"
-      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "http://keycloak:8080/realms/master/protocol/openid-connect/token"
-      GF_AUTH_GENERIC_OAUTH_API_URL: "http://keycloak:8080/realms/master/protocol/openid-connect/userinfo"
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/auth"
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/token"
+      GF_AUTH_GENERIC_OAUTH_API_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/userinfo"
       GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN: "true"
       GF_AUTH_GENERIC_OAUTH_AUTO_SIGN_UP: "true"
-      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(roles[*], 'admin') && 'Admin' || contains(roles[*], 'editor') && 'Editor' || 'Viewer'"
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(roles[*], \'admin\') && \'Admin\' || contains(roles[*], \'editor\') && \'Editor\' || \'Viewer\'"
+      # Skip TLS verification for self-signed certificates
+      GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE: "true"
       # Backward compatibility - keep KEYCLOAK vars for ldap/other
       GF_AUTH_KEYCLOAK_ENABLED: "false"
     networks:
@@ -485,6 +494,9 @@ services:
       - backend
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "auth.${DOMAIN:-localhost}:host-gateway"
+    volumes:
+      - ./${SSL_CERT_FILE:-certs/server.crt}:/usr/local/share/ca-certificates/keycloak.crt:ro
     depends_on:
       keycloak:
         condition: service_healthy
