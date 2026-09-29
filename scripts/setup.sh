@@ -144,7 +144,7 @@ update_hosts_file() {
 
 	local hosts_to_add=(
 		"127.0.0.1 traefik.${domain}"
-		"127.0.0.1 chat.${domain}"
+		"127.0.0.1 chatbot.${domain}"
 		"127.0.0.1 litellm.${domain}"
 		"127.0.0.1 auth.${domain}"
 		"127.0.0.1 grafana.${domain}"
@@ -332,10 +332,10 @@ EOF
 			echo "    - certs/wildcard.key (private key)"
 			echo ""
 			echo "  Ensure certificate covers:"
-			echo "    - auth.\${DOMAIN}"
-			echo "    - chat.\${DOMAIN}"
-			echo "    - litellm.\${DOMAIN}"
-			echo "    - grafana.\${DOMAIN}"
+			echo "    - auth.\\${DOMAIN}"
+			echo "    - chatbot.\\${DOMAIN}"
+			echo "    - litellm.\\${DOMAIN}"
+			echo "    - grafana.\\${DOMAIN}"
 			echo ""
 			if prompt_yes_no_default_no "Generate self-signed certificates instead?"; then
 				GENERATE_CERTS=true

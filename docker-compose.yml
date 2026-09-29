@@ -69,7 +69,7 @@ services:
 
       # Security
       WEBUI_SECRET_KEY: "${OPENWEBUI_SECRET_KEY:?error}"
-      WEBUI_URL: "https://chat.${DOMAIN:-localhost}"
+      WEBUI_URL: "https://chatbot.${DOMAIN:-localhost}"
 
       # Redis caching configuration (using Valkey)
       REDIS_URL: "redis://:${VALKEY_PASSWORD:?error}@valkey:6379"
@@ -145,7 +145,7 @@ services:
       - "auth.${DOMAIN:-localhost}:host-gateway"
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.openwebui.rule=Host(`chat.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.openwebui.rule=Host(`chatbot.${DOMAIN:-localhost}`)"
       - "traefik.http.routers.openwebui.entrypoints=websecure"
       - "traefik.http.routers.openwebui.tls=true"
       - "traefik.http.services.openwebui.loadbalancer.server.port=8080"
