@@ -1,0 +1,118 @@
+---
+# ---------------------------------------------------------------------------
+# Deployment
+# ---------------------------------------------------------------------------
+
+project_root: /mnt/data1/openwebui-stack
+compose_project_name: openwebui-stack
+
+domain: example.com
+
+timezone: UTC
+
+# ---------------------------------------------------------------------------
+# Keycloak
+# ---------------------------------------------------------------------------
+
+keycloak_realm: platform
+
+keycloak_url: "https://auth.{{ domain }}"
+
+keycloak_validate_certs: true
+
+# The provisioning credentials should come from Ansible Vault.
+keycloak_provisioner_client_id: keycloak-provisioner
+keycloak_admin_user: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_USER') | default('admin', true) }}"
+keycloak_admin_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_PASSWORD') }}"
+keycloak_provisioner_client_secret: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_PROVISIONER_CLIENT_SECRET') }}"
+
+# ---------------------------------------------------------------------------
+# TLS
+# ---------------------------------------------------------------------------
+
+ssl_cert_type: existing
+
+ssl_cert_file: "wildcard.crt"
+ssl_key_file: "wildcard.key"
+
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
+
+docker_compose_profiles:
+  - monitoring
+
+docker_compose_pull: true
+
+# ---------------------------------------------------------------------------
+# Applications
+# ---------------------------------------------------------------------------
+
+keycloak_apps:
+
+  - client_id: grafana
+    client_secret: "{{ lookup('ansible.builtin.env', 'GF_OIDC_CLIENT_SECRET') }}"
+    name: Grafana
+    base_url: "https://grafana.{{ domain }}"
+    redirect_uris:
+      - "https://grafana.{{ domain }}/login/generic_oauth"
+    roles:
+      - grafana_admin
+      - grafana_editor
+      - grafana_viewer
+
+  - client_id: open-webui
+    client_secret: "{{ lookup('ansible.builtin.env', 'OPENWEBUI_OIDC_CLIENT_SECRET') }}"
+    name: Open WebUI
+    base_url: "https://chatbot.{{ domain }}"
+    redirect_uris:
+      - "https://chatbot.{{ domain }}/oauth/oidc/callback"
+    roles:
+      - openwebui_admin
+      - openwebui_user
+    include_groups: true
+
+  - client_id: litellm
+    client_secret: "{{ lookup('ansible.builtin.env', 'LITELLM_OIDC_CLIENT_SECRET') }}"
+    name: LiteLLM
+    base_url: "https://litellm.{{ domain }}"
+    redirect_uris:
+      - "https://litellm.{{ domain }}/sso/callback"
+      - "https://litellm.{{ domain }}/callback"
+    roles:
+      - litellm_admin
+      - litellm_user
+      - litellm_viewer
+
+# ---------------------------------------------------------------------------
+# Keycloak groups
+# ---------------------------------------------------------------------------
+
+keycloak_group_role_mappings:
+  - group: platform-admins
+    client_id: grafana
+    role: grafana_admin
+  - group: platform-admins
+    client_id: open-webui
+    role: openwebui_admin
+  - group: platform-admins
+    client_id: litellm
+    role: litellm_admin
+  - group: grafana-editors
+    client_id: grafana
+    role: grafana_editor
+  - group: grafana-viewers
+    client_id: grafana
+    role: grafana_viewer
+  - group: openwebui-users
+    client_id: open-webui
+    role: openwebui_user
+  - group: litellm-admins
+    client_id: litellm
+    role: litellm_admin
+  - group: litellm-users
+    client_id: litellm
+    role: litellm_user
+  - group: litellm-viewers
+    client_id: litellm
+    role: litellm_viewer

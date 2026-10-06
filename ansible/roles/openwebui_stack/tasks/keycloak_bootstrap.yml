@@ -1,0 +1,70 @@
+---
+- name: Create platform realm
+  middleware_automation.keycloak.keycloak_realm:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    enabled: true
+    display_name: "Platform"
+    registration_allowed: false
+    registration_email_as_username: false
+    duplicate_emails_allowed: false
+    reset_password_allowed: true
+    login_with_email_allowed: true
+    verify_email: true
+    ssl_required: external
+    brute_force_protected: true
+    permanent_lockout: false
+    failure_factor: 5
+    wait_increment_seconds: 60
+    max_failure_wait_seconds: 900
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
+
+- name: Create Keycloak provisioner client
+  middleware_automation.keycloak.keycloak_client:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    client_id: "{{ keycloak_provisioner_client_id }}"
+    name: Keycloak Provisioner
+    protocol: openid-connect
+    enabled: true
+    public_client: false
+    standard_flow_enabled: false
+    implicit_flow_enabled: false
+    direct_access_grants_enabled: false
+    service_accounts_enabled: true
+    full_scope_allowed: false
+    secret: "{{ keycloak_provisioner_client_secret }}"
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
+
+- name: Grant provisioner realm management roles
+  middleware_automation.keycloak.keycloak_client_rolemapping:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: master
+    client_id: realm-management
+    service_account_user_client_id: "{{ keycloak_provisioner_client_id }}"
+    roles:
+      - name: manage-clients
+      - name: manage-realm
+      - name: manage-users
+      - name: query-clients
+      - name: query-groups
+      - name: query-users
+      - name: view-clients
+      - name: view-realm
+      - name: view-users
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost

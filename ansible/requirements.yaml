@@ -1,0 +1,10 @@
+---
+collections:
+  - name: middleware_automation.keycloak
+    version: ">=3.0.0"
+
+  - name: community.docker
+    version: ">=5.0.0"
+
+  - name: ansible.posix
+    version: ">=2.0.0"

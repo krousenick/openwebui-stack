@@ -1,0 +1,28 @@
+---
+- name: Wait for Keycloak HTTPS endpoint
+  ansible.builtin.uri:
+    url: "{{ keycloak_url }}/realms/master"
+    method: GET
+    validate_certs: "{{ keycloak_validate_certs }}"
+    status_code:
+      - 200
+      - 302
+  register: keycloak_ready
+  until: keycloak_ready.status in [200, 302]
+  retries: 60
+  delay: 5
+
+- name: Bootstrap Keycloak realm and provisioner
+  ansible.builtin.include_tasks:
+    file: keycloak_bootstrap.yml
+
+- name: Configure Keycloak applications
+  ansible.builtin.include_tasks:
+    file: keycloak_app.yml
+  loop: "{{ keycloak_apps }}"
+  loop_control:
+    loop_var: app
+
+- name: Configure Keycloak groups
+  ansible.builtin.include_tasks:
+    file: keycloak_groups.yml

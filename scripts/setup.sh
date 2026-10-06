@@ -462,13 +462,9 @@ if prompt_yes_no_default_no "Start Docker stack and configure Keycloak clients?"
 		echo -e "${YELLOW}Warning: Some images failed to pull, continuing with existing images${NC}"
 	fi
 
-	# Start services
-	echo "Starting services..."
-	if ! docker compose --profile monitoring up -d 2>&1; then
-		echo -e "${RED}Failed to start Docker stack!${NC}"
-		echo "Check logs with: docker compose logs"
-		error_exit "Docker compose failed"
-	fi
+	echo "Starting PostgreSQL and Keycloak..."
+	docker compose up -d postgres keycloak-db-init keycloak
+
 
 	echo ""
 	echo -e "${YELLOW}Waiting for services to be ready...${NC}"
@@ -496,10 +492,14 @@ if prompt_yes_no_default_no "Start Docker stack and configure Keycloak clients?"
 	else
 		echo -e "${BLUE}Configuring Keycloak clients...${NC}"
 		python3 "$SCRIPT_DIR/configure-keycloak-clients.py"
+		if ! python3 "$SCRIPT_DIR/configure-keycloak-clients.py" \
+			--env-file "$PROJECT_ROOT/.env"; then
+			error_exit "Keycloak provisioning failed"
+		fi
 
 		echo ""
 		echo -e "${YELLOW}Restarting services to apply OIDC changes...${NC}"
-		docker compose restart lgtm open-webui litellm
+		docker compose --profile monitoring up -d
 		echo -e "${GREEN}Services restarted!${NC}"
 	fi
 fi
