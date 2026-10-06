@@ -1,0 +1,27 @@
+---
+- name: Create project root
+  ansible.builtin.file:
+    path: "{{ project_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create required project directories
+  ansible.builtin.file:
+    path: "{{ project_root }}/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - traefik
+    - traefik/dynamic
+    - init-db
+    - certs
+    - grafana
+    - litellm
+    - keycloak
+    - keycloak/import
+    - keycloak/themes
+    - scripts

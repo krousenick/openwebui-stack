@@ -1,0 +1,2 @@
+---
+litellm_generic_client_state: "{{ lookup('ansible.builtin.env', 'GENERIC_CLIENT_STATE') | default('change-me-before-production', true) }}"

@@ -1,0 +1,20 @@
+---
+- name: Pull Docker images
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    pull: always
+    state: present
+  when: docker_compose_pull
+
+- name: Start Docker Compose stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    state: present
+    wait: true
+    wait_timeout: 180

@@ -29,13 +29,13 @@ services:
       - ./certs:/etc/traefik/certs:ro
       - traefik_logs:/var/log/traefik
     environment:
-      - TZ=UTC
+      TZ: UTC
     networks:
       - frontend
       - backend
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-      - "auth.${DOMAIN:-localhost}:host-gateway"
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    #   - "auth.${DOMAIN:-localhost}:host-gateway"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN:-localhost}`)"
@@ -56,13 +56,12 @@ services:
   # Open WebUI - Main Application Interface
   # ===========================================================================
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    image: ${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui:main}
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_open-webui
     restart: unless-stopped
     logging: *default-logging
     volumes:
       - openwebui_data:/app/backend/data
-      - ./${SSL_CERT_FILE:-certs/server.crt}:/usr/local/share/ca-certificates/keycloak.crt:ro
     environment:
       # Database configuration
       DATABASE_URL: "postgresql://${OPENWEBUI_DB_USER:-openwebui}:${OPENWEBUI_DB_PASSWORD:?error}@postgres:5432/${OPENWEBUI_DB_NAME:-openwebui}"
@@ -96,62 +95,63 @@ services:
       ENABLE_OLLAMA_API: "false"
 
       # Production settings
-      ENABLE_SIGNUP: "false" # Change to "true" to allow registration of first admin user
+      ENABLE_SIGNUP: "false"
+      ENABLE_LOGIN_FORM: "false"
+      ENABLE_OAUTH: "true"
+      ENABLE_OAUTH_SIGNUP: "true"
+      ENABLE_OAUTH_PERSISTENT_CONFIG: "false"
+      OAUTH_PROVIDER_NAME: "Keycloak"
+      OAUTH_SCOPES: "openid email profile"
+      OAUTH_CLIENT_ID: "${OPENWEBUI_OIDC_CLIENT_ID:-open-webui}"
+      OAUTH_CLIENT_SECRET: "${OPENWEBUI_OIDC_CLIENT_SECRET:?error}"
+      OPENID_PROVIDER_URL: "http://keycloak:8080/realms/${KEYCLOAK_REALM:-platform}/.well-known/openid-configuration"
+      OPENID_REDIRECT_URI: "https://chatbot.${DOMAIN:-localhost}/oauth/oidc/callback"
+      OAUTH_CODE_CHALLENGE_METHOD: "S256"
+      OAUTH_EMAIL_CLAIM: "email"
+      OAUTH_USERNAME_CLAIM: "preferred_username"
+      ENABLE_OAUTH_GROUP_MANAGEMENT: "true"
+      ENABLE_OAUTH_GROUP_CREATION: "false"
+      OAUTH_GROUP_CLAIM: "groups"
+      OAUTH_GROUP_DEFAULT_SHARE: "members"
+      ENABLE_OAUTH_ROLE_MANAGEMENT: "true"
+      OAUTH_ROLES_CLAIM: "roles"
+      OAUTH_ADMIN_ROLES: "openwebui_admin"
+      OAUTH_ALLOWED_ROLES: "openwebui_admin,openwebui_user"
+      OAUTH_ROLES_SEPARATOR: ","
+      OAUTH_MERGE_ACCOUNTS_BY_EMAIL: "false"
+      DEFAULT_USER_ROLE: "pending"
       ENABLE_API_KEYS: "true"
       ENABLE_VERSION_UPDATE_CHECK: "false"
       ENABLE_FORWARD_USER_INFO_HEADERS: "true"
       ENABLE_COMMUNITY_SHARING: "false"
-
-      # Disable code execution features
       ENABLE_CODE_EXECUTION: "false"
       ENABLE_CODE_INTERPRETER: "false"
-
-      # OAuth2/OIDC Keycloak Authentication
-      # Use OAUTH_* vars per Open WebUI docs  
-      ENABLE_OAUTH_SIGNUP: "true"
-      OAUTH_PROVIDER_NAME: "Keycloak"
-      # Discovery URL - uses internal URL (no SSL issues)
-      OPENID_PROVIDER_URL: "https://auth.${DOMAIN:-localhost}/realms/master/.well-known/openid-configuration"
-      # SSL cert for https connections to Keycloak
-      SSL_CERT_FILE: /usr/local/share/ca-certificates/keycloak.crt
-      OAUTH_CLIENT_ID: "${OPENWEBUI_OIDC_CLIENT_ID:-open-webui}"
-      OAUTH_CLIENT_SECRET: "${OPENWEBUI_OIDC_CLIENT_SECRET:?error}"
-      # (Optional) OAuth Callback URL
-      # OPENID_REDIRECT_URI: http://keycloak:8080/oauth/oidc/callback
-      # Group/Role management for SSO
-      ENABLE_OAUTH_GROUP_MANAGEMENT: "true"
-      ENABLE_OAUTH_GROUP_CREATION: "true"
-      OAUTH_GROUP_CLAIM: "groups"
-      # Role mapping - map Keycloak groups to Open WebUI roles
-      OAUTH_ROLES_CLAIM: "groups"
-      OAUTH_ADMIN_ROLES: "admin"
-      OAUTH_ALLOWED_ROLES: "admin,user"
-      # Default role for new SSO users
-      DEFAULT_USER_ROLE: "pending"
     networks:
       - frontend
       - backend
     depends_on:
       postgres:
         condition: service_healthy
+      valkey:
+        condition: service_healthy
       qdrant:
         condition: service_healthy
       litellm:
         condition: service_healthy
+      keycloak:
+        condition: service_healthy
       lgtm:
         condition: service_started
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-      - "auth.${DOMAIN:-localhost}:host-gateway"
     labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.openwebui.rule=Host(`chatbot.${DOMAIN:-localhost}`)"
-      - "traefik.http.routers.openwebui.entrypoints=websecure"
-      - "traefik.http.routers.openwebui.tls=true"
-      - "traefik.http.services.openwebui.loadbalancer.server.port=8080"
-      - "traefik.http.services.openwebui.loadbalancer.server.scheme=http"
+      - traefik.enable=true
+      - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
+      - traefik.http.routers.openwebui.rule=Host(`chatbot.${DOMAIN:-localhost}`)
+      - traefik.http.routers.openwebui.entrypoints=websecure
+      - traefik.http.routers.openwebui.tls=true
+      - traefik.http.services.openwebui.loadbalancer.server.port=8080
+      - traefik.http.services.openwebui.loadbalancer.server.scheme=http
       # WebSocket support - passthrough mode for native WebSocket handling
-      - "traefik.http.routers.openwebui.middlewares=secure-headers@file"
+      - traefik.http.routers.openwebui.middlewares=secure-headers@file
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
       interval: 30s
@@ -163,13 +163,12 @@ services:
   # LiteLLM Proxy - Unified LLM Gateway
   # ===========================================================================
   litellm:
-    image: ghcr.io/berriai/litellm:main-latest
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-latest}
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_litellm
     restart: unless-stopped
     logging: *default-logging
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
-      - ./${SSL_CERT_FILE:-certs/server.crt}:/usr/local/share/ca-certificates/keycloak.crt:ro
     environment:
       # Database for LiteLLM
       DATABASE_URL: "postgresql://${LITELLM_DB_USER:-litellm}:${LITELLM_DB_PASSWORD:?error}@postgres:5432/${LITELLM_DB_NAME:-litellm}"
@@ -181,41 +180,42 @@ services:
 
       # Redis/Valkey Cache Authentication
       REDIS_PASSWORD: "${VALKEY_PASSWORD:?error}"
-      REDIS_HOST: "valkey"
+      REDIS_HOST: valkey
       REDIS_PORT: "6379"
 
       # OpenTelemetry for observability
-      OTEL_EXPORTER: "otlp_grpc"
+      OTEL_EXPORTER: otlp_grpc
       OTEL_ENDPOINT: "http://lgtm:4317"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm:4317"
-      OTEL_SERVICE_NAME: "litellm"
+      OTEL_SERVICE_NAME: litellm
 
-      # OIDC/Keycloak Authentication (SSO)
-      # Reference: https://docs.litellm.ai/docs/proxy/admin_ui_sso
-      LITELLM_UI_USERNAME: "${KEYCLOAK_ADMIN_USER:-admin}"
-      LITELLM_UI_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:?error}"
-
-      # Generic OIDC SSO Configuration
-      # AUTO_REDIRECT_UI_LOGIN_TO_SSO: true
       GENERIC_CLIENT_ID: "${LITELLM_OIDC_CLIENT_ID:-litellm}"
       GENERIC_CLIENT_SECRET: "${LITELLM_OIDC_CLIENT_SECRET:?error}"
-      GENERIC_SKIP_SSL_VERIFY: "true"
-      GENERIC_TOKEN_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/token"
-      GENERIC_USERINFO_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/userinfo"
-      GENERIC_AUTHORIZATION_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/auth"
-      # User attribute mapping
+      GENERIC_AUTHORIZATION_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/auth"
+      GENERIC_TOKEN_ENDPOINT: "http://keycloak:8080/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/token"
+      GENERIC_USERINFO_ENDPOINT: "http://keycloak:8080/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/userinfo"
+      GENERIC_SCOPE: "openid profile email"
+      GENERIC_CLIENT_USE_PKCE: "true"
       GENERIC_USER_ID_ATTRIBUTE: "sub"
-      ENABLE_SSO_DEBUG: "true"
-      GENERIC_CLIENT_STATE: "random-secret-state"
       GENERIC_USER_EMAIL_ATTRIBUTE: "email"
       GENERIC_USER_DISPLAY_NAME_ATTRIBUTE: "name"
-      # Role mapping from Keycloak groups
-      GENERIC_USER_ROLE_ATTRIBUTE: "groups"
-      # Callback URL
+      GENERIC_USER_FIRST_NAME_ATTRIBUTE: "given_name"
+      GENERIC_USER_LAST_NAME_ATTRIBUTE: "family_name"
+      GENERIC_USER_ROLE_ATTRIBUTE: "roles"
       PROXY_BASE_URL: "https://litellm.${DOMAIN:-localhost}"
+      ENABLE_SSO_DEBUG: "false"
+      GENERIC_CLIENT_STATE: "${GENERIC_CLIENT_STATE:-change-me-before-production}"
 
-      # Logging
-      LITELLM_LOG: "INFO"
+      LITELLM_LOG: INFO
+
+      # Optional provider credentials.
+      # config.yaml can reference these using its normal environment-variable
+      # interpolation mechanism.
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
+      AWS_REGION: "${AWS_REGION:-us-east-1}"
+
     command:
       - "--config=/app/config.yaml"
     networks:
@@ -226,17 +226,18 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
+      keycloak:
+        condition: service_healthy
       lgtm:
         condition: service_started
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-      - "auth.${DOMAIN:-localhost}:host-gateway"
     labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.litellm.rule=Host(`litellm.${DOMAIN:-localhost}`)"
-      - "traefik.http.routers.litellm.entrypoints=websecure"
-      - "traefik.http.routers.litellm.tls=true"
-      - "traefik.http.services.litellm.loadbalancer.server.port=4000"
+      - traefik.enable=true
+      - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
+      - traefik.http.routers.litellm.rule=Host(`litellm.${DOMAIN:-localhost}`)
+      - traefik.http.routers.litellm.entrypoints=websecure
+      - traefik.http.routers.litellm.tls=true
+      - traefik.http.services.litellm.loadbalancer.server.port=4000
+
     healthcheck:
       test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4000 && echo -e 'GET /health/readiness HTTP/1.1\\r\\nHost: localhost\\r\\nAuthorization: Bearer ${LITELLM_MASTER_KEY}\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q 'HTTP/1.1 200'" ]
       interval: 30s
@@ -276,7 +277,14 @@ services:
     networks:
       - backend
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} && psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -tc \"SELECT 1 FROM pg_roles WHERE rolname = '${KEYCLOAK_DB_USER}'\" | grep -q 1 && psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -tc \"SELECT 1 FROM pg_roles WHERE rolname = '${LITELLM_DB_USER}'\" | grep -q 1 && psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -tc \"SELECT 1 FROM pg_roles WHERE rolname = '${OPENWEBUI_DB_USER}'\" | grep -q 1" ]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" &&
+           psql -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$${KEYCLOAK_DB_USER}'\" | grep -q 1 &&
+           psql -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$${LITELLM_DB_USER}'\" | grep -q 1 &&
+           psql -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$${OPENWEBUI_DB_USER}'\" | grep -q 1"
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -293,25 +301,25 @@ services:
     volumes:
       - valkey_data:/data
     command:
-      - "valkey-server"
-      - "--appendonly"
+      - valkey-server
+      - --appendonly
       - "yes"
-      - "--appendfsync"
-      - "everysec"
-      - "--save"
+      - --appendfsync
+      - everysec
+      - --save
       - "900"
       - "1"
-      - "--save"
+      - --save
       - "300"
       - "10"
-      - "--save"
+      - --save
       - "60"
       - "10000"
-      - "--maxmemory"
-      - "256mb"
-      - "--maxmemory-policy"
-      - "allkeys-lru"
-      - "--requirepass"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --requirepass
       - "${VALKEY_PASSWORD:?error}"
     networks:
       - backend
@@ -347,8 +355,49 @@ services:
   # ===========================================================================
   # Keycloak - Identity Provider (SSO)
   # ===========================================================================
+    # keycloak-db-init:
+    # image: postgres:18-alpine
+    # container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak-db-init
+    # restart: "no"
+    # environment:
+    #   PGHOST: postgres
+    #   PGPORT: "5432"
+    #   PGUSER: "${POSTGRES_USER:-postgres}"
+    #   PGPASSWORD: "${POSTGRES_PASSWORD:?error}"
+    #   KEYCLOAK_DB_NAME: "${KEYCLOAK_DB_NAME:-keycloak}"
+    #   KEYCLOAK_DB_USER: "${KEYCLOAK_DB_USER:-keycloak}"
+    #   KEYCLOAK_DB_PASSWORD: "${KEYCLOAK_DB_PASSWORD:?error}"
+    # command:
+    #   - /bin/sh
+    #   - -ec
+    #   - |
+    #     psql -v ON_ERROR_STOP=1 \
+    #       -d "${POSTGRES_DB:-postgres}" \
+    #       -c "SELECT 1 FROM pg_roles WHERE rolname = '${KEYCLOAK_DB_USER}'" |
+    #       grep -q 1 ||
+    #       psql -v ON_ERROR_STOP=1 \
+    #         -d "${POSTGRES_DB:-postgres}" \
+    #         -c "CREATE ROLE ${KEYCLOAK_DB_USER} LOGIN PASSWORD '${KEYCLOAK_DB_PASSWORD}'";
+
+    #     psql -v ON_ERROR_STOP=1 \
+    #       -d "${POSTGRES_DB:-postgres}" \
+    #       -tc "SELECT 1 FROM pg_database WHERE datname = '${KEYCLOAK_DB_NAME}'" |
+    #       grep -q 1 ||
+    #       psql -v ON_ERROR_STOP=1 \
+    #         -d "${POSTGRES_DB:-postgres}" \
+    #         -c "CREATE DATABASE ${KEYCLOAK_DB_NAME} OWNER ${KEYCLOAK_DB_USER}";
+
+    #     psql -v ON_ERROR_STOP=1 \
+    #       -d "${KEYCLOAK_DB_NAME}" \
+    #       -c "GRANT ALL ON SCHEMA public TO ${KEYCLOAK_DB_USER}";
+    # networks:
+    #   - backend
+    # depends_on:
+    #   postgres:
+    #     condition: service_healthy
+
   keycloak:
-    image: quay.io/keycloak/keycloak:26.7.4
+    image: quay.io/keycloak/keycloak:26.8
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak
     restart: unless-stopped
     command: start
@@ -358,36 +407,28 @@ services:
       - ./keycloak/import:/opt/keycloak/data/import:ro
       - ./keycloak/themes:/opt/keycloak/themes:ro
     environment:
-      # Database
       KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://postgres:5432/${KEYCLOAK_DB_NAME:-keycloak}
-      KC_DB_USERNAME: ${KEYCLOAK_DB_USER:-keycloak}
-      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?error}
-      KC_DB_POOL_INITIAL_SIZE: 5
-      KC_DB_POOL_MIN_SIZE: 5
-      KC_DB_POOL_MAX_SIZE: 20
+      KC_DB_URL: "jdbc:postgresql://postgres:5432/${KEYCLOAK_DB_NAME:-keycloak}"
+      KC_DB_USERNAME: "${KEYCLOAK_DB_USER:-keycloak}"
+      KC_DB_PASSWORD: "${KEYCLOAK_DB_PASSWORD:?error}"
 
-      # Admin credentials
-      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-admin}
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?error}
+      KC_DB_POOL_INITIAL_SIZE: "5"
+      KC_DB_POOL_MIN_SIZE: "5"
+      KC_DB_POOL_MAX_SIZE: "20"
 
-      # HTTP settings (behind Traefik reverse proxy)
+      KC_BOOTSTRAP_ADMIN_USERNAME: "${KEYCLOAK_ADMIN_USER:-admin}"
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:?error}"
+
       KC_HTTP_ENABLED: "true"
       KC_PROXY_HEADERS: xforwarded
-      KC_PROXY_TRUSTED_ADDRESSES: 172.16.0.0/12,10.0.0.0/8,192.168.0.0/16
-      # KC_HTTP_PORT: 9090
-      # KC_HTTPS_PORT: 9443
+      KC_PROXY_TRUSTED_ADDRESSES: "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
 
-      # Hostname - use full URL to avoid port 8080 in discovery
-      KC_HOSTNAME: https://auth.${DOMAIN:-localhost}
-      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
-      KC_HOSTNAME_DEBUG: "true"
+      KC_HOSTNAME: "https://auth.${DOMAIN:-localhost}"
+      KC_HOSTNAME_STRICT: "true"
 
-      # Health and metrics (Prometheus-compatible)
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
 
-      # Graceful shutdown (allows Traefik to detect shutdown and drain connections)
       KC_SHUTDOWN_DELAY: 16s
       KC_HTTP_METRICS_HISTOGRAMS_ENABLED: "true"
       KC_HTTP_METRICS_SLOS: "250,500,1000,2500"
@@ -395,60 +436,53 @@ services:
       KC_EVENT_METRICS_USER_TAGS: "realm,idp,clientId"
       KC_CACHE_METRICS_HISTOGRAMS_ENABLED: "true"
 
-      # Logging
       KC_LOG_LEVEL: INFO
       KC_LOG_CONSOLE_FORMAT: "%d{yyyy-MM-dd HH:mm:ss} %-5p [%c] (%t) %s%e%n"
 
-      # OpenTelemetry for authentication monitoring
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm:4317"
       OTEL_EXPORTER_OTLP_INSECURE: "true"
-      OTEL_SERVICE_NAME: "keycloak"
+      OTEL_SERVICE_NAME: keycloak
 
       # Cache configuration (standalone)
       KC_CACHE: local
 
-      # Java heap settings
       JAVA_OPTS_KC_HEAP: "-XX:MaxRAMPercentage=70.0"
-
       # Import realm on startup (if files exist in ./keycloak/import/)
       KC_IMPORT: "/opt/keycloak/data/import/realm-export.json"
-
     networks:
       - frontend
       - backend
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
     labels:
-      - "traefik.enable=true"
-      # Router config (following Skycloak production setup)
-      - "traefik.http.routers.keycloak.rule=Host(`auth.${DOMAIN:-localhost}`)"
-      - "traefik.http.routers.keycloak.entrypoints=websecure"
-      - "traefik.http.routers.keycloak.tls=true"
+      - traefik.enable=true
+      - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
+      - traefik.http.routers.keycloak.rule=Host(`auth.${DOMAIN:-localhost}`)
+      - traefik.http.routers.keycloak.entrypoints=websecure
+      - traefik.http.routers.keycloak.tls=true
       # Service config with sticky sessions and health check
-      - "traefik.http.services.keycloak.loadbalancer.server.port=8080"
-      - "traefik.http.services.keycloak.loadbalancer.sticky.cookie=true"
-      - "traefik.http.services.keycloak.loadbalancer.sticky.cookie.name=KC_ROUTE"
-      - "traefik.http.services.keycloak.loadbalancer.sticky.cookie.secure=true"
-      - "traefik.http.services.keycloak.loadbalancer.sticky.cookie.httpOnly=true"
-      - "traefik.http.services.keycloak.loadbalancer.healthcheck.path=/health/ready"
-      - "traefik.http.services.keycloak.loadbalancer.healthcheck.port=9000"
-      - "traefik.http.services.keycloak.loadbalancer.healthcheck.interval=10s"
+      - traefik.http.services.keycloak.loadbalancer.server.port=8080
+      - traefik.http.services.keycloak.loadbalancer.sticky.cookie=true
+      - traefik.http.services.keycloak.loadbalancer.sticky.cookie.name=KC_ROUTE
+      - traefik.http.services.keycloak.loadbalancer.sticky.cookie.secure=true
+      - traefik.http.services.keycloak.loadbalancer.sticky.cookie.httpOnly=true
+
+      - traefik.http.services.keycloak.loadbalancer.healthcheck.path=/health/ready
+      - traefik.http.services.keycloak.loadbalancer.healthcheck.port=9000
+      - traefik.http.services.keycloak.loadbalancer.healthcheck.interval=10s
       # Admin console with IP restriction
       # - "traefik.http.routers.keycloak-admin.rule=Host(`auth.${DOMAIN:-localhost}`) && PathPrefix(`/admin`)"
       # - "traefik.http.routers.keycloak-admin.middlewares=admin-whitelist"
       # - "traefik.http.middlewares.admin-whitelist.ipwhitelist.sourcerange=${KEYCLOAK_ADMIN_IP_RANGE:-0.0.0.0/0}"
-
     deploy:
       resources:
         limits:
-          memory: 1536M
-          cpus: '2.0'
+          memory: 4G
+          cpus: "4.0"
         reservations:
           memory: 1G
-          cpus: '1.0'
+          cpus: "1.0"
     healthcheck:
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && cat <&3 | grep -q '200 OK'"]
       interval: 15s
@@ -466,49 +500,51 @@ services:
     logging: *default-logging
     environment:
       ENABLE_LOGS_GRAFANA: "true"
-      GF_PATHS_PROVISIONING: "/etc/grafana/provisioning"
+      GF_SERVER_ROOT_URL: "https://grafana.${DOMAIN:-localhost}"
       GF_SECURITY_ADMIN_USER: "${GF_SECURITY_ADMIN_USER:-admin}"
       GF_SECURITY_ADMIN_PASSWORD: "${GF_SECURITY_ADMIN_PASSWORD:?error}"
-      GF_PATHS_DATA: "/data/grafana"
-      GF_SERVER_ROOT_URL: "https://grafana.${DOMAIN:-localhost}"
-      # Disable anonymous access - require login
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_AUTH_DISABLE_LOGIN_FORM: "false"
-      # Keycloak OIDC Authentication via Generic OAuth
+
       GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
       GF_AUTH_GENERIC_OAUTH_NAME: "Keycloak"
+      GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "true"
+      GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN: "false"
+      GF_AUTH_GENERIC_OAUTH_AUTO_SIGN_UP: "true"
       GF_AUTH_GENERIC_OAUTH_CLIENT_ID: "${GF_OIDC_CLIENT_ID:-grafana}"
       GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: "${GF_OIDC_CLIENT_SECRET:?error}"
-      GF_AUTH_GENERIC_OAUTH_SCOPES: "openid,profile,email,roles"
-      GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/auth"
-      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/token"
-      GF_AUTH_GENERIC_OAUTH_API_URL: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/userinfo"
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/auth"
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "http://keycloak:8080/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/token"
+      GF_AUTH_GENERIC_OAUTH_API_URL: "http://keycloak:8080/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/userinfo"
+      GF_AUTH_GENERIC_OAUTH_SCOPES: "openid profile email"
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(roles[*], 'grafana_admin') && 'GrafanaAdmin' || contains(roles[*], 'grafana_editor') && 'Editor' || contains(roles[*], 'grafana_viewer') && 'Viewer' || 'None'"
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT: "true"
       GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN: "true"
-      GF_AUTH_GENERIC_OAUTH_AUTO_SIGN_UP: "true"
-      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(roles[*], \'admin\') && \'Admin\' || contains(roles[*], \'editor\') && \'Editor\' || \'Viewer\'"
-      # Skip TLS verification for self-signed certificates
-      GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE: "true"
-      # Backward compatibility - keep KEYCLOAK vars for ldap/other
-      GF_AUTH_KEYCLOAK_ENABLED: "false"
+      GF_AUTH_GENERIC_OAUTH_EMAIL_ATTRIBUTE_NAME: "email"
+      GF_AUTH_GENERIC_OAUTH_LOGIN_ATTRIBUTE_PATH: "preferred_username"
+      GF_AUTH_GENERIC_OAUTH_NAME_ATTRIBUTE_PATH: "name"
+      GF_AUTH_GENERIC_OAUTH_USE_REFRESH_TOKEN: "true"
+
+    volumes:
+      - lgtm_data:/data
     networks:
       - frontend
       - backend
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-      - "auth.${DOMAIN:-localhost}:host-gateway"
-    volumes:
-      - ./${SSL_CERT_FILE:-certs/server.crt}:/usr/local/share/ca-certificates/keycloak.crt:ro
+    # extra_hosts:
+    #   - "auth.localdomain:{{ traefik_addr }}"
+    #   - "mon.localdomain:{{ traefik_addr }}"
     depends_on:
       keycloak:
         condition: service_healthy
-    ports:
-      - "3000:3000"
+    # ports:
+    #   - "3000:3000"
     labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN:-localhost}`)"
-      - "traefik.http.routers.grafana.entrypoints=websecure"
-      - "traefik.http.routers.grafana.tls=true"
-      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+      - traefik.enable=true
+      - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
+      - traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN:-localhost}`)
+      - traefik.http.routers.grafana.entrypoints=websecure
+      - traefik.http.routers.grafana.tls=true
+      - traefik.http.services.grafana.loadbalancer.server.port=3000
 
   # ===========================================================================
   # Node Exporter - System Metrics
@@ -519,19 +555,19 @@ services:
     restart: unless-stopped
     logging: *default-logging
     volumes:
-      - '/:/host:ro'
+      - "/:/host:ro"
     command:
-      - "--path.rootfs=/host"
-      - "--collector.disable-defaults"
-      - "--collector.cpu"
-      - "--collector.meminfo"
-      - "--collector.diskstats"
-      - "--collector.netdev"
-      - "--collector.stat"
-      - "--collector.uname"
-      - "--collector.loadavg"
-      - "--collector.filesystem"
-      - "--collector.textfile.directory=/var/lib/node_exporter/textfile_collector"
+      - --path.rootfs=/host
+      - --collector.disable-defaults
+      - --collector.cpu
+      - --collector.meminfo
+      - --collector.diskstats
+      - --collector.netdev
+      - --collector.stat
+      - --collector.uname
+      - --collector.loadavg
+      - --collector.filesystem
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
     networks:
       - backend
     profiles:
@@ -564,15 +600,13 @@ services:
     restart: unless-stopped
     logging: *default-logging
     environment:
-      - BRAVE_API_KEY=${BRAVE_SEARCH_API_KEY:?error}
-      - BRAVE_MCP_TRANSPORT=http
-      - BRAVE_MCP_HOST=0.0.0.0
-    ports:
-      - "8080:8080"
+      BRAVE_API_KEY: "${BRAVE_SEARCH_API_KEY:?error}"
+      BRAVE_MCP_TRANSPORT: http
+      BRAVE_MCP_HOST: 0.0.0.0
+    # ports:
+    #   - "8080:8080"
     networks:
       - backend
-    profiles:
-      - mcp
 
   # ===========================================================================
   # NVIDIA GPU Exporter (Optional - requires NVIDIA runtime)
@@ -584,7 +618,7 @@ services:
     logging: *default-logging
     runtime: nvidia
     environment:
-      NVIDIA_VISIBLE_DEVICES: "all"
+      NVIDIA_VISIBLE_DEVICES: all
     networks:
       - backend
     profiles:
@@ -603,27 +637,24 @@ services:
       - ./otel/config.yaml:/etc/otel/config.yaml:ro
     networks:
       - backend
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-      - "auth.localhost:host-gateway"
     depends_on:
       - lgtm
     profiles:
       - monitoring
 
   # ===========================================================================
-  # Keycloak Backup Service
+  # Optional Keycloak Backup
   # ===========================================================================
   keycloak-backup:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak-backup
     restart: "no"
     logging: *default-logging
     environment:
       PGHOST: postgres
-      PGDATABASE: ${KEYCLOAK_DB_NAME:-keycloak}
-      PGUSER: ${KEYCLOAK_DB_USER:-keycloak}
-      PGPASSWORD: ${KEYCLOAK_DB_PASSWORD:?error}
+      PGDATABASE: "${KEYCLOAK_DB_NAME:-keycloak}"
+      PGUSER: "${KEYCLOAK_DB_USER:-keycloak}"
+      PGPASSWORD: "${KEYCLOAK_DB_PASSWORD:?error}"
       BACKUP_RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-7}"
     volumes:
       - keycloak_backups:/backups

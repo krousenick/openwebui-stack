@@ -1,0 +1,16 @@
+---
+- name: Install host prerequisites
+  ansible.builtin.include_tasks:
+    file: prerequisites.yml
+
+- name: Create project directories
+  ansible.builtin.include_tasks:
+    file: directories.yml
+
+- name: Deploy Docker Compose stack
+  ansible.builtin.include_tasks:
+    file: compose.yml
+
+- name: Configure Keycloak SSO
+  ansible.builtin.include_tasks:
+    file: keycloak.yml

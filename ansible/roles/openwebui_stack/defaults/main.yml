@@ -1,0 +1,13 @@
+---
+project_root: /mnt/data1/openwebui-stack
+
+compose_file: "{{ project_root }}/docker-compose.yml"
+
+env_file: "{{ project_root }}/.env"
+
+keycloak_validate_certs: true
+
+docker_compose_pull: true
+
+docker_compose_profiles:
+  - monitoring

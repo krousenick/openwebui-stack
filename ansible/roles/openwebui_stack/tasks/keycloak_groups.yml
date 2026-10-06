@@ -1,0 +1,39 @@
+---
+- name: Create Keycloak groups
+  middleware_automation.keycloak.keycloak_group:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_client_id: "{{ keycloak_provisioner_client_id }}"
+    auth_client_secret: "{{ keycloak_provisioner_client_secret }}"
+
+    realm: "{{ keycloak_realm }}"
+    name: "{{ item.group }}"
+
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  loop: "{{ keycloak_group_role_mappings }}"
+  loop_control:
+    label: "{{ item.group }}"
+  delegate_to: localhost
+
+- name: Map Keycloak groups to application roles
+  middleware_automation.keycloak.keycloak_client_rolemapping:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_client_id: "{{ keycloak_provisioner_client_id }}"
+    auth_client_secret: "{{ keycloak_provisioner_client_secret }}"
+
+    realm: "{{ keycloak_realm }}"
+
+    client_id: "{{ item.client_id }}"
+    group_name: "{{ item.group }}"
+
+    roles:
+      - name: "{{ item.role }}"
+
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  loop: "{{ keycloak_group_role_mappings }}"
+  loop_control:
+    label: "{{ item.group }} -> {{ item.client_id }}:{{ item.role }}"
+  delegate_to: localhost
