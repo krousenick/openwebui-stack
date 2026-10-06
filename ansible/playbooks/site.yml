@@ -2,6 +2,6 @@
 - name: Deploy Open WebUI AI platform
   hosts: openwebui
   become: true
-
   roles:
-    - role: openwebui_stack
+    - role: ../roles/openwebui_stack
+
