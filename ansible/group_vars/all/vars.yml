@@ -6,7 +6,7 @@
 project_root: /mnt/data1/openwebui-stack
 compose_project_name: openwebui-stack
 
-domain: example.com
+domain: "{{ lookup('ansible.builtin.env', 'DOMAIN') | default('localhost', true) }}"
 
 timezone: UTC
 
