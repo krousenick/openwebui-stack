@@ -18,11 +18,25 @@ groups:
             model:
               expr: up{job="keycloak"} == 0
               refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
           - refId: C
             datasourceUid: __expr__
             model:
-              type: query
-              expression: A
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
               refId: C
         noDataState: Alerting
         execErrState: Alerting
@@ -45,11 +59,25 @@ groups:
             model:
               expr: up{job="litellm"} == 0
               refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
           - refId: C
             datasourceUid: __expr__
             model:
-              type: query
-              expression: A
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
               refId: C
         noDataState: Alerting
         execErrState: Alerting
@@ -72,11 +100,25 @@ groups:
             model:
               expr: up{job="open-webui"} == 0
               refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
           - refId: C
             datasourceUid: __expr__
             model:
-              type: query
-              expression: A
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
               refId: C
         noDataState: Alerting
         execErrState: Alerting
@@ -99,11 +141,25 @@ groups:
             model:
               expr: pg_up == 0
               refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
           - refId: C
             datasourceUid: __expr__
             model:
-              type: query
-              expression: A
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
               refId: C
         noDataState: Alerting
         execErrState: Alerting
@@ -126,11 +182,25 @@ groups:
             model:
               expr: up{job="qdrant"} == 0
               refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
           - refId: C
             datasourceUid: __expr__
             model:
-              type: query
-              expression: A
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
               refId: C
         noDataState: Alerting
         execErrState: Alerting
@@ -158,11 +228,25 @@ groups:
             model:
               expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
               refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
           - refId: C
             datasourceUid: __expr__
             model:
-              type: query
-              expression: A
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
               refId: C
         noDataState: OK
         execErrState: Alerting
@@ -185,11 +269,25 @@ groups:
             model:
               expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
               refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
           - refId: C
             datasourceUid: __expr__
             model:
-              type: query
-              expression: A
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
               refId: C
         noDataState: OK
         execErrState: Alerting
@@ -212,11 +310,25 @@ groups:
             model:
               expr: (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"})) * 100 > 85
               refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
           - refId: C
             datasourceUid: __expr__
             model:
-              type: query
-              expression: A
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
               refId: C
         noDataState: OK
         execErrState: Alerting
@@ -246,11 +358,25 @@ groups:
                 sum(rate(litellm_failed_requests_total[5m])) /
                 sum(rate(litellm_requests_total[5m])) > 0.05
               refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
           - refId: C
             datasourceUid: __expr__
             model:
-              type: query
-              expression: A
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
               refId: C
         noDataState: OK
         execErrState: Alerting
@@ -276,11 +402,25 @@ groups:
                   sum(rate(litellm_request_duration_seconds_bucket[5m])) by (le)
                 ) > 10
               refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
           - refId: C
             datasourceUid: __expr__
             model:
-              type: query
-              expression: A
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
               refId: C
         noDataState: OK
         execErrState: Alerting
@@ -303,11 +443,25 @@ groups:
             model:
               expr: pg_stat_activity_count > 150
               refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
           - refId: C
             datasourceUid: __expr__
             model:
-              type: query
-              expression: A
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
               refId: C
         noDataState: OK
         execErrState: Alerting
