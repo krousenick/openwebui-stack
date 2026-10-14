@@ -25,6 +25,17 @@ general_settings:
     - header_name: X-OpenWebUI-User-Email
       litellm_user_role: customer
 
+  # OIDC group to team mapping
+  enable_jwt_auth: true
+  litellm_jwtauth:
+    user_id_jwt_field: "email"
+    user_email_jwt_field: "email"
+    user_id_upsert: true
+    team_ids_jwt_field: "groups"
+    org_id_jwt_field: "org_id"
+    enforce_team_based_model_access: true
+
+
 # Litellm settings
 litellm_settings:
   # Enable streaming
