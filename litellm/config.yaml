@@ -72,78 +72,73 @@ router_settings:
 # Models are configured via environment variables set by setup script
 # Environment variables used:
 #   - GEMINI_API_KEY: Google Gemini API key
-#   - AWS_BEDROCK_API_KEY: AWS Bedrock API key (for OSS models)
+#   - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY: AWS Bedrock credentials
 #   - AWS_REGION: AWS region (default: us-east-1)
+# Model IDs checked 2026-10-21 against:
+#   https://docs.litellm.ai/docs/providers/gemini
+#   https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+#   https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html
 
 model_list:
-  # Google Gemini Models
-  - model_name: gemini-2.0-flash
+  # Google Gemini (Google AI Studio). gemini/ prefix uses GEMINI_API_KEY.
+  - model_name: gemini-3.8-flash
     litellm_params:
-      model: gemini/gemini-2.0-flash
+      model: gemini/gemini-3.8-flash
       api_key: os.environ/GEMINI_API_KEY
     model_info:
-      description: "Google Gemini 2.0 Flash - Fast and efficient"
+      description: "Gemini 3.8 Flash - current fast model"
 
-  - model_name: gemini-2.0-flash-lite
+  - model_name: gemini-3.5-flash-lite
     litellm_params:
-      model: gemini/gemini-2.0-flash-lite
+      model: gemini/gemini-3.5-flash-lite
       api_key: os.environ/GEMINI_API_KEY
     model_info:
-      description: "Google Gemini 2.0 Flash Lite - Lightweight model"
+      description: "Gemini 3.5 Flash-Lite - current lightweight model"
 
-  - model_name: gemini-1.5-pro
+  - model_name: gemini-3.1-pro
     litellm_params:
-      model: gemini/gemini-1.5-pro
+      model: gemini/gemini-3.1-pro-preview
       api_key: os.environ/GEMINI_API_KEY
     model_info:
-      description: "Google Gemini 1.5 Pro - Advanced reasoning"
+      description: "Gemini 3.1 Pro preview - current reasoning model"
 
-  - model_name: gemini-1.5-flash
-    litellm_params:
-      model: gemini/gemini-1.5-flash
-      api_key: os.environ/GEMINI_API_KEY
-    model_info:
-      description: "Google Gemini 1.5 Flash - Balanced performance"
-
-  # AWS Bedrock OSS Models
-  # MiniMax M2.5
+  # AWS Bedrock OSS models. IDs are bedrock-runtime model IDs.
+  # Kimi K3 has no in-region ID; us-east-1 uses the US geo profile.
   - model_name: minimax-m2.5
     litellm_params:
-      model: bedrock/minimax/MiniMax-M2.5
+      model: bedrock/minimax.minimax-m2.5
       aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
       aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
-      aws_region_name: us-east-1
+      aws_region_name: os.environ/AWS_REGION
     model_info:
-      description: "MiniMax M2.5 via AWS Bedrock"
+      description: "MiniMax M2.5 via AWS Bedrock (us-east-1)"
 
-  # Qwen Models
-  - model_name: qwen-2.5
+  - model_name: qwen3-next
     litellm_params:
-      model: bedrock/qwen/qwen2.5-72b-instruct
+      model: bedrock/qwen.qwen3-next-80b-a3b
       aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
       aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
-      aws_region_name: us-east-1
+      aws_region_name: os.environ/AWS_REGION
     model_info:
-      description: "Qwen 2.5 72B Instruct via AWS Bedrock"
+      description: "Qwen3 Next 80B A3B via AWS Bedrock (us-east-1)"
 
-  - model_name: qwen-2.5-coder
+  - model_name: qwen3-coder
     litellm_params:
-      model: bedrock/qwen/qwen2.5-coder-32b-instruct
+      model: bedrock/qwen.qwen3-coder-next
       aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
       aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
-      aws_region_name: us-east-1
+      aws_region_name: os.environ/AWS_REGION
     model_info:
-      description: "Qwen 2.5 Coder 32B Instruct via AWS Bedrock"
+      description: "Qwen3 Coder Next via AWS Bedrock (us-east-1)"
 
-  # Kimi Models (if available in region)
-  - model_name: kimi-moonshot
+  - model_name: kimi-k3
     litellm_params:
-      model: bedrock/moonshot/moonshot-v1-8k
+      model: bedrock/us.moonshotai.kimi-k3
       aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
       aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
-      aws_region_name: us-east-1
+      aws_region_name: os.environ/AWS_REGION
     model_info:
-      description: "Kimi Moonshot v1 via AWS Bedrock"
+      description: "Kimi K3 via AWS Bedrock US geo inference"
 
   # Local llama.cpp Edge Nodes (configured via setup script)
   # Models are dynamically added based on LLAMA_CPP_EDGE_NODES env var
