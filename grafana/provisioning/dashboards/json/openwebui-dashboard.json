@@ -253,7 +253,7 @@
       "pluginVersion": "12.3.0",
       "targets": [
         {
-          "expr": "sum(rate(traefik_service_requests_total{service=\"openwebui@docker\"}[5m])) * 60",
+          "expr": "sum(rate(http_server_requests_total{service_name=\"open-webui\"}[5m])) * 60",
           "legendFormat": "Requests/min",
           "refId": "A"
         }
@@ -447,7 +447,7 @@
       "pluginVersion": "12.3.0",
       "targets": [
         {
-          "expr": "sum(rate(traefik_service_requests_total{service=\"openwebui@docker\"}[5m]))",
+          "expr": "sum(rate(http_server_requests_total{service_name=\"open-webui\"}[5m]))",
           "legendFormat": "Requests/sec",
           "refId": "A"
         }
@@ -539,22 +539,22 @@
       "pluginVersion": "12.3.0",
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(traefik_service_request_duration_seconds_bucket{service=\"openwebui@docker\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(http_server_duration_milliseconds_bucket{service_name=\"open-webui\"}[5m])) by (le))",
           "legendFormat": "P50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.90, sum(rate(traefik_service_request_duration_seconds_bucket{service=\"openwebui@docker\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.90, sum(rate(http_server_duration_milliseconds_bucket{service_name=\"open-webui\"}[5m])) by (le))",
           "legendFormat": "P90",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket{service=\"openwebui@docker\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_duration_milliseconds_bucket{service_name=\"open-webui\"}[5m])) by (le))",
           "legendFormat": "P95",
           "refId": "C"
         },
         {
-          "expr": "histogram_quantile(0.99, sum(rate(traefik_service_request_duration_seconds_bucket{service=\"openwebui@docker\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(http_server_duration_milliseconds_bucket{service_name=\"open-webui\"}[5m])) by (le))",
           "legendFormat": "P99",
           "refId": "D"
         }
@@ -689,7 +689,7 @@
       "pluginVersion": "12.3.0",
       "targets": [
         {
-          "expr": "sum(rate(traefik_service_requests_total{service=\"openwebui@docker\"}[5m])) by (code)",
+          "expr": "sum(rate(http_server_requests_total{service_name=\"open-webui\"}[5m])) by (http_status_code)",
           "legendFormat": "{{code}}",
           "refId": "A"
         }
@@ -774,12 +774,12 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(traefik_service_requests_bytes_total{service=\"openwebui@docker\"}[5m]))",
+          "expr": "sum(rate(traefik_entrypoint_requests_bytes_total{entrypoint=\"websecure\"}[5m]))",
           "legendFormat": "Request Bytes/sec",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(traefik_service_responses_bytes_total{service=\"openwebui@docker\"}[5m]))",
+          "expr": "sum(rate(traefik_entrypoint_responses_bytes_total{entrypoint=\"websecure\"}[5m]))",
           "legendFormat": "Response Bytes/sec",
           "refId": "B"
         }
@@ -843,7 +843,7 @@
       "pluginVersion": "10.2.2",
       "targets": [
         {
-          "expr": "sum(rate(traefik_service_requests_total{service=\"openwebui@docker\", code=~\"5..\"}[5m])) / sum(rate(traefik_service_requests_total{service=\"openwebui@docker\"}[5m])) * 100 or vector(0)",
+          "expr": "sum(rate(http_server_requests_total{service_name=\"open-webui\", http_status_code=~\"5..\"}[5m])) / sum(rate(http_server_requests_total{service_name=\"open-webui\"}[5m])) * 100 or vector(0)",
           "legendFormat": "Error Rate",
           "refId": "A"
         }

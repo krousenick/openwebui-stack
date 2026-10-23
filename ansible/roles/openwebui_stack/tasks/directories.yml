@@ -25,3 +25,6 @@
     - keycloak/import
     - keycloak/themes
     - scripts
+    - otel
+    - grafana/provisioning
+    - json-exporter

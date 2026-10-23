@@ -40,21 +40,21 @@
     implicit_flow_enabled: false
     direct_access_grants_enabled: false
     service_accounts_enabled: true
-    full_scope_allowed: false
+    full_scope_allowed: true
     secret: "{{ keycloak_provisioner_client_secret }}"
     state: present
     validate_certs: "{{ keycloak_validate_certs }}"
   delegate_to: localhost
 
 - name: Grant provisioner realm management roles
-  middleware_automation.keycloak.keycloak_client_rolemapping:
+  middleware_automation.keycloak.keycloak_user_rolemapping:
     auth_keycloak_url: "{{ keycloak_url }}"
     auth_realm: master
     auth_username: "{{ keycloak_admin_user }}"
     auth_password: "{{ keycloak_admin_password }}"
-    realm: master
+    realm: "{{ keycloak_realm }}"
     client_id: realm-management
-    service_account_user_client_id: "{{ keycloak_provisioner_client_id }}"
+    target_username: "service-account-{{ keycloak_provisioner_client_id }}"
     roles:
       - name: manage-clients
       - name: manage-realm
@@ -65,6 +65,58 @@
       - name: view-clients
       - name: view-realm
       - name: view-users
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
+
+- name: Get Keycloak admin token
+  ansible.builtin.uri:
+    url: "{{ keycloak_url }}/realms/master/protocol/openid-connect/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      client_id: admin-cli
+      username: "{{ keycloak_admin_user }}"
+      password: "{{ keycloak_admin_password }}"
+      grant_type: password
+    status_code: 200
+    validate_certs: "{{ keycloak_validate_certs }}"
+  register: krousenick_admin_token
+  no_log: true
+  delegate_to: localhost
+
+- name: Check whether krousenick exists
+  ansible.builtin.uri:
+    url: "{{ keycloak_url }}/admin/realms/master/users?username=krousenick&exact=true"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ krousenick_admin_token.json.access_token }}"
+    status_code: 200
+    return_content: true
+    validate_certs: "{{ keycloak_validate_certs }}"
+  register: krousenick_lookup
+  delegate_to: localhost
+
+- name: Grant krousenick access to manage platform
+  when: (krousenick_lookup.json | length) > 0
+  middleware_automation.keycloak.keycloak_user_rolemapping:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: master
+    client_id: "{{ keycloak_realm }}-realm"
+    target_username: krousenick
+    roles:
+      - name: manage-realm
+      - name: view-realm
+      - name: manage-users
+      - name: view-users
+      - name: query-users
+      - name: manage-clients
+      - name: view-clients
+      - name: query-clients
+      - name: query-groups
     state: present
     validate_certs: "{{ keycloak_validate_certs }}"
   delegate_to: localhost

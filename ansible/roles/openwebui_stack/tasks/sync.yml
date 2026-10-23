@@ -1,0 +1,19 @@
+---
+# The collector image runs as uid 10001. A 0640 root-owned config cannot
+# be read and the container crash-loops, which leaves Grafana empty.
+- name: Sync observability files
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../../{{ item }}/"
+    dest: "{{ project_root }}/{{ item }}/"
+    delete: false
+    rsync_opts:
+      - "--chmod=D755,F644"
+      - "--exclude=.env"
+      - "--exclude=*.key"
+      - "--exclude=*.pem"
+  loop:
+    - otel
+    - grafana
+    - traefik
+    - json-exporter
+  delegate_to: localhost

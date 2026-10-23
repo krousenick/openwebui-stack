@@ -23,6 +23,7 @@ graph TB
         OpenWebUI[Open WebUI<br/>chatbot.domain.com]:::app
         LiteLLM[LiteLLM<br/>litellm.domain.com]:::app
         Grafana[Grafana<br/>grafana.domain.com]:::app
+        Chatterbox[Chatterbox TTS<br/>voice.domain.com]:::app
     end
 
     subgraph Auth [Identity Provider]
@@ -48,6 +49,7 @@ graph TB
     Traefik -->|HTTP| LiteLLM
     Traefik -->|HTTP| Grafana
     Traefik -->|HTTP| Keycloak
+    Traefik -->|HTTP| Chatterbox
     
     %% SSO flow
     OpenWebUI -->|OIDC| Keycloak
@@ -59,6 +61,7 @@ graph TB
     OpenWebUI -->|SQL| PostgreSQL
 
     OpenWebUI -->|API| LiteLLM
+    OpenWebUI -->|TTS| Chatterbox
     
     LiteLLM -->|RESP| Valkey
     LiteLLM -->|SQL| PostgreSQL
@@ -87,6 +90,8 @@ graph TB
 - **PostgreSQL**: Shared database for Open WebUI, LiteLLM, and Keycloak
 - **OpenTelemetry**: Full observability with distributed tracing
 - **Security**: Network isolation, secure headers, rate limiting, admin IP restriction
+- **Chatterbox TTS**: OpenAI-compatible voice cloning for Open WebUI, with a voice library UI at `voice.<domain>`. This is the only TTS engine in the stack.
+- **Voice assistant**: LiteLLM alias `voice-assistant` routes to `gemini-3.5-flash-lite`. `./scripts/create-voice-key.sh` creates a virtual key that can call only that model and stores it in `.env` as `LITELLM_VOICE_API_KEY`.
 
 ##  Quick Start
 
@@ -123,12 +128,13 @@ In `docker-compose.yml` change `ENABLE_SIGNUP` to `true` if you want to register
    - Grafana: https://grafana.localhost
    - LiteLLM: https://litellm.localhost
    - Keycloak (admin): https://auth.localhost/admin
+   - Chatterbox voice library: https://voice.localhost
 
 ### Local Domain Resolution
 
 Add these entries to your `/etc/hosts`:
 ```
-127.0.0.1 localhost chatbot.localhost grafana.localhost litellm.localhost auth.localhost traefik.localhost
+127.0.0.1 localhost chatbot.localhost grafana.localhost litellm.localhost auth.localhost traefik.localhost voice.localhost
 ```
 
 ## Keycloak SSO
@@ -153,33 +159,37 @@ Access the Keycloak Admin Console to manage users and applications:
 
 ### First-Time Setup
 
-1. After starting the stack, run the configuration script:
+1. After starting the stack, run the Ansible playbook from `ansible/`:
    ```bash
-   ./scripts/configure-keycloak-clients.sh
+   ansible-galaxy collection install -r requirements.yaml
+   ansible-playbook playbooks/site.yml
    ```
-   This automatically:
-   - Creates OIDC clients for Grafana, Open WebUI, and LiteLLM
-   - Creates `admin` and `user` groups
-   - Adds a groups protocol mapper to include group membership in tokens
-   - Saves client secrets to `.env`
+   This creates the `platform` realm, the `keycloak-provisioner` service account, confidential clients for Grafana, Open WebUI, and LiteLLM, client roles that match `docker-compose.yml`, group-to-role mappings, and one login user per group. It also syncs `otel/`, `grafana/`, `traefik/`, and `json-exporter/` to `project_root` as mode `0644`. The collector image runs as uid `10001`, and a `0640` root-owned `otel/config.yaml` makes it crash-loop. Client secrets are the `*_OIDC_CLIENT_SECRET` values the role writes to `.env`. Set `KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_PROVISIONER_CLIENT_SECRET`, those three secrets, and the `KEYCLOAK_USER_*_PASSWORD` values before the run, or store the user passwords as `vault_keycloak_user_*_password` in Ansible Vault.
 
-2. Alternatively, the setup script can do this automatically when prompted.
+2. `./scripts/configure-keycloak-clients.py` can create the same three clients. It does not create these users. Only Grafana, Open WebUI, and LiteLLM use Keycloak. Traefik, Keycloak admin, and the exporters keep their own credentials.
 
 ### Role Mapping
 
 Users are assigned roles based on their Keycloak group membership:
 
-| Keycloak Group | Open WebUI Role | LiteLLM Role |
-|----------------|-----------------|--------------|
-| `admin` | Admin | `proxy_admin` |
-| `user` | User | `internal_user` |
+| Keycloak group | Grafana role | Open WebUI role | LiteLLM role | Ansible user |
+|----------------|---------------|-----------------|--------------|--------------|
+| `platform-admins` | GrafanaAdmin | `openwebui_admin` | `proxy_admin` | `platform-admin` |
+| `admin` | Admin | `openwebui_admin` | `proxy_admin` | |
+| `editor` | Editor | | | `grafana-editor` |
+| `viewer` | Viewer | | | `grafana-viewer` |
+| `user` | | `openwebui_user` | `internal_user` | `openwebui-user`, `litellm-user` |
+| `litellm-admin` | | | `proxy_admin` | |
+| `litellm-viewer` | | | `proxy_admin_viewer` | `litellm-viewer` |
 
-**Creating Users:**
+Role names are the values in the `roles` token claim. Grafana maps them with the JMESPath in `docker-compose.yml`. Open WebUI treats `openwebui_admin` as admin. LiteLLM reads `proxy_admin`, `proxy_admin_viewer`, `internal_user`, and `internal_user_viewer` from `GENERIC_USER_ROLE_ATTRIBUTE`.
+
+**Creating more users:**
 
 1. Go to Keycloak Admin Console → Users → Add user
 2. Fill in user details and save
 3. Go to Credentials tab → Set password (uncheck "Temporary")
-4. Go to Groups tab → Join the appropriate group (`admin` or `user`)
+4. Go to Groups tab → Join one of the groups in the table
 
 ### SSO Login Flow
 
@@ -265,6 +275,9 @@ Key environment variables in `.env`:
 | `GF_OIDC_CLIENT_SECRET` | Grafana OIDC client secret | Auto-configured |
 | `SSL_CERT_TYPE` | SSL certificate type | `selfsigned`, `existing`, `traefik` |
 | `LLAMA_CPP_EDGE_NODES` | Comma-separated llama.cpp nodes (`host:port`) | `node1.local:8080` |
+| `chatterbox_device` | Ansible value that selects the Chatterbox profile | `gpu` or `cpu` |
+| `CHATTERBOX_TTS_VOICE` | Voice library name Open WebUI speaks with | empty uses the built-in sample |
+| `LITELLM_VOICE_API_KEY` | Virtual key for the voice assistant. Created by `./scripts/create-voice-key.sh`. Allows only the model behind `voice-assistant`. | empty until the script runs |
 
 ### Services Overview
 
@@ -272,10 +285,17 @@ Key environment variables in `.env`:
 
 - **Traefik**: Reverse proxy with automatic HTTPS, routing, and load balancing
 - **Open WebUI**: Web UI for interacting with LLMs (chatbot.domain.com)
-- **LiteLLM**: Unified gateway for multiple LLM providers (litellm.domain.com). `litellm/config.yaml` ships Gemini 3.8 Flash, Gemini 3.5 Flash-Lite, and Gemini 3.1 Pro, plus Bedrock MiniMax M2.5, Qwen3 Next 80B A3B, Qwen3 Coder Next, and Kimi K3 (`us.moonshotai.kimi-k3`). Bedrock calls use `AWS_REGION` (default `us-east-1`). Model IDs were checked on 2026-10-21.
+- **LiteLLM**: Unified gateway for multiple LLM providers (litellm.domain.com). `litellm/config.yaml` ships Gemini 3.8 Flash, Gemini 3.5 Flash-Lite, and Gemini 3.1 Pro, plus Bedrock MiniMax M2.5, Qwen3 Next 80B A3B, Qwen3 Coder Next, and Kimi K3 (`us.moonshotai.kimi-k3`). Bedrock calls use `AWS_REGION` (default `us-east-1`). Model IDs were checked on 2026-10-21. The `voice-assistant` alias routes to `gemini-3.5-flash-lite` for short spoken replies. LiteLLM rewrites the alias to that model before checking the key, so the voice key allows `gemini-3.5-flash-lite`. Point Home Assistant at `https://litellm.<domain>/v1`, model `voice-assistant`, with `LITELLM_VOICE_API_KEY`. Do not use the master key. Create it after LiteLLM is healthy:
+
+  ```bash
+  ./scripts/create-voice-key.sh
+  ```
+
+  The script reads `LITELLM_MASTER_KEY` from `.env`, calls `POST /key/generate` on `http://127.0.0.1:4000`, and writes `LITELLM_VOICE_API_KEY` back to `.env`. It does not print the key. A second run does nothing when that key still works. If the alias already exists but `.env` has no working key, delete the LiteLLM key and rerun; the secret cannot be recovered. `LITELLM_URL` overrides the proxy address. Port 4000 is not published, so from the host use `LITELLM_URL=https://litellm.<domain>` (the script uses `curl`, which follows the stack's TLS). From another container on the backend network, use `http://litellm:4000`. Chatterbox remains the only speech engine: Open WebUI uses `http://chatterbox-tts:4123/v1`, and a speaker client uses `https://voice.<domain>/v1`. Chatterbox does not do speech-to-text.
 - **Keycloak**: Identity provider for SSO (auth.domain.com)
 - **PostgreSQL**: Shared relational database for Open WebUI, LiteLLM, and Keycloak
 - **Valkey**: High-performance Redis alternative for caching and sessions
+- **Chatterbox TTS**: Local OpenAI-compatible text-to-speech with voice cloning (`voice.domain.com`). Open WebUI calls `http://chatterbox-tts:4123/v1` on the backend network. The UI and public API share `https://voice.${DOMAIN}`: Traefik sends `/v1`, `/audio`, `/voices`, and the API docs to the API, and everything else to the React frontend. Set Ansible `chatterbox_device` to `gpu` or `cpu` (default `gpu` in `ansible/group_vars/all/vars.yml`). The playbook adds profile `chatterbox-gpu` or `chatterbox-cpu`. GPU builds [travisvn/chatterbox-tts-api](https://github.com/travisvn/chatterbox-tts-api) `main` with `docker/Dockerfile.uv.gpu` (CUDA 12.4) and needs the NVIDIA Container Toolkit. CPU uses `docker/Dockerfile.cpu` and does not request a GPU. Do not enable both profiles. Without Ansible: `docker compose --profile chatterbox-gpu up -d` or `--profile chatterbox-cpu`. The first speech request downloads the model into `chatterbox_models` and can take several minutes. Traefik's default `responseHeaderTimeout` is 10s, which closes a speech request before the model returns audio. The `chatterbox@file` serversTransport sets that timeout to `0s` (no limit) for the Chatterbox API service only. Upstream notes that non-CUDA multilingual builds are currently unreliable; use the `stable` branch if the CPU image fails. Upload a voice at the UI, then set **TTS Voice** in Open WebUI to that library name (`CHATTERBOX_TTS_VOICE`). OpenAI voice names with no alias (`alloy`, and the rest) use the built-in sample. `AUDIO_TTS_*` are persisted after the first boot, so later changes belong in **Admin → Settings → Audio**. Integration notes: [Chatterbox TTS](https://docs.openwebui.com/features/chat-conversations/audio/text-to-speech/chatterbox-tts-api-integration). Env names checked against [Open WebUI v0.12.1](https://docs.openwebui.com/reference/env-configuration/).
 
 #### Storage & Search
 
@@ -352,7 +372,7 @@ For production environments:
    - Implement log retention policies in Loki
 
 8. **Keycloak SSO**
-   - Run `./scripts/configure-keycloak-clients.sh` to set up OIDC clients
+   - Run `ansible-playbook playbooks/site.yml` from `ansible/` to set up OIDC clients and users
    - Configure admin IP restriction via `KEYCLOAK_ADMIN_IP_RANGE`
    - Monitor authentication via the Keycloak dashboard in Grafana
    - Set up automated backups with the backup profile
@@ -383,7 +403,7 @@ Use this for GGUF models served by `llama-server` (typically a Fedora host with 
 
 4. **Register the model in LiteLLM**
 
-   Add the snippet the script printed to `model_list` in [litellm/config.yaml](litellm/config.yaml). llama.cpp's OpenAI-compatible API is `http://<host>:<port>/v1`:
+   Add the snippet the script printed to `model_list` in [litellm/config.yaml](litellm/config.yaml). llama.cpp's OpenAI-compatible API is `http://<host>:<port>/v1`. LiteLLM's OpenAI provider rejects the call without `api_key`, so the snippet uses `local`. `max_input_tokens` and `max_tokens` match the server context. Start `llama-server` with `-c` at least that large:
 
    ```yaml
    - model_name: llama-3.1-8b-instruct
@@ -492,12 +512,35 @@ The stack includes several pre-configured dashboards:
    - Temperature monitoring
    - Power consumption
 
+8. **tokenization-dashboard.json** - Token counts and throughput
+   - LiteLLM input, output, cached, and reasoning tokens
+   - Output tokens per second and seconds per output token
+   - Time to first token and request latency
+   - llama.cpp prompt and predicted tokens per second
+   - Requires `callbacks: ["otel", "prometheus"]` and a scrape of `litellm:4000/metrics` with the master key. llama.cpp panels need `--metrics`.
+
 8. **keycloak-dashboard.json** - Keycloak authentication monitoring
    - Login attempts (success/failed)
    - Active sessions
    - Database connection pool
    - JVM memory usage
    - Failed login alerts
+
+9. **chatterbox-dashboard.json** - Chatterbox TTS (`monitoring` profile)
+   - Health, model load, live progress, success rate, and errors
+   - CPU and CUDA memory, alerts, voices, languages, and generation settings
+   - Chatterbox container CPU, memory, and error logs
+
+10. **stack-logs-dashboard.json** - Logs from every service (`monitoring` profile)
+    - Service, stream, and text filters
+    - Log volume and error lines
+
+11. **container-resources-dashboard.json** - Per-container Docker stats (`monitoring` profile)
+    - CPU, memory, network, disk, restarts, PIDs, and uptime
+
+Traefik v3.7 only emits `traefik_entrypoint_*` request metrics when the entrypoint sets `observability.metrics: true`. The `web` and `websecure` entrypoints do. The internal `traefik` entrypoint stays off. Node dashboards default to job `openwebui-stack/node` and instance `node-exporter:9100`. Open WebUI and LiteLLM panels use their OTel HTTP series (`http_server_requests_total`, `http_server_duration_milliseconds_bucket`). Keycloak panels use `http_server_requests_seconds_*`; this build does not emit `keycloak_user_events_total`.
+
+Chatterbox does not expose Prometheus. With `--profile monitoring`, `json-exporter` reads `/status`, `/status/statistics`, `/memory`, `/memory/config`, `/health`, `/voices`, `/languages`, and `/config`, and the collector scrapes those series. CUDA series are missing on the CPU profile. The same profile tails every container log into Loki. `docker-log-discovery` links each Docker json-file log to `/var/log/containers/<container>.log`, and the collector reads that directory. Loki label `container_name` is the container name. The collector also reads `/var/run/docker.sock` for Docker engine stats. It runs as root and joins group `DOCKER_GID` (default `999`). Set `DOCKER_GID` from `getent group docker` when that group id differs. App logs that already use OTLP (Open WebUI, LiteLLM, Keycloak) are still exported as well.
 
 ### Available Metrics
 

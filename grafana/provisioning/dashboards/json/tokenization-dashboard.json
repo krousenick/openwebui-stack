@@ -1,0 +1,136 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "sum(litellm_tokens_metric_total)", "refId": "A" }],
+      "title": "Total tokens",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "tokens/s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "sum(rate(litellm_output_tokens_metric_total[5m]))", "refId": "A" }],
+      "title": "Output tokens/sec",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le) (rate(litellm_llm_api_time_to_first_token_metric_bucket[15m])))", "refId": "A" }],
+      "title": "Time to first token p95",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "sum(rate(litellm_llm_api_latency_metric_sum[15m])) / sum(rate(litellm_output_tokens_metric_total[15m]))", "refId": "A" }],
+      "title": "Seconds per output token",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "tokens/s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "id": 5,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "sum by (requested_model) (rate(litellm_input_tokens_metric_total[15m]))", "legendFormat": "{{requested_model}} input", "refId": "A" },
+        { "expr": "sum by (requested_model) (rate(litellm_output_tokens_metric_total[15m]))", "legendFormat": "{{requested_model}} output", "refId": "B" }
+      ],
+      "title": "Tokens per second",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "id": 6,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "sum by (requested_model) (litellm_input_tokens_metric_total)", "legendFormat": "{{requested_model}} input", "refId": "A" },
+        { "expr": "sum by (requested_model) (litellm_output_tokens_metric_total)", "legendFormat": "{{requested_model}} output", "refId": "B" },
+        { "expr": "sum by (requested_model) (litellm_tokens_metric_total)", "legendFormat": "{{requested_model}} total", "refId": "C" },
+        { "expr": "sum by (requested_model) (litellm_input_cached_tokens_metric_total)", "legendFormat": "{{requested_model}} cached", "refId": "D" }
+      ],
+      "title": "Token totals",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "id": 7,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (requested_model, le) (rate(litellm_llm_api_time_to_first_token_metric_bucket[15m])))", "legendFormat": "{{requested_model}} p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum by (requested_model, le) (rate(litellm_llm_api_time_to_first_token_metric_bucket[15m])))", "legendFormat": "{{requested_model}} p95", "refId": "B" }
+      ],
+      "title": "Time to first token",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "id": 8,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum by (requested_model, le) (rate(litellm_request_total_latency_metric_bucket[15m])))", "legendFormat": "{{requested_model}} total p95", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum by (requested_model, le) (rate(litellm_llm_api_latency_metric_bucket[15m])))", "legendFormat": "{{requested_model}} provider p95", "refId": "B" }
+      ],
+      "title": "Request latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "tokens/s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "id": 9,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(llamacpp:tokens_predicted_total[15m])", "legendFormat": "predicted", "refId": "A" },
+        { "expr": "rate(llamacpp:prompt_tokens_total[15m])", "legendFormat": "prompt", "refId": "B" }
+      ],
+      "title": "llama.cpp tokens per second",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "id": 10,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "llamacpp:tokens_predicted_total", "legendFormat": "predicted", "refId": "A" },
+        { "expr": "llamacpp:prompt_tokens_total", "legendFormat": "prompt", "refId": "B" },
+        { "expr": "llamacpp:requests_processing", "legendFormat": "processing", "refId": "C" },
+        { "expr": "llamacpp:requests_deferred", "legendFormat": "deferred", "refId": "D" }
+      ],
+      "title": "llama.cpp counters",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["tokens", "litellm", "llama.cpp"],
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "Tokenization",
+  "uid": "tokenization",
+  "version": 1
+}

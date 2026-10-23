@@ -1,0 +1,96 @@
+---
+- name: Require Brave Search settings
+  ansible.builtin.assert:
+    that:
+      - brave_search_api_key | length > 0
+      - gemini_api_key | length > 0
+      - litellm_master_key | length > 0
+      - openwebui_db_user | length > 0
+      - openwebui_db_password | length > 0
+      - openwebui_db_name | length > 0
+    fail_msg: "Brave Search requires its API key, Gemini key, LiteLLM key, and Open WebUI database settings."
+
+- name: Record current Brave configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+      - -tAc
+      - >-
+        SELECT json_build_object(
+          'enabled', (SELECT value::text FROM config WHERE key = 'web.search.enable'),
+          'engine', (SELECT value::text FROM config WHERE key = 'web.search.engine'),
+          'connection', (SELECT value::text FROM config WHERE key = 'tool_server.connections')
+        )
+  register: brave_current_config
+  changed_when: false
+  no_log: true
+
+- name: Build the desired Brave configuration
+  ansible.builtin.set_fact:
+    brave_desired_connection:
+      - type: mcp
+        url: http://litellm:4000/mcp/brave_search
+        path: ""
+        auth_type: bearer
+        key: "{{ litellm_master_key }}"
+        config:
+          enable: true
+        info:
+          id: brave_search
+          name: Brave Search
+          description: Web search through the LiteLLM Brave MCP server
+  no_log: true
+
+- name: Update persisted Brave Search configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+  args:
+    stdin: |
+      UPDATE config SET value = 'true'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'web.search.enable';
+      UPDATE config SET value = '"brave"'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'web.search.engine';
+      UPDATE config SET value = to_jsonb('{{ brave_search_api_key | replace("'", "''") }}'::text), updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'web.search.brave_search_api_key';
+      UPDATE config SET value = '{{ brave_desired_connection | to_json | replace("'", "''") }}'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'tool_server.connections';
+  register: brave_config_update
+  changed_when: >-
+    (brave_current_config.stdout | trim | from_json).enabled != 'true'
+    or (brave_current_config.stdout | trim | from_json).engine != '"brave"'
+    or (brave_current_config.stdout | trim | from_json).connection != (brave_desired_connection | to_json)
+  no_log: true
+
+- name: Recreate Brave-enabled services
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - brave-search-mcp
+      - litellm
+      - open-webui
+    state: present
+    recreate: always
+    wait: true
+    wait_timeout: 180
+  when: brave_config_update is changed

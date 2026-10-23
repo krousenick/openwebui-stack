@@ -2,6 +2,28 @@
 - name: Deploy Open WebUI AI platform
   hosts: openwebui
   become: true
+  pre_tasks:
+    - name: Expose Keycloak settings to delegated tasks
+      ansible.builtin.set_fact:
+        keycloak_admin_user: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_USER') | default('admin', true) }}"
+        keycloak_admin_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_PASSWORD') }}"
+        keycloak_realm: platform
+        keycloak_url: "https://auth.{{ lookup('ansible.builtin.env', 'DOMAIN') | default('localhost', true) }}"
+        keycloak_validate_certs: "{{ (lookup('ansible.builtin.env', 'KEYCLOAK_VALIDATE_CERTS') | default('true', true)) | bool }}"
+        keycloak_provisioner_client_id: keycloak-provisioner
+        keycloak_realm_management_client_id: master-realm
+        keycloak_provisioner_client_secret: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_PROVISIONER_CLIENT_SECRET') }}"
+        grafana_oidc_client_secret: "{{ lookup('ansible.builtin.env', 'GF_OIDC_CLIENT_SECRET') }}"
+        openwebui_oidc_client_secret: "{{ lookup('ansible.builtin.env', 'OPENWEBUI_OIDC_CLIENT_SECRET') }}"
+        litellm_oidc_client_secret: "{{ lookup('ansible.builtin.env', 'LITELLM_OIDC_CLIENT_SECRET') }}"
+        keycloak_user_platform_admin_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_USER_PLATFORM_ADMIN_PASSWORD') }}"
+        keycloak_user_grafana_editor_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_USER_GRAFANA_EDITOR_PASSWORD') }}"
+        keycloak_user_grafana_viewer_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_USER_GRAFANA_VIEWER_PASSWORD') }}"
+        keycloak_user_openwebui_user_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_USER_OPENWEBUI_USER_PASSWORD') }}"
+        keycloak_user_litellm_user_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_USER_LITELLM_USER_PASSWORD') }}"
+        keycloak_user_litellm_viewer_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_USER_LITELLM_VIEWER_PASSWORD') }}"
+      tags:
+        - keycloak
   roles:
     - role: ../roles/openwebui_stack
 

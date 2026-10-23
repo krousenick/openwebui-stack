@@ -1,4 +1,14 @@
 ---
+- name: Require Chatterbox device gpu or cpu
+  ansible.builtin.assert:
+    that:
+      - chatterbox_device in ["gpu", "cpu"]
+    fail_msg: "chatterbox_device must be 'gpu' or 'cpu'."
+
+- name: Enable the Chatterbox profile for chatterbox_device
+  ansible.builtin.set_fact:
+    docker_compose_profiles: "{{ (docker_compose_profiles | default([])) + ['chatterbox-' + chatterbox_device] }}"
+
 - name: Pull Docker images
   community.docker.docker_compose_v2:
     project_src: "{{ project_root }}"
