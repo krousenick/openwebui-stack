@@ -291,8 +291,11 @@ for NODE in "${EDGE_NODES[@]}"; do
     litellm_params:
       model: openai/${MODEL}
       api_base: http://${NODE_HOST}:${NODE_PORT}/v1
+      api_key: local
     model_info:
       description: "${MODEL} on ${NODE_HOST}"
+      max_input_tokens: ${CTX_SIZE}
+      max_tokens: ${CTX_SIZE}
 
 MODELEOF
 done

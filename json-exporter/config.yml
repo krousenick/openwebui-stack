@@ -1,0 +1,324 @@
+# Scrapes Chatterbox JSON endpoints. Paths match travisvn/chatterbox-tts-api
+# response models on main:
+# https://github.com/travisvn/chatterbox-tts-api/blob/main/app/models/responses.py
+# Optional fields use allow_missing_key so an idle or CPU-only process still scrapes.
+
+modules:
+  chatterbox:
+    metrics:
+      - name: chatterbox_up
+        path: '{.status}'
+        help: Chatterbox status endpoint responded
+        allow_missing_key: true
+        labels:
+          tts_status: '{.status}'
+          voice_source: '{.voice_source}'
+        values:
+          status: 1
+
+      - name: chatterbox_processing
+        path: '{.is_processing}'
+        help: 1 while a TTS request is in progress
+        value: '{.is_processing}'
+
+      - name: chatterbox_requests_total
+        path: '{.total_requests}'
+        help: Total TTS requests observed by the status API
+        value: '{.total_requests}'
+
+      - name: chatterbox_request_duration_seconds
+        path: '{.duration_seconds}'
+        help: Duration of the current request in seconds
+        allow_missing_key: true
+        value: '{.duration_seconds}'
+
+      - name: chatterbox_request_text_length
+        path: '{.text_length}'
+        help: Character length of the current request
+        allow_missing_key: true
+        value: '{.text_length}'
+
+      - name: chatterbox_progress_percentage
+        path: '{.progress.progress_percentage}'
+        help: Current chunk progress percentage
+        allow_missing_key: true
+        value: '{.progress.progress_percentage}'
+
+      - name: chatterbox_progress_current_chunk
+        path: '{.progress.current_chunk}'
+        help: Chunk currently being synthesized
+        allow_missing_key: true
+        value: '{.progress.current_chunk}'
+
+      - name: chatterbox_progress_total_chunks
+        path: '{.progress.total_chunks}'
+        help: Chunks in the current request
+        allow_missing_key: true
+        value: '{.progress.total_chunks}'
+
+      - name: chatterbox_parameter_exaggeration
+        path: '{.parameters.exaggeration}'
+        help: Exaggeration for the current request
+        allow_missing_key: true
+        value: '{.parameters.exaggeration}'
+
+      - name: chatterbox_parameter_cfg_weight
+        path: '{.parameters.cfg_weight}'
+        help: CFG weight for the current request
+        allow_missing_key: true
+        value: '{.parameters.cfg_weight}'
+
+      - name: chatterbox_parameter_temperature
+        path: '{.parameters.temperature}'
+        help: Temperature for the current request
+        allow_missing_key: true
+        value: '{.parameters.temperature}'
+
+  chatterbox_statistics:
+    metrics:
+      - name: chatterbox_statistics_total_requests
+        path: '{.total_requests}'
+        help: Lifetime TTS requests
+        value: '{.total_requests}'
+      - name: chatterbox_statistics_completed_requests
+        path: '{.completed_requests}'
+        help: Completed TTS requests
+        value: '{.completed_requests}'
+      - name: chatterbox_statistics_error_requests
+        path: '{.error_requests}'
+        help: Failed TTS requests
+        value: '{.error_requests}'
+      - name: chatterbox_statistics_success_rate
+        path: '{.success_rate}'
+        help: Success rate percentage
+        value: '{.success_rate}'
+      - name: chatterbox_statistics_average_duration_seconds
+        path: '{.average_duration_seconds}'
+        help: Average request duration in seconds
+        value: '{.average_duration_seconds}'
+      - name: chatterbox_statistics_average_text_length
+        path: '{.average_text_length}'
+        help: Average request text length
+        value: '{.average_text_length}'
+      - name: chatterbox_statistics_processing
+        path: '{.is_processing}'
+        help: 1 while a request is processing
+        value: '{.is_processing}'
+      - name: chatterbox_statistics_cpu_memory_mb
+        path: '{.current_memory.cpu_memory_mb}'
+        help: Process RSS reported with statistics
+        allow_missing_key: true
+        value: '{.current_memory.cpu_memory_mb}'
+      - name: chatterbox_statistics_gpu_memory_allocated_mb
+        path: '{.current_memory.gpu_memory_allocated_mb}'
+        help: CUDA memory allocated, reported with statistics
+        allow_missing_key: true
+        value: '{.current_memory.gpu_memory_allocated_mb}'
+
+  chatterbox_memory:
+    metrics:
+      - name: chatterbox_cpu_memory_mb
+        path: '{.memory_info.cpu_memory_mb}'
+        help: Process RSS in megabytes
+        value: '{.memory_info.cpu_memory_mb}'
+      - name: chatterbox_cpu_memory_percent
+        path: '{.memory_info.cpu_memory_percent}'
+        help: Process memory percent
+        value: '{.memory_info.cpu_memory_percent}'
+      - name: chatterbox_gpu_memory_allocated_mb
+        path: '{.memory_info.gpu_memory_allocated_mb}'
+        help: CUDA memory allocated in megabytes
+        allow_missing_key: true
+        value: '{.memory_info.gpu_memory_allocated_mb}'
+      - name: chatterbox_gpu_memory_reserved_mb
+        path: '{.memory_info.gpu_memory_reserved_mb}'
+        help: CUDA memory reserved in megabytes
+        allow_missing_key: true
+        value: '{.memory_info.gpu_memory_reserved_mb}'
+      - name: chatterbox_gpu_memory_max_allocated_mb
+        path: '{.memory_info.gpu_memory_max_allocated_mb}'
+        help: Peak CUDA memory allocated in megabytes
+        allow_missing_key: true
+        value: '{.memory_info.gpu_memory_max_allocated_mb}'
+      - name: chatterbox_request_counter
+        path: '{.request_counter}'
+        help: Requests counted by the memory endpoint since reset
+        value: '{.request_counter}'
+      - name: chatterbox_memory_alerts
+        path: '{.alerts.alert_count}'
+        help: Number of active memory alerts
+        value: '{.alerts.alert_count}'
+      - name: chatterbox_memory_alert_active
+        path: '{.alerts.has_alerts}'
+        help: 1 when any memory alert is active
+        value: '{.alerts.has_alerts}'
+
+  chatterbox_memory_config:
+    metrics:
+      - name: chatterbox_memory_cleanup_interval
+        path: '{.config.memory_cleanup_interval}'
+        help: Cleanup memory every N requests
+        value: '{.config.memory_cleanup_interval}'
+      - name: chatterbox_cuda_cache_clear_interval
+        path: '{.config.cuda_cache_clear_interval}'
+        help: Clear CUDA cache every N requests
+        value: '{.config.cuda_cache_clear_interval}'
+      - name: chatterbox_memory_monitoring_enabled
+        path: '{.config.enable_memory_monitoring}'
+        help: 1 when memory monitoring is enabled
+        value: '{.config.enable_memory_monitoring}'
+      - name: chatterbox_max_chunk_length
+        path: '{.config.max_chunk_length}'
+        help: Configured maximum chunk length
+        value: '{.config.max_chunk_length}'
+      - name: chatterbox_max_total_length
+        path: '{.config.max_total_length}'
+        help: Configured maximum total text length
+        value: '{.config.max_total_length}'
+      - name: chatterbox_alert_threshold_cpu_memory_percent
+        path: '{.alert_thresholds.cpu_memory_percent}'
+        help: CPU memory alert threshold percent
+        value: '{.alert_thresholds.cpu_memory_percent}'
+      - name: chatterbox_alert_threshold_gpu_memory_mb
+        path: '{.alert_thresholds.gpu_memory_mb}'
+        help: GPU memory alert threshold in megabytes
+        value: '{.alert_thresholds.gpu_memory_mb}'
+      - name: chatterbox_cuda_available
+        path: '{.device_info.cuda_available}'
+        help: 1 when CUDA is available to the API process
+        value: '{.device_info.cuda_available}'
+      - name: chatterbox_cuda_device_count
+        path: '{.device_info.cuda_device_count}'
+        help: CUDA devices visible to the API process
+        value: '{.device_info.cuda_device_count}'
+
+  chatterbox_voices:
+    metrics:
+      - name: chatterbox_voice_count
+        path: '{.count}'
+        help: Voices stored in the library
+        value: '{.count}'
+      - name: chatterbox_voice
+        type: object
+        path: '{.voices[*]}'
+        help: One series per library voice
+        labels:
+          voice: '{.name}'
+          language: '{.language}'
+        values:
+          present: 1
+          file_size_bytes: '{.file_size}'
+
+  chatterbox_languages:
+    metrics:
+      - name: chatterbox_language_count
+        path: '{.count}'
+        help: Languages advertised by the API
+        value: '{.count}'
+      - name: chatterbox_language
+        type: object
+        path: '{.languages[*]}'
+        help: One series per supported language
+        labels:
+          code: '{.code}'
+          language: '{.name}'
+        values:
+          present: 1
+
+  chatterbox_health:
+    metrics:
+      - name: chatterbox_health_up
+        path: '{.status}'
+        help: Chatterbox health endpoint responded
+        labels:
+          health_status: '{.status}'
+          device: '{.device}'
+          initialization_state: '{.initialization_state}'
+        values:
+          status: 1
+      - name: chatterbox_model_loaded
+        path: '{.model_loaded}'
+        help: 1 when the TTS model is loaded
+        value: '{.model_loaded}'
+      - name: chatterbox_health_cpu_memory_mb
+        path: '{.memory_info.cpu_memory_mb}'
+        help: Process RSS from the health endpoint
+        value: '{.memory_info.cpu_memory_mb}'
+      - name: chatterbox_health_cpu_memory_percent
+        path: '{.memory_info.cpu_memory_percent}'
+        help: Process memory percent from the health endpoint
+        value: '{.memory_info.cpu_memory_percent}'
+      - name: chatterbox_health_gpu_memory_allocated_mb
+        path: '{.memory_info.gpu_memory_allocated_mb}'
+        help: CUDA memory allocated from the health endpoint
+        allow_missing_key: true
+        value: '{.memory_info.gpu_memory_allocated_mb}'
+      - name: chatterbox_health_gpu_memory_reserved_mb
+        path: '{.memory_info.gpu_memory_reserved_mb}'
+        help: CUDA memory reserved from the health endpoint
+        allow_missing_key: true
+        value: '{.memory_info.gpu_memory_reserved_mb}'
+      - name: chatterbox_health_gpu_memory_max_allocated_mb
+        path: '{.memory_info.gpu_memory_max_allocated_mb}'
+        help: Peak CUDA memory from the health endpoint
+        allow_missing_key: true
+        value: '{.memory_info.gpu_memory_max_allocated_mb}'
+      - name: chatterbox_default_exaggeration
+        path: '{.config.default_exaggeration}'
+        help: Configured default exaggeration
+        value: '{.config.default_exaggeration}'
+      - name: chatterbox_default_cfg_weight
+        path: '{.config.default_cfg_weight}'
+        help: Configured default CFG weight
+        value: '{.config.default_cfg_weight}'
+      - name: chatterbox_default_temperature
+        path: '{.config.default_temperature}'
+        help: Configured default temperature
+        value: '{.config.default_temperature}'
+      - name: chatterbox_health_max_chunk_length
+        path: '{.config.max_chunk_length}'
+        help: Configured maximum chunk length
+        value: '{.config.max_chunk_length}'
+      - name: chatterbox_health_max_total_length
+        path: '{.config.max_total_length}'
+        help: Configured maximum total text length
+        value: '{.config.max_total_length}'
+
+  chatterbox_config:
+    metrics:
+      - name: chatterbox_server_port
+        path: '{.server.port}'
+        help: API listen port
+        value: '{.server.port}'
+      - name: chatterbox_config_exaggeration
+        path: '{.defaults.exaggeration}'
+        help: Default exaggeration
+        value: '{.defaults.exaggeration}'
+      - name: chatterbox_config_cfg_weight
+        path: '{.defaults.cfg_weight}'
+        help: Default CFG weight
+        value: '{.defaults.cfg_weight}'
+      - name: chatterbox_config_temperature
+        path: '{.defaults.temperature}'
+        help: Default temperature
+        value: '{.defaults.temperature}'
+      - name: chatterbox_config_max_chunk_length
+        path: '{.defaults.max_chunk_length}'
+        help: Default maximum chunk length
+        value: '{.defaults.max_chunk_length}'
+      - name: chatterbox_config_max_total_length
+        path: '{.defaults.max_total_length}'
+        help: Default maximum total text length
+        value: '{.defaults.max_total_length}'
+      - name: chatterbox_config_memory_cleanup_interval
+        path: '{.memory_management.memory_cleanup_interval}'
+        help: Memory cleanup interval in requests
+        value: '{.memory_management.memory_cleanup_interval}'
+      - name: chatterbox_config_cuda_cache_clear_interval
+        path: '{.memory_management.cuda_cache_clear_interval}'
+        help: CUDA cache clear interval in requests
+        value: '{.memory_management.cuda_cache_clear_interval}'
+      - name: chatterbox_config_memory_monitoring_enabled
+        path: '{.memory_management.enable_memory_monitoring}'
+        help: 1 when memory monitoring is enabled
+        value: '{.memory_management.enable_memory_monitoring}'

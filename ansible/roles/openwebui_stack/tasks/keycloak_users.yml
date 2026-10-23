@@ -1,0 +1,30 @@
+---
+- name: Create Keycloak application users
+  middleware_automation.keycloak.keycloak_user:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: "{{ keycloak_realm }}"
+    auth_client_id: "{{ keycloak_provisioner_client_id }}"
+    auth_client_secret: "{{ keycloak_provisioner_client_secret }}"
+
+    realm: "{{ keycloak_realm }}"
+    username: "{{ item.username }}"
+    email: "{{ item.email }}"
+    first_name: "{{ item.first_name }}"
+    last_name: "{{ item.last_name }}"
+    enabled: true
+    email_verified: true
+
+    credentials:
+      - type: password
+        value: "{{ item.password }}"
+        temporary: false
+
+    groups: "{{ item.group_memberships }}"
+
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  loop: "{{ keycloak_users }}"
+  loop_control:
+    label: "{{ item.username }}"
+  no_log: true
+  delegate_to: localhost

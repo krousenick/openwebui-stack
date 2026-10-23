@@ -285,13 +285,13 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum(rate(keycloak_user_events_total{event=\"LOGIN\"}[5m]))",
+          "expr": "sum(rate(http_server_requests_seconds_count{service_name=\"keycloak\", uri=~\"/realms/.*/protocol/.*\"}[5m]))",
           "legendFormat": "Successful Logins",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum(rate(keycloak_user_events_total{event=\"LOGIN_ERROR\"}[5m]))",
+          "expr": "sum(rate(http_server_requests_seconds_count{service_name=\"keycloak\", outcome=\"SERVER_ERROR\"}[5m]))",
           "legendFormat": "Failed Logins",
           "refId": "B"
         }
@@ -338,7 +338,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum(rate(keycloak_user_events_total{event=\"LOGIN_ERROR\"}[5m])) / (sum(rate(keycloak_user_events_total{event=\"LOGIN\"}[5m])) + sum(rate(keycloak_user_events_total{event=\"LOGIN_ERROR\"}[5m])))",
+          "expr": "sum(rate(http_server_requests_seconds_count{service_name=\"keycloak\", outcome=\"SERVER_ERROR\"}[5m])) / (sum(rate(http_server_requests_seconds_count{service_name=\"keycloak\", uri=~\"/realms/.*/protocol/.*\"}[5m])) + sum(rate(http_server_requests_seconds_count{service_name=\"keycloak\", outcome=\"SERVER_ERROR\"}[5m])))",
           "legendFormat": "Login Failure Ratio",
           "refId": "A"
         }
@@ -655,19 +655,19 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum(rate(keycloak_credentials_password_hashing_validations_total{outcome=\"valid\"}[5m]))",
+          "expr": "sum(rate(http_server_requests_seconds_count{service_name=\"keycloak\", status=~\"2..\"}[5m]))",
           "legendFormat": "valid",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum(rate(keycloak_credentials_password_hashing_validations_total{outcome=\"invalid\"}[5m]))",
+          "expr": "sum(rate(http_server_requests_seconds_count{service_name=\"keycloak\", status=~\"4..\"}[5m]))",
           "legendFormat": "invalid",
           "refId": "B"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum(rate(keycloak_credentials_password_hashing_validations_total{outcome=\"error\"}[5m]))",
+          "expr": "sum(rate(http_server_requests_seconds_count{service_name=\"keycloak\", status=~\"5..\"}[5m]))",
           "legendFormat": "error",
           "refId": "C"
         }

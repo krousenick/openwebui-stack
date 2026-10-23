@@ -1,2 +1,9 @@
 ---
 litellm_generic_client_state: "{{ lookup('ansible.builtin.env', 'GENERIC_CLIENT_STATE') | default('change-me-before-production', true) }}"
+
+keycloak_user_platform_admin_password: "{{ vault_keycloak_user_platform_admin_password | default(lookup('ansible.builtin.env', 'KEYCLOAK_USER_PLATFORM_ADMIN_PASSWORD'), true) }}"
+keycloak_user_grafana_editor_password: "{{ vault_keycloak_user_grafana_editor_password | default(lookup('ansible.builtin.env', 'KEYCLOAK_USER_GRAFANA_EDITOR_PASSWORD'), true) }}"
+keycloak_user_grafana_viewer_password: "{{ vault_keycloak_user_grafana_viewer_password | default(lookup('ansible.builtin.env', 'KEYCLOAK_USER_GRAFANA_VIEWER_PASSWORD'), true) }}"
+keycloak_user_openwebui_user_password: "{{ vault_keycloak_user_openwebui_user_password | default(lookup('ansible.builtin.env', 'KEYCLOAK_USER_OPENWEBUI_USER_PASSWORD'), true) }}"
+keycloak_user_litellm_user_password: "{{ vault_keycloak_user_litellm_user_password | default(lookup('ansible.builtin.env', 'KEYCLOAK_USER_LITELLM_USER_PASSWORD'), true) }}"
+keycloak_user_litellm_viewer_password: "{{ vault_keycloak_user_litellm_viewer_password | default(lookup('ansible.builtin.env', 'KEYCLOAK_USER_LITELLM_VIEWER_PASSWORD'), true) }}"

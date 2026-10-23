@@ -14,13 +14,14 @@ timezone: UTC
 # Keycloak
 # ---------------------------------------------------------------------------
 
-keycloak_realm: platform
+keycloak_realm: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_REALM') | default('platform', true) }}"
 keycloak_url: "https://auth.{{ domain }}"
 
-keycloak_validate_certs: true
+keycloak_validate_certs: "{{ (lookup('ansible.builtin.env', 'KEYCLOAK_VALIDATE_CERTS') | default('true', true)) | bool }}"
 
 # The provisioning credentials should come from Ansible Vault.
 keycloak_provisioner_client_id: keycloak-provisioner
+keycloak_realm_management_client_id: master-realm
 keycloak_admin_user: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_USER') | default('admin', true) }}"
 keycloak_admin_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_PASSWORD') }}"
 keycloak_provisioner_client_secret: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_PROVISIONER_CLIENT_SECRET') }}"
@@ -41,6 +42,13 @@ ssl_key_file: "wildcard.key"
 docker_compose_profiles:
   - monitoring
 
+# gpu selects the CUDA Chatterbox image. cpu selects the CPU-only image.
+chatterbox_device: gpu
+
+# Optional. Supply BRAVE_SEARCH_API_KEY through the environment or vault.
+brave_search_enabled: false
+brave_search_api_key: "{{ lookup('ansible.builtin.env', 'BRAVE_SEARCH_API_KEY') }}"
+
 docker_compose_pull: true
 
 # ---------------------------------------------------------------------------
@@ -50,18 +58,19 @@ docker_compose_pull: true
 keycloak_apps:
 
   - client_id: grafana
-    client_secret: "{{ lookup('ansible.builtin.env', 'GF_OIDC_CLIENT_SECRET') }}"
+    client_secret: "{{ grafana_oidc_client_secret }}"
     name: Grafana
     base_url: "https://grafana.{{ domain }}"
     redirect_uris:
       - "https://grafana.{{ domain }}/login/generic_oauth"
     roles:
-      - grafana_admin
-      - grafana_editor
-      - grafana_viewer
+      - grafanaadmin
+      - admin
+      - editor
+      - viewer
 
   - client_id: open-webui
-    client_secret: "{{ lookup('ansible.builtin.env', 'OPENWEBUI_OIDC_CLIENT_SECRET') }}"
+    client_secret: "{{ openwebui_oidc_client_secret }}"
     name: Open WebUI
     base_url: "https://chatbot.{{ domain }}"
     redirect_uris:
@@ -72,46 +81,107 @@ keycloak_apps:
     include_groups: true
 
   - client_id: litellm
-    client_secret: "{{ lookup('ansible.builtin.env', 'LITELLM_OIDC_CLIENT_SECRET') }}"
+    client_secret: "{{ litellm_oidc_client_secret }}"
     name: LiteLLM
     base_url: "https://litellm.{{ domain }}"
     redirect_uris:
       - "https://litellm.{{ domain }}/sso/callback"
-      - "https://litellm.{{ domain }}/callback"
     roles:
-      - litellm_admin
-      - litellm_user
-      - litellm_viewer
+      - proxy_admin
+      - proxy_admin_viewer
+      - internal_user
+      - internal_user_viewer
+    include_groups: true
 
 # ---------------------------------------------------------------------------
 # Keycloak groups
+# Role names are the values docker-compose.yml reads from the roles claim.
 # ---------------------------------------------------------------------------
 
 keycloak_group_role_mappings:
   - group: platform-admins
     client_id: grafana
-    role: grafana_admin
+    role: grafanaadmin
   - group: platform-admins
     client_id: open-webui
     role: openwebui_admin
   - group: platform-admins
     client_id: litellm
-    role: litellm_admin
-  - group: grafana-editors
+    role: proxy_admin
+  - group: admin
     client_id: grafana
-    role: grafana_editor
-  - group: grafana-viewers
+    role: admin
+  - group: admin
+    client_id: open-webui
+    role: openwebui_admin
+  - group: admin
+    client_id: litellm
+    role: proxy_admin
+  - group: editor
     client_id: grafana
-    role: grafana_viewer
-  - group: openwebui-users
+    role: editor
+  - group: viewer
+    client_id: grafana
+    role: viewer
+  - group: user
     client_id: open-webui
     role: openwebui_user
-  - group: litellm-admins
+  - group: user
     client_id: litellm
-    role: litellm_admin
-  - group: litellm-users
+    role: internal_user
+  - group: litellm-admin
     client_id: litellm
-    role: litellm_user
-  - group: litellm-viewers
+    role: proxy_admin
+  - group: litellm-viewer
     client_id: litellm
-    role: litellm_viewer
+    role: proxy_admin_viewer
+
+# ---------------------------------------------------------------------------
+# Keycloak users
+# Passwords come from Ansible Vault (group_vars/all/vault.yml).
+# group_memberships is a list of {name: <group>} for keycloak_user.
+# ---------------------------------------------------------------------------
+
+keycloak_users:
+  - username: platform-admin
+    email: "platform-admin@{{ domain }}"
+    first_name: Platform
+    last_name: Admin
+    password: "{{ keycloak_user_platform_admin_password }}"
+    group_memberships:
+      - name: platform-admins
+  - username: grafana-editor
+    email: "grafana-editor@{{ domain }}"
+    first_name: Grafana
+    last_name: Editor
+    password: "{{ keycloak_user_grafana_editor_password }}"
+    group_memberships:
+      - name: editor
+  - username: grafana-viewer
+    email: "grafana-viewer@{{ domain }}"
+    first_name: Grafana
+    last_name: Viewer
+    password: "{{ keycloak_user_grafana_viewer_password }}"
+    group_memberships:
+      - name: viewer
+  - username: openwebui-user
+    email: "openwebui-user@{{ domain }}"
+    first_name: OpenWebUI
+    last_name: User
+    password: "{{ keycloak_user_openwebui_user_password }}"
+    group_memberships:
+      - name: user
+  - username: litellm-user
+    email: "litellm-user@{{ domain }}"
+    first_name: LiteLLM
+    last_name: User
+    password: "{{ keycloak_user_litellm_user_password }}"
+    group_memberships:
+      - name: user
+  - username: litellm-viewer
+    email: "litellm-viewer@{{ domain }}"
+    first_name: LiteLLM
+    last_name: Viewer
+    password: "{{ keycloak_user_litellm_viewer_password }}"
+    group_memberships:
+      - name: litellm-viewer

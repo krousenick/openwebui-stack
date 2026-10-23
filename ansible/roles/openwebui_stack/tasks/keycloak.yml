@@ -8,21 +8,33 @@
       - 200
       - 302
   register: keycloak_ready
-  until: keycloak_ready.status in [200, 302]
-  retries: 60
+  until: keycloak_ready.status | default(0) in [200, 302]
+  retries: 12
   delay: 5
 
 - name: Bootstrap Keycloak realm and provisioner
-  ansible.builtin.include_tasks:
+  ansible.builtin.import_tasks:
     file: keycloak_bootstrap.yml
+
+- name: Load Keycloak application lists
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../group_vars/all/vars.yml"
 
 - name: Configure Keycloak applications
   ansible.builtin.include_tasks:
     file: keycloak_app.yml
+  vars:
+    app: "{{ application }}"
   loop: "{{ keycloak_apps }}"
   loop_control:
-    loop_var: app
+    loop_var: application
+    label: "{{ application.client_id }}"
 
 - name: Configure Keycloak groups
-  ansible.builtin.include_tasks:
+  ansible.builtin.import_tasks:
     file: keycloak_groups.yml
+
+- name: Create Keycloak application users
+  ansible.builtin.import_tasks:
+    file: keycloak_users.yml
+  when: keycloak_users | length > 0

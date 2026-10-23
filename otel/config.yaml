@@ -24,6 +24,28 @@ receivers:
               labels:
                 job: "nvidia-gpu"
 
+        # LiteLLM token counts, spend, and request latency.
+        # /metrics requires the proxy master key.
+        - job_name: "litellm"
+          scrape_interval: 15s
+          authorization:
+            type: Bearer
+            credentials: "${LITELLM_MASTER_KEY}"
+          static_configs:
+            - targets: ["litellm:4000"]
+              labels:
+                job: "litellm"
+          metrics_path: "/metrics"
+
+        # llama.cpp prompt and generation throughput.
+        - job_name: "llama-cpp"
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["llama-cpp-test:8080"]
+              labels:
+                job: "llama-cpp"
+          metrics_path: "/metrics"
+
         # Traefik metrics
         - job_name: "traefik"
           scrape_interval: 15s
@@ -57,6 +79,141 @@ receivers:
               labels:
                 job: "keycloak"
           metrics_path: "/metrics"
+
+        # Chatterbox TTS JSON status, memory, health, voices, and languages.
+        # The API has no /metrics endpoint. json-exporter maps those JSON
+        # documents. GPU series are absent on the CPU profile.
+        - job_name: "chatterbox"
+          scrape_interval: 15s
+          metrics_path: /probe
+          static_configs:
+            - targets:
+                - http://chatterbox-tts:4123/status?include_memory=true&include_stats=true
+              labels:
+                module: chatterbox
+            - targets:
+                - http://chatterbox-tts:4123/status/statistics?include_memory=true
+              labels:
+                module: chatterbox_statistics
+            - targets:
+                - http://chatterbox-tts:4123/memory
+              labels:
+                module: chatterbox_memory
+            - targets:
+                - http://chatterbox-tts:4123/memory/config
+              labels:
+                module: chatterbox_memory_config
+            - targets:
+                - http://chatterbox-tts:4123/voices
+              labels:
+                module: chatterbox_voices
+            - targets:
+                - http://chatterbox-tts:4123/languages
+              labels:
+                module: chatterbox_languages
+            - targets:
+                - http://chatterbox-tts:4123/health
+              labels:
+                module: chatterbox_health
+            - targets:
+                - http://chatterbox-tts:4123/config
+              labels:
+                module: chatterbox_config
+          relabel_configs:
+            - source_labels: [__address__]
+              target_label: __param_target
+            - source_labels: [module]
+              target_label: __param_module
+            - source_labels: [__param_target]
+              target_label: instance
+            - target_label: __address__
+              replacement: json-exporter:7979
+
+  # Docker engine resource metrics for every running container.
+  # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/dockerstatsreceiver
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    collection_interval: 15s
+    timeout: 10s
+    metrics:
+      container.cpu.utilization:
+        enabled: true
+      container.cpu.usage.total:
+        enabled: true
+      container.cpu.usage.system:
+        enabled: true
+      container.cpu.limit:
+        enabled: true
+      container.cpu.throttling_data.throttled_periods:
+        enabled: true
+      container.cpu.throttling_data.throttled_time:
+        enabled: true
+      container.memory.percent:
+        enabled: true
+      container.memory.usage.total:
+        enabled: true
+      container.memory.usage.limit:
+        enabled: true
+      container.memory.usage.max:
+        enabled: true
+      container.memory.rss:
+        enabled: true
+      container.memory.fails:
+        enabled: true
+      container.network.io.usage.rx_bytes:
+        enabled: true
+      container.network.io.usage.tx_bytes:
+        enabled: true
+      container.network.io.usage.rx_packets:
+        enabled: true
+      container.network.io.usage.tx_packets:
+        enabled: true
+      container.network.io.usage.rx_errors:
+        enabled: true
+      container.network.io.usage.tx_errors:
+        enabled: true
+      container.network.io.usage.rx_dropped:
+        enabled: true
+      container.network.io.usage.tx_dropped:
+        enabled: true
+      container.blockio.io_service_bytes_recursive:
+        enabled: true
+      container.pids.count:
+        enabled: true
+      container.pids.limit:
+        enabled: true
+      container.restarts:
+        enabled: true
+      container.uptime:
+        enabled: true
+      container.state.status:
+        enabled: true
+      container.state.health.status:
+        enabled: true
+
+  # Docker json-file logs for every container.
+  # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/filelogreceiver
+  filelog/containers:
+    include:
+      - /var/log/containers/*.log
+    include_file_name: true
+    include_file_path: false
+    start_at: end
+    poll_interval: 1s
+    max_log_size: 1MiB
+    operators:
+      - type: container
+        format: docker
+        add_metadata_from_filepath: false
+      - type: regex_parser
+        parse_from: attributes["log.file.name"]
+        regex: '^(?P<container_name>.+)\.log$'
+      - type: move
+        from: attributes["log.iostream"]
+        to: attributes.stream
+      - type: move
+        from: attributes.container_name
+        to: resource.container.name
 
   # OTLP receiver for traces and metrics from applications
   otlp:
@@ -104,7 +261,7 @@ service:
   pipelines:
     # Metrics pipeline
     metrics:
-      receivers: [prometheus, otlp]
+      receivers: [prometheus, docker_stats, otlp]
       processors: [memory_limiter, batch, resource]
       exporters: [otlphttp]
 
@@ -114,9 +271,9 @@ service:
       processors: [memory_limiter, batch, resource]
       exporters: [otlphttp]
 
-    # Logs pipeline
+    # Logs pipeline. filelog covers every container json-file log.
     logs:
-      receivers: [otlp]
+      receivers: [filelog/containers, otlp]
       processors: [memory_limiter, batch, resource]
       exporters: [otlphttp]
 
