@@ -1,5 +1,5 @@
 ---
-- name: Create {{ app.client_id }} client
+- name: Create application client
   middleware_automation.keycloak.keycloak_client:
     auth_keycloak_url: "{{ keycloak_url }}"
     auth_realm: "{{ keycloak_realm }}"
@@ -22,6 +22,7 @@
 
     full_scope_allowed: false
     consent_required: false
+    secret: "{{ app.client_secret }}"
 
     root_url: "{{ app.base_url }}"
     base_url: "{{ app.base_url }}"
@@ -77,7 +78,6 @@
           'name': 'groups',
           'protocol': 'openid-connect',
           'protocolMapper': 'oidc-group-membership-mapper',
-          'consentRequired': false,
           'config': {
             'full.path': 'false',
             'claim.name': 'groups',
@@ -91,7 +91,6 @@
           'name': 'application-roles',
           'protocol': 'openid-connect',
           'protocolMapper': 'oidc-usermodel-client-role-mapper',
-          'consentRequired': false,
           'config': {
             'client.id': app.client_id,
             'user.attribute': '',
@@ -104,8 +103,6 @@
           }
         }
       ] }}
-
-    protocol_mappers_behavior: exact
 
     state: present
     validate_certs: "{{ keycloak_validate_certs }}"
@@ -128,7 +125,7 @@
     validate_certs: "{{ keycloak_validate_certs }}"
   delegate_to: localhost
 
-- name: Make dedicated scope a default client scope
+- name: Attach dedicated client scope
   middleware_automation.keycloak.keycloak_client_scope_type:
     auth_keycloak_url: "{{ keycloak_url }}"
     auth_realm: "{{ keycloak_realm }}"
@@ -136,8 +133,9 @@
     auth_client_secret: "{{ keycloak_provisioner_client_secret }}"
 
     realm: "{{ keycloak_realm }}"
+    client_id: "{{ app.client_id }}"
 
-    default_clientscopes:
+    default_client_scopes:
       - basic
       - email
       - profile
@@ -145,6 +143,5 @@
       - web-origins
       - "{{ app.client_id }}-dedicated"
 
-    state: present
     validate_certs: "{{ keycloak_validate_certs }}"
   delegate_to: localhost

@@ -18,12 +18,11 @@ general_settings:
   # Background health checks
   background_health_checks: false # Disables periodic background pings
 
-  # User header mappings - maps headers from Open WebUI to LiteLLM roles
+  # Open WebUI sends the logged-in user when ENABLE_FORWARD_USER_INFO_HEADERS=true.
+  # The username matches the LiteLLM user_id created by SSO, so Usage attributes spend to that user.
   user_header_mappings:
-    - header_name: X-OpenWebUI-User-Id
+    - header_name: X-OpenWebUI-User-Name
       litellm_user_role: internal_user
-    - header_name: X-OpenWebUI-User-Email
-      litellm_user_role: customer
 
   # OIDC group to team mapping
   enable_jwt_auth: true
@@ -41,13 +40,27 @@ litellm_settings:
   # Enable streaming
   set_verbose: false
 
-  # Cache settings
+  # Exact-response cache in Valkey. This is not provider prompt caching.
+  # https://docs.litellm.ai/docs/proxy/caching
   cache: true
   cache_params:
-    type: "redis"
+    type: redis
+    host: os.environ/REDIS_HOST
+    port: os.environ/REDIS_PORT
+    password: os.environ/REDIS_PASSWORD
 
-  # OpenTelemetry callbacks for traces, logs, metrics
-  callbacks: ["otel"]
+  # Claude prompt caching. Adds a checkpoint on the system prompt and the
+  # latest turn for anthropic/ and cache-capable bedrock/ models.
+  # Gemini 2.5+ already caches repeated prefixes implicitly. Do not add
+  # cache_control_injection_points to those models: it switches them to
+  # paid explicit context caching.
+  # https://docs.litellm.ai/docs/tutorials/prompt_caching
+  enable_anthropic_prompt_caching: true
+
+  # OpenTelemetry callbacks for traces and logs. prometheus exposes
+  # token counts and latency on /metrics.
+  # https://docs.litellm.ai/docs/proxy/prometheus
+  callbacks: ["otel", "prometheus"]
 
   # Request timeout
   request_timeout: 6000
@@ -65,6 +78,10 @@ litellm_settings:
 router_settings:
   routing_strategy: simple-shuffle # Prevents latency-based routing checks
   enable_pre_call_checks: false # Disables checking model health before every call
+  # Spoken replies. LiteLLM rewrites this to the target before the key allowlist
+  # check, so a voice key allows gemini-3.5-flash-lite, not the alias name.
+  model_group_alias:
+    voice-assistant: gemini-3.5-flash-lite
 
 # =============================================================================
 # Model Providers Configuration
@@ -85,6 +102,8 @@ model_list:
     litellm_params:
       model: gemini/gemini-3.8-flash
       api_key: os.environ/GEMINI_API_KEY
+      web_search_options:
+        search_context_size: medium
     model_info:
       description: "Gemini 3.8 Flash - current fast model"
 
@@ -92,6 +111,8 @@ model_list:
     litellm_params:
       model: gemini/gemini-3.5-flash-lite
       api_key: os.environ/GEMINI_API_KEY
+      web_search_options:
+        search_context_size: low
     model_info:
       description: "Gemini 3.5 Flash-Lite - current lightweight model"
 
@@ -99,8 +120,19 @@ model_list:
     litellm_params:
       model: gemini/gemini-3.1-pro-preview
       api_key: os.environ/GEMINI_API_KEY
+      web_search_options:
+        search_context_size: medium
     model_info:
       description: "Gemini 3.1 Pro preview - current reasoning model"
+
+  - model_name: gemini-4-argon
+    litellm_params:
+      model: gemini/gemini-4-argon
+      api_key: os.environ/GEMINI_API_KEY
+      web_search_options:
+        search_context_size: medium
+    model_info:
+      description: "Gemini 4 Argon - current Gemini model"
 
   # AWS Bedrock OSS models. IDs are bedrock-runtime model IDs.
   # Kimi K3 has no in-region ID; us-east-1 uses the US geo profile.
@@ -147,11 +179,15 @@ model_list:
   #   litellm_params:
   #     model: openai/llama-3.1-8b-instruct
   #     api_base: http://edge-node-hostname:8080/v1
+  #     api_key: local
+  #   model_info:
+  #     max_input_tokens: 32768
+  #     max_tokens: 32768
 
 # MCP Servers Configuration
 mcp_servers:
   brave_search:
     url: "http://brave-search-mcp:8080/mcp"
     transport: "http"
-    auth_type: "bearer_token"
-    auth_token: os.environ/BRAVE_SEARCH_API_KEY
+    auth_type: "none"
+    allow_all_keys: true

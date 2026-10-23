@@ -67,7 +67,7 @@
                 "uid": "P9BF009DBF82CE1A9"
               },
               "editorMode": "builder",
-              "expr": "{job=\"system-logs\", host=\"node1\"} |= ``",
+              "expr": "{service_name=~\".+\"} |= ``",
               "queryType": "range",
               "refId": "A"
             }
@@ -104,7 +104,7 @@
                 "uid": "P9BF009DBF82CE1A9"
               },
               "editorMode": "builder",
-              "expr": "{job=\"system-logs\", host=\"node2\"} |= ``",
+              "expr": "{service_name=~\".+\"} |= ``",
               "queryType": "range",
               "refId": "A"
             }
@@ -155,7 +155,7 @@
                 "uid": "P9BF009DBF82CE1A9"
               },
               "editorMode": "builder",
-              "expr": "{host=\"node1\", job=\"docker-logs\"} |= ``",
+              "expr": "{service_name=~\".+\"} |~ \"(?i)error|exception|fatal\"",
               "queryType": "range",
               "refId": "A"
             }
@@ -192,7 +192,7 @@
                 "uid": "P9BF009DBF82CE1A9"
               },
               "editorMode": "builder",
-              "expr": "{host=\"node2\", job=\"docker-logs\"} |= ``",
+              "expr": "{service_name=~\".+\"} |~ \"(?i)warn\"",
               "queryType": "range",
               "refId": "A"
             }

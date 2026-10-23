@@ -15,6 +15,8 @@ ping:
 entryPoints:
   web:
     address: ":80"
+    observability:
+      metrics: true
     http:
       redirections:
         entryPoint:
@@ -24,11 +26,15 @@ entryPoints:
 
   websecure:
     address: ":443"
+    observability:
+      metrics: true
     http:
       tls: {}
 
   traefik:
     address: ":8080"
+    observability:
+      metrics: false
 
 # Providers
 providers:
@@ -71,3 +77,8 @@ metrics:
     addRoutersLabels: true
     addServicesLabels: true
     entryPoint: traefik
+    buckets:
+      - 0.1
+      - 0.3
+      - 1.2
+      - 5.0
