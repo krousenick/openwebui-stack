@@ -1,0 +1,31 @@
+---
+# Test rig inventory for the vllm_compute role.
+#
+# Targets a disposable OrbStack Fedora VM ("vllm-test") that stands in for a
+# real GPU compute node. The VM has no NVIDIA hardware; GPU-dependent pieces
+# are stubbed (see stub-setup.yml). Both node entries point at the same VM:
+# the role's per-host logic (Ray head/worker role resolution, endpoint
+# collection, unit deployment) is exercised on real inventory hosts, while
+# the Ray cluster itself forms inside the single VM.
+#
+# Ansible connects from the "fedora" OrbStack VM (the controller), which has
+# root SSH to the test VM. See run.sh.
+all:
+  children:
+    openwebui:
+      hosts:
+        photon:
+          ansible_connection: local
+          ansible_host: 10.0.105.14
+          ansible_user: root
+    vllm_compute:
+      hosts:
+        vllm-node-01:
+          ansible_host: 192.168.139.155
+          ansible_user: root
+          vllm_ray_head: true
+        vllm-node-02:
+          ansible_host: 192.168.139.155
+          ansible_user: root
+      vars:
+        vllm_test_rig: true
