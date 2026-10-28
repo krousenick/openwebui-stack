@@ -252,6 +252,32 @@ docker volume ls | grep keycloak_backups
 
 Configure retention with `BACKUP_RETENTION_DAYS` in `.env` (default: 7 days)
 
+### opencode (terminal AI coding agent)
+
+The `opencode` Ansible role installs [OpenCode](https://opencode.ai) on the target host and points it at the stack's LiteLLM proxy, with per-user token accounting. It is a no-op until you list users:
+
+```yaml
+# ansible/group_vars/all/vars.yml
+opencode_users:
+  - username: nicholas.krouse
+```
+
+Then run the playbook (tag `opencode` limits the run to this role):
+
+```bash
+cd ansible && ansible-playbook playbooks/site.yml --tags opencode
+```
+
+Per user, the role:
+
+1. **Installs opencode** globally via npm (`opencode-ai`), installing Node.js first with the OS-appropriate package manager (tdnf on the Photon host, apt/dnf elsewhere) when `opencode_manage_nodejs: true`.
+2. **Mints a per-user LiteLLM virtual key** through `POST /key/generate` with the master key from the deployed `.env`, tagging it `key_alias: opencode-<user>`, `user_id: <user>`, and `metadata: {user: <user>, source: opencode}`. Every request opencode makes is then attributed to that user in the LiteLLM UI and `LiteLLM_SpendLogs`, so `/key/list` spend and the Grafana LiteLLM views resolve usage per person without extra headers. The key lands in `~/.config/opencode/litellm.key` (mode 0600); later runs reuse a still-valid key instead of minting again. Optional `models:` on the user entry restricts the key's allowed models, `opencode_key_max_budget`/`opencode_key_rpm` set spend/rate caps.
+3. **Auto-discovers models**: the config declares a `litellm` custom provider (`@ai-sdk/openai-compatible`, baseURL `https://litellm.<domain>/v1`) and the [`opencode-plugin-litellm`](https://github.com/yuseferi/opencode-litellm) plugin. The plugin pulls the whole `model_list` from `/v1/models` + `/v1/model/info` (limits, pricing, capability flags) at startup, caches it under `~/.cache/opencode-litellm`, and refreshes in the background — no model list to maintain when you add models to `litellm/config.yaml`. New sessions pick new models up within the 5-minute refresh window. Requires OpenCode ≥ 1.18.29.
+4. **Logs local usage**: `~/.config/opencode/plugins/litellm-usage.js` appends one JSON line per assistant message to `~/.local/share/opencode/usage.jsonl` — `user`, `modelID`, input/output/reasoning/cached tokens, cost, and duration — which cross-references the LiteLLM-side spend for the same turns.
+5. **Handles the Origin CA**: the proxy serves a Cloudflare Origin certificate, and Node's fetch does not use the system trust store. The role detects the OS: on the Photon host it points `NODE_EXTRA_CA_CERTS` at `certs/origin_ca_rsa_root.pem` in the deployed tree; elsewhere it distributes the public CA root from `ansible/roles/opencode/files/` into `~/.config/opencode/`. Set `opencode_node_ca_cert: false` when the proxy has a publicly trusted cert.
+
+Defaults (`opencode_default_model: litellm/gemini-4-argon`, `small_model: litellm/gemini-3.5-flash-lite`) are set in `ansible/roles/opencode/defaults/main.yml`; any LiteLLM `model_name` works since discovery fills the picker. Run `opencode` and use `/models` to verify the full catalog.
+
 ## Configuration
 
 ### Environment Variables

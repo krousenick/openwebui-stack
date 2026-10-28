@@ -62,3 +62,5 @@ npm-debug.log*
 !grafana/provisioning/dashboards/json/.gitkeep
 .magie-coder/
 .playwright-mcp/
+# Cloudflare Origin CA root (public root CA, safe to commit; used by the opencode role)
+!ansible/roles/opencode/files/origin_ca_rsa_root.pem

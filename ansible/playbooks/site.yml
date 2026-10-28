@@ -30,4 +30,7 @@
     - role: ../roles/chatterbox
       tags:
         - chatterbox
+    - role: ../roles/opencode
+      tags:
+        - opencode
 

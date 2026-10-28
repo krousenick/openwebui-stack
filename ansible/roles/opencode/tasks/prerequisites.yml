@@ -1,0 +1,33 @@
+---
+# opencode is an npm package, so Node.js must exist first. Photon's
+# nodejs package ships npm; Debian/RedHat split it into a separate one.
+- name: Install Node.js on Photon OS
+  ansible.builtin.command:
+    cmd: tdnf install -y nodejs
+  register: opencode_nodejs_photon
+  changed_when: "'Nothing to do' not in opencode_nodejs_photon.stdout"
+  when: ansible_facts.distribution == "VMware Photon OS"
+
+- name: Install Node.js on Debian-family hosts
+  ansible.builtin.apt:
+    name:
+      - nodejs
+      - npm
+    state: present
+    update_cache: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install Node.js on RedHat-family hosts
+  ansible.builtin.dnf:
+    name:
+      - nodejs
+      - npm
+    state: present
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Check Node.js
+  ansible.builtin.command:
+    cmd: node --version
+  register: opencode_node_version
+  changed_when: false
+  failed_when: opencode_node_version.rc != 0
