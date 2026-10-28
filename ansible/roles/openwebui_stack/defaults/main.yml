@@ -12,7 +12,7 @@ docker_compose_pull: true
 docker_compose_profiles:
   - monitoring
 
-# gpu -> docker/Dockerfile.uv.gpu (CUDA). cpu -> docker/Dockerfile.cpu.
+# gpu -> Dockerfile (CUDA). cpu -> Dockerfile.cpu. Consumed by the chatterbox role.
 chatterbox_device: gpu
 
 # Brave Search is optional. Set the key in Ansible Vault or the deployment

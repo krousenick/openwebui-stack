@@ -27,4 +27,7 @@
         - keycloak
   roles:
     - role: ../roles/openwebui_stack
+    - role: ../roles/chatterbox
+      tags:
+        - chatterbox
 

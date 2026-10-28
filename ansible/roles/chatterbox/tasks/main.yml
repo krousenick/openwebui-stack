@@ -1,14 +1,135 @@
 ---
+- name: Require Chatterbox device gpu or cpu
+  ansible.builtin.assert:
+    that:
+      - chatterbox_device in ["gpu", "cpu"]
+    fail_msg: "chatterbox_device must be 'gpu' or 'cpu'."
+
+- name: Require chatterbox_port to be a valid TCP port
+  ansible.builtin.assert:
+    that:
+      - chatterbox_port | int >= 1
+      - chatterbox_port | int <= 65535
+    fail_msg: "chatterbox_port must be a TCP port."
+
+# The HTTPS-mirror patch below modifies the vendored Dockerfiles, which makes
+# the next git checkout fail with "local modifications". Restore the two
+# patched files before checking out; the patch task re-applies right after.
+# (config.yaml is handled by skip-worktree below.)
+- name: Restore patched Dockerfiles before checkout
+  ansible.builtin.command:
+    cmd: git checkout -- Dockerfile Dockerfile.cpu
+    chdir: "{{ project_root }}/chatterbox"
+  register: chatterbox_git_restore
+  changed_when: chatterbox_git_restore.stdout | length > 0
+  failed_when: false
+
 - name: Git checkout Chatterbox repo
   ansible.builtin.git:
-    repo: https://github.com/devnen/Chatterbox-TTS-Server.git
+    repo: "{{ chatterbox_repo }}"
     dest: "{{ project_root }}/chatterbox"
-    version: main
+    version: "{{ chatterbox_version }}"
 
-- name: Create required project directories
+# config.yaml lives inside the checkout (the compose bind-mount expects it
+# there, and the server writes its ui_state back into it). Mark it
+# skip-worktree so the runtime config never makes the git tree dirty and the
+# checkout above keeps working on later runs.
+- name: Mark config.yaml skip-worktree in the Chatterbox checkout
+  ansible.builtin.command:
+    cmd: git update-index --skip-worktree config.yaml
+    chdir: "{{ project_root }}/chatterbox"
+  register: chatterbox_skip_worktree
+  changed_when: "'already' not in chatterbox_skip_worktree.stderr"
+  failed_when: false
+
+# The network content filter blocks plain-HTTP Ubuntu mirrors (the block page
+# category is "Software Updates"). HTTPS mirrors are reachable. The base
+# images pin http:// in /etc/apt/sources.list, so prepend a sed rewrite to the
+# apt-get update line in each vendored Dockerfile before the image build.
+- name: Check whether the Dockerfiles still fetch apt over plain HTTP
+  ansible.builtin.command:
+    cmd: grep -q "RUN apt-get update" {{ project_root }}/chatterbox/{{ item }}
+  loop:
+    - Dockerfile
+    - Dockerfile.cpu
+  register: chatterbox_http_apt
+  changed_when: false
+  failed_when: false
+
+- name: Point apt at HTTPS mirrors in the Chatterbox Dockerfiles
+  ansible.builtin.replace:
+    path: "{{ project_root }}/chatterbox/{{ item.item }}"
+    regexp: 'RUN apt-get update'
+    replace: >-
+      RUN sed -i -e 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g'
+      -e 's|http://security.ubuntu.com|https://security.ubuntu.com|g'
+      /etc/apt/sources.list || true; apt-get update
+  loop: "{{ chatterbox_http_apt.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.rc == 0
+
+- name: Create chatterbox data directories
   ansible.builtin.file:
-    path: "{{ project_root }}/chatterbox"
+    path: "{{ project_root }}/chatterbox/{{ item }}"
     state: directory
     owner: root
     group: root
     mode: "0755"
+  loop:
+    - voices
+    - reference_audio
+    - outputs
+    - logs
+
+- name: Render chatterbox config.yaml
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ project_root }}/chatterbox/config.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable the Chatterbox compose profile
+  ansible.builtin.set_fact:
+    docker_compose_profiles: "{{ (docker_compose_profiles | default([])) + ['chatterbox-' + chatterbox_device] }}"
+
+- name: Build Chatterbox image
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - chatterbox-tts-server
+    build: always
+    state: present
+
+- name: Start Chatterbox container
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - chatterbox-tts-server
+    state: present
+    wait: true
+    wait_timeout: "{{ chatterbox_compose_wait_timeout }}"
+
+- name: Wait for the TTS API to answer
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ chatterbox_port }}/api/ui/initial-data"
+    return_content: true
+  register: chatterbox_initial_data
+  until: chatterbox_initial_data.status == 200
+  retries: "{{ chatterbox_api_wait_retries }}"
+  delay: 10
+
+- name: Fail when the TTS API never became ready
+  ansible.builtin.fail:
+    msg: >-
+      Chatterbox failed to answer /api/ui/initial-data after
+      {{ chatterbox_api_wait_retries }} retries. Inspect
+      `docker compose logs chatterbox-tts-server`.
+  when: chatterbox_initial_data is failed

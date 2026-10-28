@@ -136,10 +136,11 @@ services:
       ENABLE_CODE_EXECUTION: "false"
       ENABLE_CODE_INTERPRETER: "false"
 
-      # Chatterbox TTS (OpenAI-compatible). ConfigVars: persisted after first boot.
+      # Chatterbox TTS (OpenAI-compatible, devnen Chatterbox-TTS-Server).
+      # ConfigVars: persisted after first boot.
       # https://docs.openwebui.com/features/chat-conversations/audio/text-to-speech/chatterbox-tts-api-integration
       AUDIO_TTS_ENGINE: "openai"
-      AUDIO_TTS_OPENAI_API_BASE_URL: "http://chatterbox-tts:4123/v1"
+      AUDIO_TTS_OPENAI_API_BASE_URL: "http://chatterbox-tts-server:8004/v1"
       AUDIO_TTS_OPENAI_API_KEY: "none"
       AUDIO_TTS_MODEL: "${CHATTERBOX_TTS_MODEL:-tts-1}"
       AUDIO_TTS_VOICE: "${CHATTERBOX_TTS_VOICE:-}"
@@ -618,44 +619,44 @@ services:
 
   # ===========================================================================
   # Chatterbox TTS - OpenAI-compatible voice cloning
-  # https://github.com/travisvn/chatterbox-tts-api
-  # UI: https://voice.${DOMAIN}  API (internal): http://chatterbox-tts:4123/v1
-  # Enable one profile: chatterbox-gpu (Dockerfile.uv.gpu) or chatterbox-cpu
-  # (Dockerfile.cpu). Ansible sets this from chatterbox_device.
+  # https://github.com/devnen/Chatterbox-TTS-Server
+  # UI: https://voice.${DOMAIN}  API (internal): http://chatterbox-tts:8004/v1
+  # One service, two build variants. Ansible enables the profile for
+  # chatterbox_device (chatterbox-gpu -> Dockerfile, chatterbox-cpu ->
+  # Dockerfile.cpu) and builds from the git checkout at ./chatterbox.
   # ===========================================================================
   chatterbox-tts-server:
     build:
-      args:
-      # Can be nvidia or cpu; Default is Nvidia
-        - RUNTIME=nvidia
-      context: https://github.com/devnen/Chatterbox-TTS-Server.git#main
+      context: ./chatterbox
       dockerfile: Dockerfile
+      args:
+        # nvidia installs the CUDA torch stack; cpu keeps CPU-only torch.
+        - RUNTIME=${CHATTERBOX_RUNTIME:-nvidia}
     profiles:
       - chatterbox-gpu
-    image: ${CHATTERBOX_GPU_IMAGE:-openwebui-stack/chatterbox-tts:gpu}
+    image: ${CHATTERBOX_IMAGE:-openwebui-stack/chatterbox-tts:latest}
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox-tts
     restart: unless-stopped
     logging: *default-logging
+    ports:
+      # Host loopback only: the Ansible role probes the API; external access
+      # goes through the Traefik voice.<domain> router.
+      - "127.0.0.1:${CHATTERBOX_PORT:-8004}:8004"
     environment:
-      - HF_TOKEN="${HF_TOKEN}"
-      # Enable faster Hugging Face downloads inside the container
-      - HF_HUB_ENABLE_HF_TRANSFER=1
-      # Make NVIDIA GPUs visible and specify capabilities for PyTorch
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HF_HUB_ENABLE_HF_TRANSFER: "1"
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
-      # Mount local config file for persistence
+      # Mount local config file for persistence (rendered by the Ansible role)
       - ./chatterbox/config.yaml:/app/config.yaml
-      # Mount local directories for persistent app data
+      # Bind-mounted app data
       - ./chatterbox/voices:/app/voices
       - ./chatterbox/reference_audio:/app/reference_audio
       - ./chatterbox/outputs:/app/outputs
       - ./chatterbox/logs:/app/logs
-      # Named volume for Hugging Face model cache to persist across container rebuilds
+      # Named volume for the Hugging Face model cache (persists across rebuilds)
       - chatterbox_models:/app/hf_cache
-      # - chatterbox_models:/cache
-      # - chatterbox_voices:/voices
-      # - chatterbox_longtext:/data/long_text_jobs
     networks:
       frontend:
         aliases:
@@ -676,29 +677,65 @@ services:
               count: 1
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      # devnen exposes no /health; /api/ui/initial-data is the status probe.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/api/ui/initial-data', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 300s
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
-      - traefik.http.routers.chatterbox-api.rule=Host(`voice.${DOMAIN:-localhost}`) && (PathPrefix(`/v1`) || PathPrefix(`/audio`) || PathPrefix(`/voices`) || Path(`/health`) || Path(`/config`) || Path(`/models`) || Path(`/memory`) || PathPrefix(`/memory/`) || Path(`/languages`) || Path(`/status`) || PathPrefix(`/status/`) || Path(`/info`) || Path(`/docs`) || Path(`/redoc`) || Path(`/openapi.json`) || Path(`/ping`))
-      - traefik.http.routers.chatterbox-api.entrypoints=websecure
-      - traefik.http.routers.chatterbox-api.tls=true
-      - traefik.http.routers.chatterbox-api.priority=100
-      - traefik.http.routers.chatterbox-api.service=chatterbox-api
-      - traefik.http.services.chatterbox-api.loadbalancer.server.port=8004
-      - traefik.http.services.chatterbox-api.loadbalancer.server.scheme=http
-      - traefik.http.services.chatterbox-api.loadbalancer.serversTransport=chatterbox@file
-      - traefik.http.routers.chatterbox-api.middlewares=voice-auth@file,secure-headers@file
 
+  chatterbox-tts-server-cpu:
+    build:
+      context: ./chatterbox
+      dockerfile: Dockerfile.cpu
+    profiles:
+      - chatterbox-cpu
+    image: ${CHATTERBOX_CPU_IMAGE:-openwebui-stack/chatterbox-tts:cpu}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox-tts
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      # Host loopback only: the Ansible role probes the API; external access
+      # goes through the Traefik voice.<domain> router.
+      - "127.0.0.1:${CHATTERBOX_PORT:-8004}:8004"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HF_HUB_ENABLE_HF_TRANSFER: "1"
+    volumes:
+      - ./chatterbox/config.yaml:/app/config.yaml
+      - ./chatterbox/voices:/app/voices
+      - ./chatterbox/reference_audio:/app/reference_audio
+      - ./chatterbox/outputs:/app/outputs
+      - ./chatterbox/logs:/app/logs
+      - chatterbox_models:/app/hf_cache
+    networks:
+      frontend:
+        aliases:
+          - chatterbox-tts
+      backend:
+        aliases:
+          - chatterbox-tts
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+          cpus: "6.0"
+        reservations:
+          memory: 4G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/api/ui/initial-data', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
 
   # ===========================================================================
   # OAuth2 Proxy - Keycloak gate for voice.${DOMAIN}
   # Chatterbox has no SSO. Traefik ForwardAuth calls this before the UI or API.
-  # Open WebUI still calls http://chatterbox-tts:4123 on the backend network.
+  # Open WebUI still calls http://chatterbox-tts:8004 on the backend network.
   # https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/keycloak_oidc/
   # ===========================================================================
   oauth2-proxy:
@@ -726,23 +763,35 @@ services:
       OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
       OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
       OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY: "${OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY:-false}"
+      # Upstream mode: oauth2-proxy owns the browser OAuth flow and proxies
+      # authenticated traffic to Chatterbox itself. Traefik sends voice.<domain>
+      # straight here (no forwardAuth), avoiding the sign-in redirect loop.
+      OAUTH2_PROXY_UPSTREAMS: "http://chatterbox-tts:8004"
+      OAUTH2_PROXY_SCOPE: "openid email profile"
+      OAUTH2_PROXY_PASS_USER_HEADERS: "true"
+      OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER: "true"
+      OAUTH2_PROXY_WHITELIST_DOMAINS: "voice.${DOMAIN:-localhost}"
     networks:
       - frontend
+      - backend
     labels:
       - traefik.enable=true
       - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
-      - traefik.http.routers.voice-auth.rule=Host(`voice.${DOMAIN:-localhost}`) && PathPrefix(`/oauth2`)
-      - traefik.http.routers.voice-auth.entrypoints=websecure
-      - traefik.http.routers.voice-auth.tls=true
-      - traefik.http.routers.voice-auth.priority=200
-      - traefik.http.routers.voice-auth.service=oauth2-proxy
+      # Single catch-all router for voice.<domain>. oauth2-proxy (upstream mode)
+      # serves its own /oauth2/* endpoints and proxies everything else to
+      # Chatterbox after authentication.
+      - traefik.http.routers.voice.rule=Host(`voice.${DOMAIN:-localhost}`) && PathPrefix(`/`)
+      - traefik.http.routers.voice.entrypoints=websecure
+      - traefik.http.routers.voice.tls=true
+      - traefik.http.routers.voice.priority=100
+      - traefik.http.routers.voice.service=oauth2-proxy
+      - traefik.http.routers.voice.middlewares=secure-headers@file
       - traefik.http.services.oauth2-proxy.loadbalancer.server.port=4180
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4180/ping"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+      # Image ships no shell/wget, so no Docker healthcheck; Traefik probes
+      # /ping itself and only routes to healthy instances.
+      - traefik.http.services.oauth2-proxy.loadbalancer.healthcheck.path=/ping
+      - traefik.http.services.oauth2-proxy.loadbalancer.healthcheck.interval=10s
+      - traefik.http.services.oauth2-proxy.loadbalancer.healthcheck.timeout=3s
     deploy:
       resources:
         limits:
@@ -904,9 +953,5 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak_backups
   chatterbox_models:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox_models
-  chatterbox_voices:
-    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox_voices
-  chatterbox_longtext:
-    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox_longtext
   docker_log_links:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_docker_log_links
