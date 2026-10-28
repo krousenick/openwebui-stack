@@ -1,0 +1,28 @@
+{% if vllm_deployment_mode == 'ray' %}
+# Managed by Ansible (role: vllm_compute). One Ray cluster head serves the
+# model across {{ vllm_effective_pp }} pipeline stage(s); LiteLLM needs a
+# single endpoint.
+  - model_name: {{ vllm_served_model_name }}
+    litellm_params:
+      model: openai/{{ vllm_served_model_name }}
+      api_base: http://{{ vllm_ray_head_address }}:{{ vllm_port }}/v1
+      api_key: {{ 'os.environ/VLLM_API_KEY' if vllm_api_key | length > 0 else 'local' }}
+    model_info:
+      description: "{{ vllm_served_model_name }} - vLLM Ray cluster ({{ vllm_effective_tp }}xTP, {{ vllm_effective_pp }}xPP)"
+      max_input_tokens: {{ vllm_max_model_len }}
+      max_tokens: {{ vllm_max_model_len }}
+{% else %}
+# Managed by Ansible (role: vllm_compute). Standalone replicas; LiteLLM
+# load balances across these endpoints.
+{% for host in vllm_endpoints %}
+  - model_name: {{ vllm_served_model_name }}
+    litellm_params:
+      model: openai/{{ vllm_served_model_name }}
+      api_base: http://{{ host }}:{{ vllm_port }}/v1
+      api_key: {{ 'os.environ/VLLM_API_KEY' if vllm_api_key | length > 0 else 'local' }}
+    model_info:
+      description: "{{ vllm_served_model_name }} - vLLM on {{ host }}"
+      max_input_tokens: {{ vllm_max_model_len }}
+      max_tokens: {{ vllm_max_model_len }}
+{% endfor %}
+{% endif %}

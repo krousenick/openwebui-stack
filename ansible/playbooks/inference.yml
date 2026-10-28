@@ -1,0 +1,6 @@
+---
+- name: Deploy vLLM distributed inference compute nodes
+  hosts: vllm_compute
+  become: true
+  roles:
+    - role: ../roles/vllm_compute

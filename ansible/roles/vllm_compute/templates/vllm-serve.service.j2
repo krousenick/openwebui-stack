@@ -1,0 +1,33 @@
+[Unit]
+Description=vLLM OpenAI-compatible inference server
+{% if vllm_deployment_mode == 'ray' %}
+After=network-online.target docker.service {{ vllm_ray_service_name }}.service
+Wants=network-online.target
+Requires=docker.service {{ vllm_ray_service_name }}.service
+{% else %}
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+{% endif %}
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStartPre=/bin/bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
+ExecStart={{ vllm_install_dir }}/vllm-serve.sh
+Restart=always
+RestartSec=15
+TimeoutStartSec=0
+TimeoutStopSec=120
+KillMode=mixed
+# Model download and NCCL init are slow. Wait before marking failed.
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+# Security
+NoNewPrivileges=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

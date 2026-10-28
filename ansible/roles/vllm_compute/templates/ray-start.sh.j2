@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Managed by Ansible (role: vllm_compute). Ray {{ vllm_ray_role }} node.
+set -euo pipefail
+
+readonly IMAGE="{{ vllm_image }}"
+readonly NAME="{{ vllm_container_name }}-ray"
+{% if vllm_hf_token | length > 0 %}
+readonly HF_TOKEN="{{ vllm_hf_token }}"
+{% endif %}
+
+docker pull --quiet "$IMAGE" >/dev/null 2>&1 || true
+
+exec docker run \
+  --rm \
+  --name "$NAME" \
+  --network host \
+  --shm-size {{ vllm_shm_size }} \
+  --gpus all \
+  --ipc host \
+  --restart {{ vllm_restart_policy }} \
+  --entrypoint /bin/bash \
+  -v {{ vllm_hf_cache_dir }}:/root/.cache/huggingface \
+{% if vllm_hf_token | length > 0 %}
+  -e HF_TOKEN="$HF_TOKEN" \
+{% endif %}
+  -e VLLM_HOST_IP={{ vllm_host_ip }} \
+  "{{ vllm_image }}" \
+  -lc "ray start --block {% if vllm_ray_role == 'head' %}--head --node-ip-address={{ vllm_host_ip }} --port={{ vllm_ray_head_port }} --dashboard-host 0.0.0.0 --dashboard-port={{ vllm_ray_dashboard_port }} --node-manager-port={{ vllm_ray_node_manager_port }} --object-manager-port={{ vllm_ray_object_manager_port }} --runtime-env-agent-port={{ vllm_ray_runtime_env_agent_port }} --min-worker-port={{ vllm_ray_min_worker_port }} --max-worker-port={{ vllm_ray_max_worker_port }}{% else %}--address={{ vllm_ray_head_address }}:{{ vllm_ray_head_port }} --node-ip-address={{ vllm_host_ip }} --node-manager-port={{ vllm_ray_node_manager_port }} --object-manager-port={{ vllm_ray_object_manager_port }} --runtime-env-agent-port={{ vllm_ray_runtime_env_agent_port }} --min-worker-port={{ vllm_ray_min_worker_port }} --max-worker-port={{ vllm_ray_max_worker_port }}{% endif %}"

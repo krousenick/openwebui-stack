@@ -1,0 +1,14 @@
+---
+- name: Git checkout Chatterbox repo
+  ansible.builtin.git:
+    repo: https://github.com/devnen/Chatterbox-TTS-Server.git
+    dest: "{{ project_root }}/chatterbox"
+    version: main
+
+- name: Create required project directories
+  ansible.builtin.file:
+    path: "{{ project_root }}/chatterbox"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"

@@ -26,6 +26,10 @@ keycloak_admin_user: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_USER') | 
 keycloak_admin_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_PASSWORD') }}"
 keycloak_provisioner_client_secret: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_PROVISIONER_CLIENT_SECRET') }}"
 
+# Keycloak 26 enables passkeys on the default browser flow. Users register
+# a passwordless credential, then sign in from the username form.
+keycloak_passkeys_enabled: true
+
 # ---------------------------------------------------------------------------
 # TLS
 # ---------------------------------------------------------------------------
@@ -80,12 +84,25 @@ keycloak_apps:
       - openwebui_user
     include_groups: true
 
+  - client_id: voice
+    client_secret: "{{ voice_oidc_client_secret }}"
+    name: Voice
+    base_url: "https://voice.{{ domain }}"
+    redirect_uris:
+      - "https://voice.{{ domain }}/oauth2/callback"
+    roles:
+      - voice_user
+
   - client_id: litellm
     client_secret: "{{ litellm_oidc_client_secret }}"
     name: LiteLLM
     base_url: "https://litellm.{{ domain }}"
     redirect_uris:
       - "https://litellm.{{ domain }}/sso/callback"
+    # LiteLLM generic SSO does not send a PKCE verifier unless
+    # GENERIC_CLIENT_USE_PKCE is true. Keycloak rejects the code exchange
+    # when this client requires S256 and LiteLLM does not.
+    pkce: false
     roles:
       - proxy_admin
       - proxy_admin_viewer
@@ -105,6 +122,9 @@ keycloak_group_role_mappings:
   - group: platform-admins
     client_id: open-webui
     role: openwebui_admin
+  - group: platform-admins
+    client_id: voice
+    role: voice_user
   - group: platform-admins
     client_id: litellm
     role: proxy_admin

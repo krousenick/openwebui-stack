@@ -1,0 +1,89 @@
+---
+# Ray cluster traffic on the 10/25GbE compute network. The zone source
+# restricts access to the compute segment because Ray's protocol is
+# unencrypted and can execute arbitrary code if an attacker reaches it.
+# Query-then-change keeps every task idempotent across re-runs.
+
+- name: Check firewalld is active
+  ansible.builtin.command:
+    cmd: firewall-cmd --state
+  register: vllm_firewalld_state
+  changed_when: false
+  failed_when: false
+
+- name: Manage cluster firewall
+  when: vllm_firewalld_state.stdout | default('') | trim == 'running'
+  block:
+    - name: List permanent zones
+      ansible.builtin.command:
+        cmd: firewall-cmd --permanent --get-zones
+      register: vllm_firewalld_zones
+      changed_when: false
+
+    - name: Create the vLLM cluster zone
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - --new-zone=vllm-cluster
+      when: "'vllm-cluster' not in vllm_firewalld_zones.stdout.split()"
+      register: vllm_zone_create
+      changed_when: true
+
+    - name: List zone sources
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - --zone=vllm-cluster
+          - --list-sources
+      register: vllm_zone_sources
+      changed_when: false
+
+    - name: Restrict the zone to the compute network
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - --zone=vllm-cluster
+          - --add-source={{ vllm_firewall_zone_source }}
+      when: vllm_firewall_zone_source not in vllm_zone_sources.stdout.split()
+      register: vllm_zone_source
+      changed_when: true
+
+    - name: List zone ports
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - --zone=vllm-cluster
+          - --list-ports
+      register: vllm_zone_ports
+      changed_when: false
+
+    - name: Open vLLM API and Ray cluster ports
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - --zone=vllm-cluster
+          - --add-port={{ item }}/tcp
+      when: item not in vllm_zone_ports.stdout.split()
+      register: vllm_fw_ports
+      changed_when: true
+      loop:
+        - "{{ vllm_port }}"
+        - "{{ vllm_ray_head_port }}"
+        - "{{ vllm_ray_dashboard_port }}"
+        - "{{ vllm_ray_node_manager_port }}"
+        - "{{ vllm_ray_object_manager_port }}"
+        - "{{ vllm_ray_runtime_env_agent_port }}"
+        - "{{ vllm_ray_min_worker_port }}-{{ vllm_ray_max_worker_port }}"
+
+    - name: Reload firewalld
+      ansible.builtin.command:
+        cmd: firewall-cmd --reload
+      when: >-
+        vllm_zone_create is changed or vllm_zone_source is changed
+        or vllm_fw_ports is changed
+      changed_when: true

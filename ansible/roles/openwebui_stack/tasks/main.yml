@@ -11,10 +11,6 @@
   ansible.builtin.import_tasks:
     file: sync.yml
 
-- name: Deploy Docker Compose stack
-  ansible.builtin.import_tasks:
-    file: compose.yml
-
 - name: Configure optional Brave Search
   ansible.builtin.import_tasks:
     file: brave.yml

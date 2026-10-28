@@ -16,6 +16,11 @@
   ansible.builtin.import_tasks:
     file: keycloak_bootstrap.yml
 
+- name: Enable passkey login
+  ansible.builtin.import_tasks:
+    file: keycloak_passkeys.yml
+  when: keycloak_passkeys_enabled | bool
+
 - name: Load Keycloak application lists
   ansible.builtin.include_vars:
     file: "{{ playbook_dir }}/../group_vars/all/vars.yml"

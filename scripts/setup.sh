@@ -87,7 +87,6 @@ verify_directories() {
 		"$PROJECT_ROOT/scripts"
 	)
 
-	local errors=0
 	for dir in "${dirs[@]}"; do
 		if [[ -d "$dir" ]]; then
 			check_directory "$dir" "$(basename "$dir")" 755
@@ -202,6 +201,77 @@ prompt_yes_no_default_no() {
 	[nN][oO] | [nN]) return 1 ;;
 	*) return 1 ;; # Default to no on invalid input
 	esac
+}
+
+# Run the Ansible playbook to provision the Keycloak realm, clients, and
+# users. Secrets are exported from the stack .env (or generated and stored
+# there when missing) so the playbook's environment lookups resolve.
+run_ansible_keycloak() {
+	local env_file="$PROJECT_ROOT/.env"
+	local ansible_dir="$PROJECT_ROOT/ansible"
+	local var
+
+	# The provisioner secret is not part of the standard password set.
+	if ! grep -q "^KEYCLOAK_PROVISIONER_CLIENT_SECRET=.\+" "$env_file" 2>/dev/null; then
+		local prov_secret
+		prov_secret=$(generate_password)
+		if grep -q "^KEYCLOAK_PROVISIONER_CLIENT_SECRET=" "$env_file" 2>/dev/null; then
+			sed_inplace "s|^KEYCLOAK_PROVISIONER_CLIENT_SECRET=.*|KEYCLOAK_PROVISIONER_CLIENT_SECRET=$prov_secret|" "$env_file"
+		else
+			printf '\nKEYCLOAK_PROVISIONER_CLIENT_SECRET=%s\n' "$prov_secret" >>"$env_file"
+		fi
+		echo -e "  ${GREEN}Generated KEYCLOAK_PROVISIONER_CLIENT_SECRET in .env${NC}"
+	fi
+
+	# User passwords are not stored in .env; generate once and keep them
+	# only in the exported environment for this run.
+	local user_pw_envs=(
+		"KEYCLOAK_USER_PLATFORM_ADMIN_PASSWORD"
+		"KEYCLOAK_USER_GRAFANA_EDITOR_PASSWORD"
+		"KEYCLOAK_USER_GRAFANA_VIEWER_PASSWORD"
+		"KEYCLOAK_USER_OPENWEBUI_USER_PASSWORD"
+		"KEYCLOAK_USER_LITELLM_USER_PASSWORD"
+		"KEYCLOAK_USER_LITELLM_VIEWER_PASSWORD"
+	)
+
+	if ! command -v ansible-playbook >/dev/null 2>&1; then
+		echo -e "  ${RED}ansible-playbook not found. Install Ansible, then run:${NC}"
+		echo "    cd ansible && ansible-galaxy collection install -r requirements.yaml"
+		echo "    ansible-playbook playbooks/site.yml"
+		return 1
+	fi
+
+	if [ ! -d "$ansible_dir" ]; then
+		echo -e "  ${RED}ansible/ directory not found at $ansible_dir${NC}"
+		return 1
+	fi
+
+	# Install collections when the required keycloak collection is absent.
+	if ! ansible-galaxy collection list 2>/dev/null | grep -q "middleware_automation.keycloak"; then
+		echo -e "  ${BLUE}Installing Ansible collections...${NC}"
+		(cd "$ansible_dir" && ansible-galaxy collection install -r requirements.yaml) || return 1
+	fi
+
+	# Export the secrets the playbook reads from the environment.
+	set -a
+	# shellcheck disable=SC1090
+	. "$env_file"
+	set +a
+	for var in "${user_pw_envs[@]}"; do
+		if [[ -z "${!var:-}" ]]; then
+			export "$var"="$(generate_password)"
+		fi
+	done
+	if [ -z "${KEYCLOAK_ADMIN_USER:-}" ]; then
+		export KEYCLOAK_ADMIN_USER=admin
+	fi
+	if [ -z "${DOMAIN:-}" ]; then
+		export DOMAIN=localhost
+	fi
+
+	echo -e "  ${BLUE}Generated (this run only) missing KEYCLOAK_USER_* passwords${NC}"
+	echo -e "  ${BLUE}Running: cd ansible && ansible-playbook playbooks/site.yml${NC}"
+	(cd "$ansible_dir" && ansible-playbook playbooks/site.yml)
 }
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -399,6 +469,8 @@ if [ "$GENERATE_PASSWORDS" = true ]; then
 	OPENWEBUI_OIDC_SECRET=$(generate_password)
 	LITELLM_OIDC_SECRET=$(generate_password)
 	GF_OIDC_SECRET=$(generate_password)
+	VOICE_OIDC_SECRET=$(generate_password)
+	OAUTH2_PROXY_COOKIE=$(openssl rand -base64 32 | tr -- '+/' '-_' | tr -d '\n')
 
 	# Replace all passwords with specific line patterns to avoid substring matches
 	sed_inplace "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$POSTGRES_PASS|" "$PROJECT_ROOT/.env"
@@ -416,6 +488,16 @@ if [ "$GENERATE_PASSWORDS" = true ]; then
 	sed_inplace "s|^OPENWEBUI_OIDC_CLIENT_SECRET=.*|OPENWEBUI_OIDC_CLIENT_SECRET=$OPENWEBUI_OIDC_SECRET|" "$PROJECT_ROOT/.env"
 	sed_inplace "s|^LITELLM_OIDC_CLIENT_SECRET=.*|LITELLM_OIDC_CLIENT_SECRET=$LITELLM_OIDC_SECRET|" "$PROJECT_ROOT/.env"
 	sed_inplace "s|^GF_OIDC_CLIENT_SECRET=.*|GF_OIDC_CLIENT_SECRET=$GF_OIDC_SECRET|" "$PROJECT_ROOT/.env"
+	if grep -q '^VOICE_OIDC_CLIENT_SECRET=' "$PROJECT_ROOT/.env"; then
+		sed_inplace "s|^VOICE_OIDC_CLIENT_SECRET=.*|VOICE_OIDC_CLIENT_SECRET=$VOICE_OIDC_SECRET|" "$PROJECT_ROOT/.env"
+	else
+		printf '\nVOICE_OIDC_CLIENT_SECRET=%s\n' "$VOICE_OIDC_SECRET" >>"$PROJECT_ROOT/.env"
+	fi
+	if grep -q '^OAUTH2_PROXY_COOKIE_SECRET=' "$PROJECT_ROOT/.env"; then
+		sed_inplace "s|^OAUTH2_PROXY_COOKIE_SECRET=.*|OAUTH2_PROXY_COOKIE_SECRET=$OAUTH2_PROXY_COOKIE|" "$PROJECT_ROOT/.env"
+	else
+		printf 'OAUTH2_PROXY_COOKIE_SECRET=%s\n' "$OAUTH2_PROXY_COOKIE" >>"$PROJECT_ROOT/.env"
+	fi
 	sed_inplace "s|^KEYCLOAK_ADMIN_IP_RANGE=.*|KEYCLOAK_ADMIN_IP_RANGE=0.0.0.0/0|" "$PROJECT_ROOT/.env"
 	sed_inplace "s|^BACKUP_RETENTION_DAYS=.*|BACKUP_RETENTION_DAYS=7|" "$PROJECT_ROOT/.env"
 
@@ -465,7 +547,6 @@ if prompt_yes_no_default_no "Start Docker stack and configure Keycloak clients?"
 	echo "Starting PostgreSQL and Keycloak..."
 	docker compose up -d postgres keycloak-db-init keycloak
 
-
 	echo ""
 	echo -e "${YELLOW}Waiting for services to be ready...${NC}"
 	echo "This may take a few minutes..."
@@ -488,12 +569,10 @@ if prompt_yes_no_default_no "Start Docker stack and configure Keycloak clients?"
 
 	if [ $attempt -eq $max_attempts ]; then
 		echo -e "${YELLOW}Keycloak did not respond yet. You can run the configuration later:${NC}"
-		echo "  ./scripts/configure-keycloak-clients.py"
+		echo "  cd ansible && ansible-playbook playbooks/site.yml"
 	else
-		echo -e "${BLUE}Configuring Keycloak clients...${NC}"
-		python3 "$SCRIPT_DIR/configure-keycloak-clients.py"
-		if ! python3 "$SCRIPT_DIR/configure-keycloak-clients.py" \
-			--env-file "$PROJECT_ROOT/.env"; then
+		echo -e "${BLUE}Configuring Keycloak realm, clients, and users via Ansible...${NC}"
+		if ! run_ansible_keycloak; then
 			error_exit "Keycloak provisioning failed"
 		fi
 

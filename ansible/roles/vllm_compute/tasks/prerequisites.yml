@@ -1,0 +1,60 @@
+---
+# Fedora-based compute nodes. The NVIDIA driver itself is expected to be
+# installed on the host already (akmod rebuilds can take 20+ minutes and
+# usually are not idempotent). We install the container stack.
+
+- name: Check for the NVIDIA driver
+  ansible.builtin.command:
+    cmd: nvidia-smi
+  register: vllm_nvidia_smi
+  changed_when: false
+  failed_when: false
+
+- name: Fail with guidance when the NVIDIA driver is missing
+  ansible.builtin.fail:
+    msg: >-
+      nvidia-smi is unavailable on {{ inventory_hostname }}.
+      Install the NVIDIA driver first (for example:
+      dnf install akmod-nvidia xorg-x11-drv-nvidia-cuda), then re-run.
+  when: vllm_nvidia_smi.rc != 0
+
+- name: Check for the NVIDIA container toolkit
+  ansible.builtin.command:
+    cmd: nvidia-ctk --version
+  register: vllm_nvidia_ctk
+  changed_when: false
+  failed_when: false
+
+- name: Install Docker and the NVIDIA container toolkit
+  ansible.builtin.dnf:
+    name:
+      - docker
+      - nvidia-container-toolkit
+    state: present
+  when: vllm_nvidia_ctk.rc != 0
+
+- name: Check for the nvidia runtime in dockerd config
+  ansible.builtin.command:
+    cmd: docker info --format '{% raw %}{{json .Runtimes}}{% endraw %}'
+  register: vllm_docker_runtimes
+  changed_when: false
+  failed_when: false
+
+- name: Register the nvidia runtime with dockerd
+  ansible.builtin.command:
+    cmd: nvidia-ctk runtime configure --runtime=docker
+  when: "'nvidia' not in vllm_docker_runtimes.stdout"
+  changed_when: true
+  notify: Restart docker
+
+- name: Enable and start docker
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Check cgroup v2 and shared memory requirements
+  ansible.builtin.debug:
+    msg:
+      - "Detected {{ vllm_gpus_per_node }} GPU(s) on {{ inventory_hostname }}."
+      - "Tensor parallel size {{ vllm_tensor_parallel_size }}, pipeline parallel size {{ vllm_pipeline_parallel_size | int }}."
