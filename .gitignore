@@ -60,3 +60,5 @@ npm-debug.log*
 
 # Keep directories but not contents
 !grafana/provisioning/dashboards/json/.gitkeep
+.magie-coder/
+.playwright-mcp/
