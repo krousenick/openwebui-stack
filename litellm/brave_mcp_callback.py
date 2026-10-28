@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Optional
 
 from litellm.integrations.custom_logger import CustomLogger
 
@@ -18,26 +18,41 @@ class BraveMCPInjector(CustomLogger):
         user_api_key_dict,
         cache,
         data: dict,
-        call_type: Literal[
-            "completion",
-            "text_completion",
-            "embeddings",
-            "image_generation",
-            "moderation",
-            "audio_transcription",
-        ],
+        call_type: str,
     ) -> Optional[dict]:
-        if call_type != "completion":
+        # The proxy passes the route type here: /v1/chat/completions arrives as
+        # "acompletion", direct SDK calls as "completion".
+        if call_type not in ("completion", "acompletion"):
+            return data
+        # Streaming clients that implement their own function-calling loop
+        # (Open WebUI) record the streamed tool-call deltas as their own tool
+        # calls, fail to find the MCP namespaced tool, and write error tool
+        # responses that corrupt the history ("Missing corresponding tool call
+        # for tool response message" on Gemini). Only inject for
+        # non-streaming requests, where LiteLLM executes the tools and returns
+        # just the final answer.
+        if data.get("stream"):
             return data
         tools = data.get("tools")
         if not isinstance(tools, list):
             tools = []
-        if not any(
+        # Open WebUI's direct MCP tool server already exposes Brave tools as
+        # functions named "<server_id>_<tool>" (e.g. brave_search_...); skip
+        # injection then so the model does not see the tool set twice.
+        already_has_brave = any(
             isinstance(tool, dict)
-            and tool.get("type") == "mcp"
-            and tool.get("server_url") == self.tool["server_url"]
+            and (
+                (
+                    tool.get("type") == "mcp"
+                    and tool.get("server_url") == self.tool["server_url"]
+                )
+                or str((tool.get("function") or {}).get("name") or "").startswith(
+                    "brave_search"
+                )
+            )
             for tool in tools
-        ):
+        )
+        if not already_has_brave:
             tools.append(dict(self.tool))
         data["tools"] = tools
         return data

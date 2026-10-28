@@ -32,7 +32,7 @@
       - "{{ app.base_url }}"
 
     attributes:
-      pkce.code.challenge.method: S256
+      pkce.code.challenge.method: "{{ 'S256' if (app.pkce | default(true) | bool) else '' }}"
 
     state: present
     validate_certs: "{{ keycloak_validate_certs }}"

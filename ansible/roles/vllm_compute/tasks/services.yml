@@ -1,0 +1,124 @@
+---
+- name: Create vLLM install directory
+  ansible.builtin.file:
+    path: "{{ vllm_install_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the Hugging Face cache directory
+  ansible.builtin.file:
+    path: "{{ vllm_hf_cache_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy the Ray start script
+  ansible.builtin.template:
+    src: ray-start.sh.j2
+    dest: "{{ vllm_install_dir }}/ray-start.sh"
+    owner: root
+    group: root
+    mode: "0750"
+  when: vllm_deployment_mode == 'ray'
+  notify: Restart vllm-ray
+
+- name: Deploy the vLLM serve script
+  ansible.builtin.template:
+    src: vllm-serve.sh.j2
+    dest: "{{ vllm_install_dir }}/vllm-serve.sh"
+    owner: root
+    group: root
+    mode: "0750"
+  when: vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'
+  notify: Restart vllm-serve
+
+- name: Deploy the Ray systemd unit
+  ansible.builtin.template:
+    src: vllm-ray.service.j2
+    dest: /etc/systemd/system/{{ vllm_ray_service_name }}.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: vllm_deployment_mode == 'ray'
+  notify:
+    - Reload systemd
+    - Restart vllm-ray
+
+- name: Deploy the vLLM systemd unit
+  ansible.builtin.template:
+    src: vllm-serve.service.j2
+    dest: /etc/systemd/system/{{ vllm_vllm_service_name }}.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'
+  notify:
+    - Reload systemd
+    - Restart vllm-serve
+
+- name: Flush handlers before enabling services
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start the Ray service
+  ansible.builtin.systemd:
+    name: "{{ vllm_ray_service_name }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: vllm_deployment_mode == 'ray'
+
+- name: Wait for Ray workers to join the cluster
+  when:
+    - vllm_deployment_mode == 'ray'
+    - vllm_ray_role == 'head'
+  block:
+    - name: Wait for all Ray nodes to register
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ vllm_container_name }}-ray"
+          - python
+          - -c
+          - import ray; ray.init(address="auto"); exit(0 if len([n for n in ray.nodes() if n["Alive"]]) >= {{ groups['vllm_compute'] | length }} else 1)
+      register: vllm_ray_status
+      until: vllm_ray_status.rc == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      failed_when: false
+
+    - name: Show Ray cluster status
+      ansible.builtin.debug:
+        msg: "Ray cluster on {{ vllm_host_ip }} reports {{ groups['vllm_compute'] | length }} alive node(s) after {{ vllm_ray_status.attempts }} attempt(s)."
+
+- name: Enable and start the vLLM service
+  ansible.builtin.systemd:
+    name: "{{ vllm_vllm_service_name }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'
+
+- name: Wait for the vLLM API to accept requests
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sf
+      - --max-time
+      - "5"
+      - http://127.0.0.1:{{ vllm_port }}/health
+  register: vllm_health
+  until: vllm_health.rc == 0
+  retries: 60
+  delay: 10
+  changed_when: false
+  when: vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'
+
+- name: Confirm the vLLM API is healthy
+  ansible.builtin.debug:
+    msg: "vLLM API healthy on {{ vllm_host_ip }}:{{ vllm_port }} after {{ vllm_health.attempts }} attempt(s)."
+  when: vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'

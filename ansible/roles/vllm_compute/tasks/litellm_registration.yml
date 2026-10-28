@@ -1,0 +1,23 @@
+---
+# Render the LiteLLM model_list snippet for the vLLM endpoints and merge it
+# into litellm/config.yaml on the Open WebUI stack host. The task runs on the
+# compute node and delegates the file operations to the LiteLLM host when it
+# is present in the inventory.
+
+- name: Render the LiteLLM model snippet
+  ansible.builtin.template:
+    src: litellm-models.yaml.j2
+    dest: "{{ playbook_dir }}/../../litellm/vllm-models.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Point the operator to the generated snippet
+  ansible.builtin.debug:
+    msg:
+      - "LiteLLM model_list snippet written to litellm/vllm-models.yaml in the repository"
+      - "Add the snippet to model_list in litellm/config.yaml on the stack host, then:"
+      - "docker compose restart litellm"

@@ -16,6 +16,7 @@
         grafana_oidc_client_secret: "{{ lookup('ansible.builtin.env', 'GF_OIDC_CLIENT_SECRET') }}"
         openwebui_oidc_client_secret: "{{ lookup('ansible.builtin.env', 'OPENWEBUI_OIDC_CLIENT_SECRET') }}"
         litellm_oidc_client_secret: "{{ lookup('ansible.builtin.env', 'LITELLM_OIDC_CLIENT_SECRET') }}"
+        voice_oidc_client_secret: "{{ lookup('ansible.builtin.env', 'VOICE_OIDC_CLIENT_SECRET') }}"
         keycloak_user_platform_admin_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_USER_PLATFORM_ADMIN_PASSWORD') }}"
         keycloak_user_grafana_editor_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_USER_GRAFANA_EDITOR_PASSWORD') }}"
         keycloak_user_grafana_viewer_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_USER_GRAFANA_VIEWER_PASSWORD') }}"

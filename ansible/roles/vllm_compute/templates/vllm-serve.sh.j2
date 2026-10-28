@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Managed by Ansible (role: vllm_compute). vLLM OpenAI server.
+set -euo pipefail
+
+readonly IMAGE="{{ vllm_image }}"
+readonly NAME="{{ vllm_container_name }}-serve"
+{% if vllm_hf_token | length > 0 %}
+readonly HF_TOKEN="{{ vllm_hf_token }}"
+{% endif %}
+
+docker pull --quiet "$IMAGE" >/dev/null 2>&1 || true
+
+exec docker run \
+  --rm \
+  --name "$NAME" \
+  --network host \
+  --shm-size {{ vllm_shm_size }} \
+  --gpus all \
+  --ipc host \
+  --restart {{ vllm_restart_policy }} \
+  --entrypoint /bin/bash \
+  -v {{ vllm_hf_cache_dir }}:/root/.cache/huggingface \
+{% if vllm_hf_token | length > 0 %}
+  -e HF_TOKEN="$HF_TOKEN" \
+{% endif %}
+{% if vllm_deployment_mode == 'ray' %}
+  -e VLLM_HOST_IP={{ vllm_host_ip }} \
+  -e RAY_ADDRESS={{ vllm_ray_head_address }}:{{ vllm_ray_head_port }} \
+{% endif %}
+{% if vllm_api_key | length > 0 %}
+  -e VLLM_API_KEY="{{ vllm_api_key }}" \
+{% endif %}
+  "{{ vllm_image }}" \
+  -lc "vllm serve {{ vllm_model }} \
+    --served-model-name {{ vllm_served_model_name }} \
+    --host 0.0.0.0 \
+    --port {{ vllm_port }} \
+    --max-model-len {{ vllm_max_model_len }} \
+    --gpu-memory-utilization {{ vllm_gpu_memory_utilization }} \
+    --tensor-parallel-size {{ vllm_effective_tp }} \
+{% if vllm_deployment_mode == 'ray' %}
+    --pipeline-parallel-size {{ vllm_effective_pp }} \
+    --distributed-executor-backend ray \
+{% endif %}
+    --enable-prefix-caching \
+    --disable-log-requests \
+    {{ vllm_extra_args | join(' ') }}"

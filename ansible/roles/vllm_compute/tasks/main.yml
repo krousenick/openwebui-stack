@@ -1,0 +1,115 @@
+---
+- name: Validate vLLM configuration
+  ansible.builtin.assert:
+    that:
+      - vllm_deployment_mode in ["standalone", "ray"]
+      - vllm_model | length > 0
+      - vllm_tensor_parallel_size | int >= 1
+    fail_msg: >-
+      vllm_deployment_mode must be 'standalone' or 'ray',
+      vllm_model must be set, and vllm_tensor_parallel_size >= 1.
+
+- name: Require at least one vllm_compute host
+  ansible.builtin.assert:
+    that:
+      - groups['vllm_compute'] | default([]) | length > 0
+    fail_msg: "No hosts in the vllm_compute inventory group."
+
+- name: Detect GPUs per node
+  when: vllm_gpus_per_node | int == 0
+  block:
+    - name: Count NVIDIA GPUs
+      ansible.builtin.command:
+        cmd: nvidia-smi --list-gpus
+      register: vllm_gpu_list
+      changed_when: false
+      failed_when: false
+
+    - name: Set GPUs per node from nvidia-smi
+      ansible.builtin.set_fact:
+        vllm_gpus_per_node: "{{ (vllm_gpu_list.stdout_lines | select('match', '^GPU ') | list | length) if vllm_gpu_list.rc == 0 else 1 }}"
+
+- name: Assert enough GPUs for tensor parallelism
+  ansible.builtin.assert:
+    that:
+      - vllm_gpus_per_node | int >= vllm_tensor_parallel_size
+    fail_msg: >-
+      vllm_tensor_parallel_size ({{ vllm_tensor_parallel_size }}) exceeds
+      the GPUs detected on {{ inventory_hostname }} ({{ vllm_gpus_per_node }}).
+
+- name: Resolve Ray head address
+  when: vllm_deployment_mode == 'ray'
+  block:
+    - name: Find the Ray head host
+      ansible.builtin.set_fact:
+        vllm_ray_head_host: >-
+          {{ (groups['vllm_compute']
+              | map('extract', hostvars)
+              | selectattr('vllm_ray_head', 'defined')
+              | selectattr('vllm_ray_head')
+              | map(attribute='inventory_hostname')
+              | list) }}
+      delegate_to: localhost
+      run_once: true
+
+    - name: Require exactly one Ray head host
+      ansible.builtin.assert:
+        that:
+          - vllm_ray_head_host | length == 1
+        fail_msg: >-
+          Ray mode needs exactly one inventory host with
+          vllm_ray_head: true in the vllm_compute group.
+      delegate_to: localhost
+      run_once: true
+
+    - name: Derive the Ray head address
+      ansible.builtin.set_fact:
+        vllm_ray_head_address: "{{ hostvars[vllm_ray_head_host[0]]['ansible_host'] | default(vllm_ray_head_host[0]) }}"
+      delegate_to: localhost
+      run_once: true
+
+- name: Set this node's Ray role
+  ansible.builtin.set_fact:
+    vllm_ray_role: "{{ 'head' if (vllm_ray_head_host | default('') == inventory_hostname) else 'worker' }}"
+  when: vllm_deployment_mode == 'ray'
+
+- name: Resolve host IP for VLLM_HOST_IP
+  ansible.builtin.set_fact:
+    vllm_host_ip: "{{ hostvars[inventory_hostname]['ansible_host'] | default(inventory_hostname) }}"
+
+- name: Compute effective parallel sizes
+  ansible.builtin.set_fact:
+    vllm_effective_tp: "{{ (vllm_tensor_parallel_size | int) * (vllm_pipeline_parallel_size | int)
+      if (vllm_deployment_mode == 'ray' and vllm_cross_node_tensor_parallel | bool)
+      else (vllm_tensor_parallel_size | int) }}"
+    vllm_effective_pp: "{{ 1
+      if (vllm_deployment_mode != 'ray' or vllm_cross_node_tensor_parallel | bool)
+      else (vllm_pipeline_parallel_size | int) }}"
+
+- name: Collect vLLM endpoint hosts
+  ansible.builtin.set_fact:
+    vllm_endpoints: "{{ groups['vllm_compute'] | default([])
+      | map('extract', hostvars)
+      | map('extract', 'vllm_host_ip')
+      | list }}"
+  when: vllm_deployment_mode == 'standalone'
+  run_once: true
+  delegate_to: localhost
+
+- name: Install node prerequisites
+  ansible.builtin.import_tasks:
+    file: prerequisites.yml
+
+- name: Configure firewall for the cluster network
+  ansible.builtin.import_tasks:
+    file: firewall.yml
+  when: vllm_manage_firewall | bool
+
+- name: Deploy vLLM services
+  ansible.builtin.import_tasks:
+    file: services.yml
+
+- name: Render LiteLLM registration snippet
+  ansible.builtin.import_tasks:
+    file: litellm_registration.yml
+  when: vllm_deployment_mode == 'standalone' or (vllm_ray_role | default('') == 'head')

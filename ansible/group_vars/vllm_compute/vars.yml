@@ -1,0 +1,34 @@
+---
+# ---------------------------------------------------------------------------
+# vLLM distributed inference compute nodes (role: vllm_compute)
+# ---------------------------------------------------------------------------
+# Nodes are connected over 10GbE (upgradeable to 25GbE). Default topology:
+# pipeline parallel across nodes, tensor parallel within a node. Cross-node
+# tensor parallelism needs 25GbE+ to be usable; set
+# vllm_cross_node_tensor_parallel: true and confirm the fabric first.
+
+vllm_deployment_mode: ray
+
+vllm_model: "meta-llama/Llama-3.1-8B-Instruct"
+
+# GPUs per node drives --tensor-parallel-size.
+vllm_tensor_parallel_size: 1
+
+# Pipeline stages = node count. Override to match your cluster.
+vllm_pipeline_parallel_size: 3
+
+vllm_cross_node_tensor_parallel: false
+
+# Ray cluster networking. The zone source should be the 10/25GbE compute
+# segment; Ray traffic is unauthenticated, so restrict it to these hosts.
+vllm_firewall_zone_source: "10.0.105.0/24"
+
+vllm_manage_firewall: true
+
+# Shared Hugging Face cache on each node's data volume.
+vllm_hf_cache_dir: /mnt/data1/huggingface
+
+# API key the nodes require. Supply via the environment on the controller
+# (VLLM_API_KEY) or override here. Empty disables authentication - the
+# firewall zone must then be the only protection.
+vllm_api_key: "{{ lookup('ansible.builtin.env', 'VLLM_API_KEY') | default('local-vllm-key', true) }}"

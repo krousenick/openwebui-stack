@@ -74,6 +74,12 @@ litellm_settings:
   # Fallback models configuration
   fallbacks: []
 
+  # Built-in content filter does not scan system or tool turns. Those are
+  # stack-owned prompts and tool results, not the user message.
+  # https://docs.litellm.ai/docs/proxy/guardrails/quick_start
+  skip_system_message_in_guardrail: true
+  skip_tool_message_in_guardrail: true
+
 # Router settings
 router_settings:
   routing_strategy: simple-shuffle # Prevents latency-based routing checks
@@ -82,6 +88,77 @@ router_settings:
   # check, so a voice key allows gemini-3.5-flash-lite, not the alias name.
   model_group_alias:
     voice-assistant: gemini-3.5-flash-lite
+
+# =============================================================================
+# Guardrails
+# =============================================================================
+# Built-in content filter. No extra service or API key. default_on runs on
+# every request, including when the client omits guardrails.
+# Secrets and SSN are blocked. Email and phone are masked so the model still
+# answers. Prompt-injection and harmful categories block the request.
+# https://docs.litellm.ai/docs/proxy/guardrails/litellm_content_filter
+guardrails:
+  - guardrail_name: default-content-filter
+    litellm_params:
+      guardrail: litellm_content_filter
+      mode: [pre_call, post_call]
+      default_on: true
+      patterns:
+        - pattern_type: prebuilt
+          pattern_name: us_ssn
+          action: BLOCK
+        - pattern_type: prebuilt
+          pattern_name: email
+          action: MASK
+        - pattern_type: prebuilt
+          pattern_name: us_phone
+          action: MASK
+        - pattern_type: prebuilt
+          pattern_name: aws_access_key
+          action: BLOCK
+        - pattern_type: prebuilt
+          pattern_name: aws_secret_key
+          action: BLOCK
+        - pattern_type: prebuilt
+          pattern_name: github_token
+          action: BLOCK
+      categories:
+        - category: prompt_injection_jailbreak
+          enabled: true
+          action: BLOCK
+          severity_threshold: high
+        - category: prompt_injection_system_prompt
+          enabled: true
+          action: BLOCK
+          severity_threshold: high
+        - category: prompt_injection_sql
+          enabled: true
+          action: BLOCK
+          severity_threshold: medium
+        - category: prompt_injection_malicious_code
+          enabled: true
+          action: BLOCK
+          severity_threshold: medium
+        - category: prompt_injection_data_exfiltration
+          enabled: true
+          action: BLOCK
+          severity_threshold: high
+        - category: harmful_self_harm
+          enabled: true
+          action: BLOCK
+          severity_threshold: medium
+        - category: harmful_violence
+          enabled: true
+          action: BLOCK
+          severity_threshold: medium
+        - category: harmful_illegal_weapons
+          enabled: true
+          action: BLOCK
+          severity_threshold: medium
+        - category: harmful_child_safety
+          enabled: true
+          action: BLOCK
+          severity_threshold: medium
 
 # =============================================================================
 # Model Providers Configuration
@@ -133,6 +210,23 @@ model_list:
         search_context_size: medium
     model_info:
       description: "Gemini 4 Argon - current Gemini model"
+
+  # Complexity auto-router. Call model "auto". The heuristic scorer picks a
+  # tier with no extra API call. Session affinity is off, so each turn is
+  # scored on its own. Checked against:
+  # https://docs.litellm.ai/docs/proxy/auto_routing
+  - model_name: auto
+    litellm_params:
+      model: auto_router/complexity_router
+      complexity_router_default_model: gemini-3.8-flash
+      complexity_router_config:
+        tiers:
+          SIMPLE: gemini-3.5-flash-lite
+          MEDIUM: gemini-3.8-flash
+          COMPLEX: gemini-4-argon
+          REASONING: gemini-3.1-pro
+        classifier_type: heuristic
+        session_affinity: false
 
   # AWS Bedrock OSS models. IDs are bedrock-runtime model IDs.
   # Kimi K3 has no in-region ID; us-east-1 uses the US geo profile.

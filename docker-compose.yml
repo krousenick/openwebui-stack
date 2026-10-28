@@ -237,7 +237,7 @@ services:
       GENERIC_USERINFO_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/userinfo"
 
       GENERIC_SCOPE: "${GENERIC_SCOPE:-openid profile email}"
-      GENERIC_CLIENT_USE_PKCE: "${GENERIC_CLIENT_USE_PKCE:-true}"
+      GENERIC_CLIENT_USE_PKCE: "${GENERIC_CLIENT_USE_PKCE:-false}"
 
       GENERIC_USER_ID_ATTRIBUTE: "${GENERIC_USER_ID_ATTRIBUTE:-sub}"
       GENERIC_USER_EMAIL_ATTRIBUTE: "${GENERIC_USER_EMAIL_ATTRIBUTE:-email}"
@@ -534,7 +534,7 @@ services:
       GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT: "true"
 
       GF_AUTH_GENERIC_OAUTH_EMAIL_ATTRIBUTE_NAME: "email"
-      GF_AUTH_GENERIC_OAUTH_LOGIN_ATTRIBUTE_PATH: "username"
+      GF_AUTH_GENERIC_OAUTH_LOGIN_ATTRIBUTE_PATH: "preferred_username"
       GF_AUTH_GENERIC_OAUTH_NAME_ATTRIBUTE_PATH: "name"
       GF_AUTH_GENERIC_OAUTH_USE_REFRESH_TOKEN: "true"
     volumes:
@@ -623,39 +623,39 @@ services:
   # Enable one profile: chatterbox-gpu (Dockerfile.uv.gpu) or chatterbox-cpu
   # (Dockerfile.cpu). Ansible sets this from chatterbox_device.
   # ===========================================================================
-  chatterbox-tts-gpu:
+  chatterbox-tts-server:
+    build:
+      args:
+      # Can be nvidia or cpu; Default is Nvidia
+        - RUNTIME=nvidia
+      context: https://github.com/devnen/Chatterbox-TTS-Server.git#main
+      dockerfile: Dockerfile
     profiles:
       - chatterbox-gpu
-    build:
-      context: https://github.com/travisvn/chatterbox-tts-api.git#main
-      dockerfile: docker/Dockerfile.uv.gpu
     image: ${CHATTERBOX_GPU_IMAGE:-openwebui-stack/chatterbox-tts:gpu}
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox-tts
     restart: unless-stopped
     logging: *default-logging
-    environment: &chatterbox-environment
-      PORT: "4123"
-      HOST: 0.0.0.0
-      DEVICE: cuda
-      USE_MULTILINGUAL_MODEL: "${CHATTERBOX_USE_MULTILINGUAL_MODEL:-true}"
-      EXAGGERATION: "${CHATTERBOX_EXAGGERATION:-0.5}"
-      CFG_WEIGHT: "${CHATTERBOX_CFG_WEIGHT:-0.5}"
-      TEMPERATURE: "${CHATTERBOX_TEMPERATURE:-0.8}"
-      MAX_CHUNK_LENGTH: "${CHATTERBOX_MAX_CHUNK_LENGTH:-280}"
-      MAX_TOTAL_LENGTH: "${CHATTERBOX_MAX_TOTAL_LENGTH:-3000}"
-      VOICE_SAMPLE_PATH: /app/voice-sample.mp3
-      MODEL_CACHE_DIR: /cache
-      VOICE_LIBRARY_DIR: /voices
-      LONG_TEXT_DATA_DIR: /data/long_text_jobs
-      MEMORY_CLEANUP_INTERVAL: "${CHATTERBOX_MEMORY_CLEANUP_INTERVAL:-5}"
-      CUDA_CACHE_CLEAR_INTERVAL: "${CHATTERBOX_CUDA_CACHE_CLEAR_INTERVAL:-3}"
-      ENABLE_MEMORY_MONITORING: "${CHATTERBOX_ENABLE_MEMORY_MONITORING:-true}"
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
-    volumes: &chatterbox-volumes
-      - chatterbox_models:/cache
-      - chatterbox_voices:/voices
-      - chatterbox_longtext:/data/long_text_jobs
+    environment:
+      - HF_TOKEN="${HF_TOKEN}"
+      # Enable faster Hugging Face downloads inside the container
+      - HF_HUB_ENABLE_HF_TRANSFER=1
+      # Make NVIDIA GPUs visible and specify capabilities for PyTorch
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      # Mount local config file for persistence
+      - ./chatterbox/config.yaml:/app/config.yaml
+      # Mount local directories for persistent app data
+      - ./chatterbox/voices:/app/voices
+      - ./chatterbox/reference_audio:/app/reference_audio
+      - ./chatterbox/outputs:/app/outputs
+      - ./chatterbox/logs:/app/logs
+      # Named volume for Hugging Face model cache to persist across container rebuilds
+      - chatterbox_models:/app/hf_cache
+      # - chatterbox_models:/cache
+      # - chatterbox_voices:/voices
+      # - chatterbox_longtext:/data/long_text_jobs
     networks:
       frontend:
         aliases:
@@ -675,13 +675,13 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    healthcheck: &chatterbox-healthcheck
-      test: ["CMD", "curl", "-f", "http://localhost:4123/health"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 300s
-    labels: &chatterbox-labels
+    labels:
       - traefik.enable=true
       - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
       - traefik.http.routers.chatterbox-api.rule=Host(`voice.${DOMAIN:-localhost}`) && (PathPrefix(`/v1`) || PathPrefix(`/audio`) || PathPrefix(`/voices`) || Path(`/health`) || Path(`/config`) || Path(`/models`) || Path(`/memory`) || PathPrefix(`/memory/`) || Path(`/languages`) || Path(`/status`) || PathPrefix(`/status/`) || Path(`/info`) || Path(`/docs`) || Path(`/redoc`) || Path(`/openapi.json`) || Path(`/ping`))
@@ -689,88 +689,65 @@ services:
       - traefik.http.routers.chatterbox-api.tls=true
       - traefik.http.routers.chatterbox-api.priority=100
       - traefik.http.routers.chatterbox-api.service=chatterbox-api
-      - traefik.http.services.chatterbox-api.loadbalancer.server.port=4123
+      - traefik.http.services.chatterbox-api.loadbalancer.server.port=8004
       - traefik.http.services.chatterbox-api.loadbalancer.server.scheme=http
       - traefik.http.services.chatterbox-api.loadbalancer.serversTransport=chatterbox@file
-      - traefik.http.routers.chatterbox-api.middlewares=secure-headers@file
+      - traefik.http.routers.chatterbox-api.middlewares=voice-auth@file,secure-headers@file
 
-  chatterbox-tts-cpu:
-    profiles:
-      - chatterbox-cpu
-    build:
-      context: https://github.com/travisvn/chatterbox-tts-api.git#main
-      dockerfile: docker/Dockerfile.cpu
-      args:
-        DEBIAN_MIRROR: https://deb.debian.org/debian
-        DEBIAN_SECURITY_MIRROR: https://deb.debian.org/debian-security
-    image: ${CHATTERBOX_CPU_IMAGE:-openwebui-stack/chatterbox-tts:cpu}
-    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox-tts
-    # The CPU image includes the CUDA wheel. Set CHATTERBOX_CPU_GPU=true
-    # to use a host GPU without rebuilding the Ubuntu GPU image.
-    gpus: ${CHATTERBOX_CPU_GPU:-}
+
+  # ===========================================================================
+  # OAuth2 Proxy - Keycloak gate for voice.${DOMAIN}
+  # Chatterbox has no SSO. Traefik ForwardAuth calls this before the UI or API.
+  # Open WebUI still calls http://chatterbox-tts:4123 on the backend network.
+  # https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/keycloak_oidc/
+  # ===========================================================================
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.1
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_oauth2-proxy
     restart: unless-stopped
     logging: *default-logging
     security_opt:
       - no-new-privileges:true
     environment:
-      <<: *chatterbox-environment
-      DEVICE: ${CHATTERBOX_CPU_DEVICE:-cpu}
-      NVIDIA_VISIBLE_DEVICES: ${CHATTERBOX_CPU_VISIBLE_DEVICES:-void}
-      NVIDIA_DRIVER_CAPABILITIES: ${CHATTERBOX_CPU_DRIVER_CAPABILITIES:-}
-    volumes: *chatterbox-volumes
-    networks:
-      frontend:
-        aliases:
-          - chatterbox-tts
-      backend:
-        aliases:
-          - chatterbox-tts
-    deploy:
-      resources:
-        limits:
-          memory: 16G
-          cpus: "6.0"
-        reservations:
-          memory: 4G
-          cpus: "2.0"
-    healthcheck: *chatterbox-healthcheck
-    labels: *chatterbox-labels
-
-  chatterbox-frontend:
-    build:
-      context: https://github.com/travisvn/chatterbox-tts-api.git#main:frontend
-    image: ${CHATTERBOX_FRONTEND_IMAGE:-openwebui-stack/chatterbox-frontend:local}
-    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox-frontend
-    restart: unless-stopped
-    logging: *default-logging
-    security_opt:
-      - no-new-privileges:true
+      OAUTH2_PROXY_PROVIDER: keycloak-oidc
+      OAUTH2_PROXY_CLIENT_ID: voice
+      OAUTH2_PROXY_CLIENT_SECRET: "${VOICE_OIDC_CLIENT_SECRET:?error}"
+      OAUTH2_PROXY_OIDC_ISSUER_URL: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}"
+      OAUTH2_PROXY_REDIRECT_URL: "https://voice.${DOMAIN:-localhost}/oauth2/callback"
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
+      OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
+      OAUTH2_PROXY_COOKIE_SECRET: "${OAUTH2_PROXY_COOKIE_SECRET:?error}"
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_HTTPONLY: "true"
+      OAUTH2_PROXY_COOKIE_SAMESITE: lax
+      OAUTH2_PROXY_COOKIE_NAME: __Secure-voice-auth
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
+      OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY: "${OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY:-false}"
     networks:
       - frontend
-    depends_on:
-      chatterbox-tts-gpu:
-        condition: service_healthy
-        required: false
-      chatterbox-tts-cpu:
-        condition: service_healthy
-        required: false
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/frontend-health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
     labels:
       - traefik.enable=true
       - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
-      - traefik.http.routers.chatterbox-ui.rule=Host(`voice.${DOMAIN:-localhost}`)
-      - traefik.http.routers.chatterbox-ui.entrypoints=websecure
-      - traefik.http.routers.chatterbox-ui.tls=true
-      - traefik.http.routers.chatterbox-ui.priority=1
-      - traefik.http.routers.chatterbox-ui.service=chatterbox-ui
-      - traefik.http.services.chatterbox-ui.loadbalancer.server.port=80
-      - traefik.http.services.chatterbox-ui.loadbalancer.server.scheme=http
-      - traefik.http.routers.chatterbox-ui.middlewares=secure-headers@file
+      - traefik.http.routers.voice-auth.rule=Host(`voice.${DOMAIN:-localhost}`) && PathPrefix(`/oauth2`)
+      - traefik.http.routers.voice-auth.entrypoints=websecure
+      - traefik.http.routers.voice-auth.tls=true
+      - traefik.http.routers.voice-auth.priority=200
+      - traefik.http.routers.voice-auth.service=oauth2-proxy
+      - traefik.http.services.oauth2-proxy.loadbalancer.server.port=4180
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4180/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
 
   # ===========================================================================
   # NVIDIA GPU Exporter (Optional - requires NVIDIA runtime)
@@ -819,14 +796,16 @@ services:
     restart: unless-stopped
     logging: *default-logging
     user: "0:0"
-    entrypoint: ["/bin/sh", "/discover-docker-logs.sh"]
+    entrypoint: ["python3", "/discover-docker-logs.py"]
     environment:
       PYTHONUNBUFFERED: "1"
     volumes:
-      - ./scripts/discover-docker-logs.sh:/discover-docker-logs.sh:ro
+      - ./scripts/discover-docker-logs.py:/discover-docker-logs.py:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - docker_log_links:/var/log/containers
+      - type: bind
+        source: /var/log/containers
+        target: /var/log/containers
     networks:
       - backend
     profiles:
@@ -852,7 +831,10 @@ services:
       - ./otel/config.yaml:/etc/otel/config.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - docker_log_links:/var/log/containers:ro
+      - type: bind
+        source: /var/log/containers
+        target: /var/log/containers
+        read_only: true
     networks:
       - backend
     depends_on:

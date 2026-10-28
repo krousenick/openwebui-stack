@@ -1,0 +1,83 @@
+---
+# ---------------------------------------------------------------------------
+# vLLM compute node defaults
+# ---------------------------------------------------------------------------
+# Each node runs the official vllm/vllm-openai container with the NVIDIA
+# runtime. Modes:
+#   standalone  - node-level replicas; every node serves the full model and
+#                 LiteLLM load balances across endpoints. No cross-node
+#                 traffic; 10/25GbE only carries API requests.
+#   ray         - Ray cluster; one head + workers. vLLM runs once on the
+#                 head with --pipeline-parallel-size = node count (default)
+#                 or --tensor-parallel-size spread across nodes.
+# ---------------------------------------------------------------------------
+
+vllm_deployment_mode: ray
+
+vllm_image: "vllm/vllm-openai:latest"
+vllm_container_name: vllm
+
+# Model to serve. An HF repo id or an absolute path present on every node.
+vllm_model: "meta-llama/Llama-3.1-8B-Instruct"
+
+# Model id LiteLLM exposes. Defaults to the repo id's basename.
+vllm_served_model_name: "{{ vllm_model.split('/')[-1] }}"
+
+# GPU tensor parallelism *within* a node (GPUs per node).
+vllm_tensor_parallel_size: 1
+
+# Pipeline parallelism across nodes. Ignored in standalone mode; in ray
+# mode it defaults to the number of vllm_compute hosts when unset here.
+vllm_pipeline_parallel_size: "{{ groups['vllm_compute'] | default([]) | length }}"
+
+# Cross-node tensor parallelism. Only valid in ray mode. Overrides the
+# pipeline default when set: total GPUs = TP * node count.
+vllm_cross_node_tensor_parallel: false
+
+# Serving
+vllm_port: 8000
+vllm_max_model_len: 32768
+vllm_gpu_memory_utilization: 0.90
+vllm_extra_args: []
+vllm_api_key: "{{ lookup('ansible.builtin.env', 'VLLM_API_KEY') | default('', true) }}"
+
+# Hugging Face cache directory shared by all vllm containers.
+vllm_hf_cache_dir: /mnt/data1/huggingface
+
+vllm_hf_token: "{{ lookup('ansible.builtin.env', 'HF_TOKEN') | default('', true) }}"
+
+# Ray cluster ports. Pinning these makes the firewalld rules deterministic.
+vllm_ray_head_port: 6379
+vllm_ray_dashboard_port: 8265
+vllm_ray_node_manager_port: 13377
+vllm_ray_object_manager_port: 13378
+vllm_ray_runtime_env_agent_port: 13379
+vllm_ray_min_worker_port: 14000
+vllm_ray_max_worker_port: 15000
+
+# The address workers use to reach the Ray head. Computed by the role from
+# the inventory host marked vllm_ray_head: true; set explicitly to override.
+vllm_ray_head_address: ""
+
+# Networking
+vllm_manage_firewall: true
+# Restrict cluster traffic to this CIDR (the compute network). 10GbE/25GbE
+# Ray traffic is unencrypted; only allow the compute segment.
+vllm_firewall_zone_source: "10.0.105.0/24"
+
+# Systemd unit files.
+vllm_ray_service_name: vllm-ray
+vllm_vllm_service_name: vllm-serve
+
+# Install directory for the generated launch scripts.
+vllm_install_dir: /opt/vllm
+
+# Container shared memory. Cross-node NCCL/Ray needs a large /dev/shm.
+vllm_shm_size: "16g"
+
+# Container restart policy.
+vllm_restart_policy: always
+
+# Number of GPUs per node, used for assertions and docs. Autodetected from
+# nvidia-smi when empty.
+vllm_gpus_per_node: 0

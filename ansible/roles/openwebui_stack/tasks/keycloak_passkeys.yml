@@ -1,0 +1,27 @@
+---
+- name: Enable passkeys on the platform realm
+  middleware_automation.keycloak.keycloak_realm:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    web_authn_policy_passwordless_passkeys_enabled: "{{ keycloak_passkeys_enabled | bool }}"
+    web_authn_policy_passwordless_rp_entity_name: "{{ keycloak_realm }}"
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
+
+- name: Enable WebAuthn Register Passwordless
+  middleware_automation.keycloak.keycloak_authentication_required_actions:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    required_actions:
+      - alias: webauthn-register-passwordless
+        enabled: "{{ keycloak_passkeys_enabled | bool }}"
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
