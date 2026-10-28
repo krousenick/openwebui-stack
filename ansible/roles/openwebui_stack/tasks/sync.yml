@@ -1,7 +1,12 @@
 ---
+# Sync stack configuration trees from the control machine's checkout to the
+# deployed tree. Only meaningful when the playbook runs from another host
+# (e.g. the Mac): with ansible_connection: local on Photon, source and
+# destination are the same tree, so the task is skipped instead of trying to
+# rsync the host onto itself over SSH (which cannot authenticate).
 # The collector image runs as uid 10001. A 0640 root-owned config cannot
 # be read and the container crash-loops, which leaves Grafana empty.
-- name: Sync observability files
+- name: Sync stack configuration trees
   ansible.posix.synchronize:
     src: "{{ playbook_dir }}/../../{{ item }}/"
     dest: "{{ project_root }}/{{ item }}/"
@@ -18,4 +23,4 @@
     - json-exporter
     - litellm
   delegate_to: localhost
-
+  when: ansible_connection != 'local'
