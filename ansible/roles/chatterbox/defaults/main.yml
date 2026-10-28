@@ -1,16 +1,33 @@
 ---
+# Chatterbox TTS Server (https://github.com/devnen/Chatterbox-TTS-Server)
+# Deployed as a Docker Compose service built from a git checkout.
+#
+# project_root and docker_compose_profiles are defined in group_vars and the
+# openwebui_stack role; they are only declared here as fallbacks for
+# standalone use of this role.
+
+# gpu -> Dockerfile (CUDA, RUNTIME=nvidia). cpu -> Dockerfile.cpu.
+chatterbox_device: gpu
+
+chatterbox_repo: https://github.com/devnen/Chatterbox-TTS-Server.git
+
+# Pin the upstream commit/tag for reproducible builds. `main` tracks latest.
+chatterbox_version: main
+
+chatterbox_port: 8004
+
+# The API can need several minutes: first boot downloads models to hf_cache.
+chatterbox_compose_wait_timeout: 900
+
+chatterbox_api_wait_retries: 30
+
+chatterbox_default_voice_id: Emily.wav
+
+# Engine repo id: chatterbox-turbo, chatterbox-multilingual, or the original
+# English chatterbox model (chatterbox).
+chatterbox_tts_engine: chatterbox-turbo
+
 project_root: /mnt/data1/openwebui-stack
-
-compose_file: "{{ project_root }}/docker-compose.yml"
-
-env_file: "{{ project_root }}/.env"
-
-keycloak_validate_certs: true
-
-docker_compose_pull: true
 
 docker_compose_profiles:
   - monitoring
-
-# gpu -> docker/Dockerfile.uv.gpu (CUDA). cpu -> docker/Dockerfile.cpu.
-chatterbox_device: gpu

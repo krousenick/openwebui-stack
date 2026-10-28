@@ -46,7 +46,7 @@ ssl_key_file: "wildcard.key"
 docker_compose_profiles:
   - monitoring
 
-# gpu selects the CUDA Chatterbox image. cpu selects the CPU-only image.
+# gpu -> Dockerfile (CUDA). cpu -> Dockerfile.cpu. Selects the chatterbox profile.
 chatterbox_device: gpu
 
 # Optional. Supply BRAVE_SEARCH_API_KEY through the environment or vault.
