@@ -12,15 +12,30 @@
   ansible.builtin.set_fact:
     opencode_key_alias: "{{ opencode_user.key_alias | default('opencode-' + opencode_user.username) }}"
 
-- name: Check whether the user's LiteLLM key already exists
+- name: Read an existing LiteLLM key file
+  ansible.builtin.slurp:
+    src: "{{ opencode_account.home }}/.config/opencode/litellm.key"
+  register: opencode_key_file
+  failed_when: false
+  no_log: true
+
+- name: Record whether a local key file exists
+  ansible.builtin.set_fact:
+    opencode_existing_key: "{{ (opencode_key_file.content | default('') | b64decode | trim) if (opencode_key_file.content is defined) else '' }}"
+  no_log: true
+
+# /key/info accepts the key value or its token hash, not the alias, so the
+# only idempotency check is validating the stored key against the proxy.
+- name: Validate the existing LiteLLM key
   ansible.builtin.uri:
-    url: "{{ opencode_litellm_base_url }}/key/info?key={{ opencode_key_alias }}"
+    url: "{{ opencode_litellm_base_url }}/key/info?key={{ opencode_existing_key | urlencode }}"
     method: GET
     headers:
       Authorization: "Bearer {{ opencode_litellm_master_key }}"
     status_code: [200, 404]
     validate_certs: "{{ opencode_litellm_validate_certs }}"
   register: opencode_key_info
+  when: opencode_existing_key | length > 0
   no_log: true
 
 - name: Mint a per-user LiteLLM virtual key
@@ -40,35 +55,31 @@
         user: "{{ opencode_user.username }}"
         source: opencode
     body_format: json
-    status_code: 201
-    validate_certs: "{{ opencode_litellm_validate_certs }}"
-  register: opencode_key_generated
-  when: opencode_key_info.status == 404
-  no_log: true
-
-- name: Fetch the existing key value
-  ansible.builtin.uri:
-    url: "{{ opencode_litellm_base_url }}/key/info?key={{ opencode_key_alias }}"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ opencode_litellm_master_key }}"
     status_code: 200
     validate_certs: "{{ opencode_litellm_validate_certs }}"
-  register: opencode_key_existing
-  when: opencode_key_info.status == 200
+  register: opencode_key_generated
+  when: (opencode_existing_key | length == 0) or (opencode_key_info.status | default(404) == 404)
   no_log: true
 
-- name: Derive the key value
+- name: Derive the effective key value
   ansible.builtin.set_fact:
     opencode_key_value: >-
-      {{ (opencode_key_generated.json.key
-          if opencode_key_generated is not skipped
-          else opencode_key_existing.json.key_info.key) | string | trim }}
+      {{ (opencode_key_generated.json.key | default('') | trim
+          if (opencode_key_generated is not skipped and opencode_key_generated.json.key | default(''))
+          else opencode_existing_key) | trim }}
   no_log: true
 
 - name: Create the opencode config directory
   ansible.builtin.file:
     path: "{{ opencode_account.home }}/.config/opencode"
+    state: directory
+    owner: "{{ opencode_user.username }}"
+    group: "{{ opencode_account.group }}"
+    mode: "0755"
+
+- name: Create the opencode plugin directory
+  ansible.builtin.file:
+    path: "{{ opencode_account.home }}/.config/opencode/plugins"
     state: directory
     owner: "{{ opencode_user.username }}"
     group: "{{ opencode_account.group }}"
@@ -107,22 +118,60 @@
     group: "{{ opencode_account.group }}"
     mode: "0644"
 
+# The origin CA root only exists in the deployed tree's gitignored
+# certs/ directory. On the stack host (Photon) point straight at it; on
+# other OSes distribute a per-user copy from the role's files/ dir.
+- name: Resolve the origin CA certificate path per OS
+  ansible.builtin.set_fact:
+    opencode_user_ca_cert: >-
+      {{ opencode_node_ca_cert if (opencode_node_ca_cert | bool)
+         else ((project_root | default('/mnt/data1/openwebui-stack') ~ '/certs/origin_ca_rsa_root.pem')
+              if ansible_facts['distribution'] == 'VMware Photon OS'
+              else (opencode_account.home ~ '/.config/opencode/origin_ca_rsa_root.pem')) }}
+
+- name: Distribute the origin CA certificate off the stack host
+  ansible.builtin.copy:
+    src: origin_ca_rsa_root.pem
+    dest: "{{ opencode_user_ca_cert }}"
+    owner: "{{ opencode_user.username }}"
+    group: "{{ opencode_account.group }}"
+    mode: "0644"
+  when:
+    - not (opencode_node_ca_cert | bool)
+    - ansible_facts['distribution'] != 'VMware Photon OS'
+
 - name: Export LiteLLM discovery settings in the user's profile
-  ansible.builtin.lineinfile:
+  ansible.builtin.blockinfile:
     path: "{{ opencode_account.home }}/.profile"
-    line: 'export LITELLM_REQUEST_TIMEOUT_MS="{{ opencode_discovery_timeout_ms }}"'
-    regexp: '^export LITELLM_REQUEST_TIMEOUT_MS='
+    block: |
+      # opencode -> LiteLLM (managed by the openwebui-stack opencode role)
+      export LITELLM_REQUEST_TIMEOUT_MS="{{ opencode_discovery_timeout_ms }}"
+      export NODE_EXTRA_CA_CERTS="{{ opencode_user_ca_cert }}"
+    marker: "# {mark} ANSIBLE MANAGED - opencode litellm"
     state: present
     create: true
     owner: "{{ opencode_user.username }}"
     group: "{{ opencode_account.group }}"
     mode: "0644"
 
+- name: Warm the model discovery cache
+  ansible.builtin.command:
+    cmd: >-
+      env HOME={{ opencode_account.home | quote }}
+      NODE_EXTRA_CA_CERTS={{ opencode_user_ca_cert | quote }}
+      {{ opencode_bin }}/opencode models
+    chdir: "{{ opencode_account.home }}"
+  become: true
+  become_user: "{{ opencode_user.username }}"
+  register: opencode_models_warm
+  changed_when: false
+  failed_when: false
+
 - name: Report configuration for the user
   ansible.builtin.debug:
     msg:
       - "opencode configured for {{ opencode_user.username }}"
       - "config: {{ opencode_account.home }}/.config/opencode/opencode.json"
-      - "models: auto-discovered from {{ opencode_litellm_base_url }}/v1/models"
+      - "models discovered: {{ (opencode_models_warm.stdout_lines | default([])) | length }} lines from {{ opencode_litellm_base_url }}/v1/models"
       - "usage log: {{ opencode_usage_log }}"
-      - "LiteLLM key alias: {{ opencode_key_alias }} (per-user spend shows in the LiteLLM UI /key/list and SpendLogs)"
+      - "LiteLLM key alias: {{ opencode_key_alias }} (per-user spend shows in the LiteLLM UI and SpendLogs)"

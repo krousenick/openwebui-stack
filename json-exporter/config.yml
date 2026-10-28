@@ -95,7 +95,9 @@ modules:
   # /get_predefined_voices: [{display_name, filename}, ...]
   chatterbox_voices:
     metrics:
-      - name: chatterbox_predefined_voice_present
+      # json_exporter 0.8 appends the values key to object metrics, so the
+      # exported series is chatterbox_predefined_voice_present_present.
+      - name: chatterbox_predefined_voice
         type: object
         path: '{[*]}'
         help: One series per predefined voice in the library

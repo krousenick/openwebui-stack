@@ -60,6 +60,16 @@ brave_search_api_key: >-
 docker_compose_pull: true
 
 # ---------------------------------------------------------------------------
+# opencode (terminal AI coding agent)
+# ---------------------------------------------------------------------------
+
+# Host users who get an opencode install pointed at the LiteLLM proxy.
+# Per-user LiteLLM virtual keys are minted with metadata.user=<username>,
+# so LiteLLM SpendLogs and the LiteLLM UI attribute token usage per user.
+# Empty list disables the role (nothing is installed or configured).
+opencode_users: []
+
+# ---------------------------------------------------------------------------
 # Applications
 # ---------------------------------------------------------------------------
 

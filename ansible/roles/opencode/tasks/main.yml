@@ -7,6 +7,12 @@
     fail_msg: >-
       opencode_users must be a non-empty list of entries with a username key,
       e.g. opencode_users: [{username: nicholas.krouse}].
+  when: opencode_users | length > 0
+
+- name: Skip opencode role when no users are configured
+  ansible.builtin.debug:
+    msg: "opencode_users is empty; skipping opencode installation."
+  when: opencode_users | length == 0
 
 - name: Require the LiteLLM master key
   ansible.builtin.assert:
@@ -17,12 +23,31 @@
       opencode_litellm_master_key is empty. Point opencode_env_file at the
       deployed stack .env or set the variable from vault.
   no_log: true
+  when: opencode_users | length > 0
+
+- name: Install Node.js prerequisites
+  ansible.builtin.import_tasks:
+    file: prerequisites.yml
+  when: opencode_manage_nodejs | bool and opencode_users | length > 0
 
 - name: Install opencode globally
   community.general.npm:
     name: opencode-ai
     global: true
     state: "{{ opencode_npm_state }}"
+  when: opencode_users | length > 0
+
+- name: Resolve the opencode binary directory
+  ansible.builtin.command:
+    cmd: npm prefix -g
+  register: opencode_npm_prefix
+  changed_when: false
+  when: opencode_users | length > 0
+
+- name: Record the opencode binary directory
+  ansible.builtin.set_fact:
+    opencode_bin: "{{ opencode_npm_prefix.stdout | trim }}/bin"
+  when: opencode_users | length > 0
 
 - name: Render opencode config for each user
   ansible.builtin.include_tasks: user.yml

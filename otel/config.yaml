@@ -199,18 +199,20 @@ receivers:
       - type: move
         from: attributes["log.iostream"]
         to: attributes.stream
-      - type: move
-        from: attributes.container_name
-        to: resource.container.name
       # Loki's OTLP endpoint only promotes service.* attributes to stream
       # labels, so mirror the container name into service.name. This makes
       # {service_name=~".*chatterbox.*"} selectors work for the dashboards.
+      # (Do this before moving container_name into resource, because move
+      # deletes its source field.)
       - type: add
         field: resource["service.name"]
         value: unknown_service
       - type: copy
-        from: resource["container.name"]
+        from: attributes.container_name
         to: resource["service.name"]
+      - type: move
+        from: attributes.container_name
+        to: resource.container.name
 
   # OTLP receiver for traces and metrics from applications
   otlp:

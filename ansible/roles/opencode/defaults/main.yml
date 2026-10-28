@@ -47,6 +47,10 @@ opencode_litellm_validate_certs: "{{ keycloak_validate_certs | default(true) }}"
 # npm install state: "latest" upgrades, "present" is idempotent.
 opencode_npm_state: present
 
+# Install Node.js/npm through the role when the host lacks them. Set to
+# false when Node is managed elsewhere (e.g. nvm or a pinned distro version).
+opencode_manage_nodejs: true
+
 # Model-discovery plugin (https://github.com/yuseferi/opencode-litellm).
 # Pin the version for reproducible installs; @latest tracks upstream.
 # Requires OpenCode >= 1.18.29.
@@ -75,6 +79,16 @@ opencode_provider_header_timeout_ms: 600000
 # Discovery request timeout for the plugin's /v1/models fetches, exported
 # through the user's shell profile (LITELLM_REQUEST_TIMEOUT_MS).
 opencode_discovery_timeout_ms: 15000
+
+# The LiteLLM proxy serves a Cloudflare Origin certificate. Node's fetch
+# (opencode and the discovery plugin) does not use the system trust
+# store, so it needs the origin CA root to verify the proxy. The role
+# resolves it per target OS: the gitignored certs/ directory on the
+# deployed tree (Photon), or a per-user copy distributed from the role's
+# files/ elsewhere (macOS/Linux workstations). Override
+# opencode_node_ca_cert to pin a path; set to false when the proxy's
+# cert is publicly trusted.
+opencode_node_ca_cert: false
 
 # Per-user token usage log written by the local plugin.
 opencode_usage_log: "~/.local/share/opencode/usage.jsonl"
