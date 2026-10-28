@@ -18,5 +18,10 @@ chatterbox_device: gpu
 # Brave Search is optional. Set the key in Ansible Vault or the deployment
 # environment. When both are present, the playbook enables the gateway search
 # path, Open WebUI search, and the Brave MCP connection.
+# The key is normalized once: trimmed, quote characters stripped, so raw
+# values from CI exports or vault entries cannot reach the .env file or the
+# Open WebUI config database with stray quotes.
 brave_search_enabled: false
-brave_search_api_key: "{{ lookup('ansible.builtin.env', 'BRAVE_SEARCH_API_KEY') }}"
+brave_search_api_key: >-
+  {{ lookup('ansible.builtin.env', 'BRAVE_SEARCH_API_KEY')
+     | trim | replace('"', '') | replace("'", '') }}

@@ -50,8 +50,12 @@ docker_compose_profiles:
 chatterbox_device: gpu
 
 # Optional. Supply BRAVE_SEARCH_API_KEY through the environment or vault.
+# Normalized (trimmed, quote characters stripped) so raw CI exports or vault
+# entries cannot reach .env or the Open WebUI config DB with stray quotes.
 brave_search_enabled: false
-brave_search_api_key: "{{ lookup('ansible.builtin.env', 'BRAVE_SEARCH_API_KEY') }}"
+brave_search_api_key: >-
+  {{ lookup('ansible.builtin.env', 'BRAVE_SEARCH_API_KEY')
+     | trim | replace('"', '') | replace("'", '') }}
 
 docker_compose_pull: true
 

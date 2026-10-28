@@ -52,7 +52,9 @@ providers:
 serversTransport:
   forwardingTimeouts:
     dialTimeout: "10s"
-    responseHeaderTimeout: "10s"
+    # Long enough for TTS synthesis through the oauth2-proxy voice chain.
+    # The chatterbox dynamic serversTransport disables it per-router.
+    responseHeaderTimeout: "300s"
     idleConnTimeout: "90s"
   maxIdleConnsPerHost: 10
 

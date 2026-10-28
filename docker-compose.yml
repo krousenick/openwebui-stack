@@ -767,6 +767,10 @@ services:
       # authenticated traffic to Chatterbox itself. Traefik sends voice.<domain>
       # straight here (no forwardAuth), avoiding the sign-in redirect loop.
       OAUTH2_PROXY_UPSTREAMS: "http://chatterbox-tts:8004"
+      # TTS synthesis on long text can run minutes. Keep the proxy from
+      # cutting off the Chatterbox request stream.
+      OAUTH2_PROXY_UPSTREAM_TIMEOUT: "10m"
+      OAUTH2_PROXY_FLUSH_INTERVAL: "1s"
       OAUTH2_PROXY_SCOPE: "openid email profile"
       OAUTH2_PROXY_PASS_USER_HEADERS: "true"
       OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER: "true"
