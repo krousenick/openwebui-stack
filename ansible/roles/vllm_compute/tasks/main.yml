@@ -89,8 +89,9 @@
 - name: Collect vLLM endpoint hosts
   ansible.builtin.set_fact:
     vllm_endpoints: "{{ groups['vllm_compute'] | default([])
-      | map('extract', hostvars)
-      | map('extract', 'vllm_host_ip')
+      | map('extract', hostvars, 'vllm_host_ip')
+      | map('ansible.builtin.string')
+      | select('string')
       | list }}"
   when: vllm_deployment_mode == 'standalone'
   run_once: true
