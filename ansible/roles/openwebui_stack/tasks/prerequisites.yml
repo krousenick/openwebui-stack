@@ -18,12 +18,13 @@
       - curl
       - openssl
       - python3
+      - rsync
     state: present
   when: ansible_facts.os_family == "RedHat"
 
 - name: Install required packages on Photon OS
   ansible.builtin.command:
-    cmd: tdnf install -y ca-certificates curl openssl python3
+    cmd: tdnf install -y ca-certificates curl openssl python3 rsync
   register: photon_packages
   changed_when: "'Nothing to do' not in photon_packages.stdout"
   when: ansible_facts.distribution == "VMware Photon OS"
