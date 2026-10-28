@@ -183,6 +183,11 @@ model_list:
         search_context_size: medium
     model_info:
       description: "Gemini 3.8 Flash - current fast model"
+      # Adaptive router pricing (input $/token, model_prices 2026-10-28)
+      input_cost_per_token: 0.00000075
+      adaptive_router_preferences:
+        quality_tier: 2
+        strengths: ["writing", "code_understanding"]
 
   - model_name: gemini-3.5-flash-lite
     litellm_params:
@@ -192,6 +197,10 @@ model_list:
         search_context_size: low
     model_info:
       description: "Gemini 3.5 Flash-Lite - current lightweight model"
+      input_cost_per_token: 0.0000003
+      adaptive_router_preferences:
+        quality_tier: 1
+        strengths: ["factual_lookup"]
 
   - model_name: gemini-3.1-pro
     litellm_params:
@@ -201,6 +210,10 @@ model_list:
         search_context_size: medium
     model_info:
       description: "Gemini 3.1 Pro preview - current reasoning model"
+      input_cost_per_token: 0.000002
+      adaptive_router_preferences:
+        quality_tier: 3
+        strengths: ["analytical_reasoning"]
 
   - model_name: gemini-4-argon
     litellm_params:
@@ -210,6 +223,10 @@ model_list:
         search_context_size: medium
     model_info:
       description: "Gemini 4 Argon - current Gemini model"
+      input_cost_per_token: 0.000002
+      adaptive_router_preferences:
+        quality_tier: 3
+        strengths: ["code_generation", "technical_design", "analytical_reasoning"]
 
   # Complexity auto-router. Call model "auto". The heuristic scorer picks a
   # tier with no extra API call. Session affinity is off, so each turn is
@@ -227,6 +244,30 @@ model_list:
           REASONING: gemini-3.1-pro
         classifier_type: heuristic
         session_affinity: false
+
+  # Adaptive router (beta). Call model "adaptive". A Thompson-sampling bandit
+  # learns which model wins per request type (code, writing, analysis...) from
+  # satisfaction/stagnation/misalignment signals, weighted quality vs cost.
+  # Cold start uses quality_tier + strengths declared above; ~10 requests per
+  # model per type before learned estimates take over. Needs the Postgres DB
+  # (state persists in LiteLLM_AdaptiveRouter* tables; already required here).
+  # Force frontier on one request: header x-litellm-min-quality-tier: 3.
+  # Inspect: GET /adaptive_router/state. Weights must sum to 1.0.
+  # https://docs.litellm.ai/docs/adaptive_router
+  - model_name: adaptive
+    litellm_params:
+      model: auto_router/adaptive_router
+      adaptive_router_config:
+        available_models:
+          [
+            "gemini-3.5-flash-lite",
+            "gemini-3.8-flash",
+            "gemini-3.1-pro",
+            "gemini-4-argon",
+          ]
+        weights:
+          quality: 0.7
+          cost: 0.3
 
   # AWS Bedrock OSS models. IDs are bedrock-runtime model IDs.
   # Kimi K3 has no in-region ID; us-east-1 uses the US geo profile.

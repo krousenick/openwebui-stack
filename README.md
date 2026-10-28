@@ -316,6 +316,17 @@ Key environment variables in `.env`:
    | REASONING | `gemini-3.1-pro` |
 
    Unclassifiable turns use `gemini-3.8-flash`. `session_affinity` is off, so a short follow-up is not stuck on the model that answered a hard first turn. Open WebUI can select `auto` like any other model. Bedrock models stay direct-select only. Docs: [auto routing](https://docs.litellm.ai/docs/proxy/auto_routing). `store_model_in_db` is on, so a guardrail or router key saved in the Admin UI overrides the same key in this file after a restart.
+
+   **Adaptive routing (beta).** Model `adaptive` is `auto_router/adaptive_router`. Unlike the heuristic `auto` router, it is a Thompson-sampling bandit that learns which model wins each request type (`code_generation`, `code_understanding`, `technical_design`, `analytical_reasoning`, `writing`, `factual_lookup`, `general`) from conversation signals (user satisfaction, stagnation, misalignment). It balances quality against cost with `weights: {quality: 0.7, cost: 0.3}`:
+
+   | Model | quality_tier | strengths | input $/tok |
+   | --- | --- | --- | --- |
+   | `gemini-3.5-flash-lite` | 1 (budget) | factual_lookup | 0.0000003 |
+   | `gemini-3.8-flash` | 2 (mid) | writing, code_understanding | 0.00000075 |
+   | `gemini-3.1-pro` | 3 (frontier) | analytical_reasoning | 0.000002 |
+   | `gemini-4-argon` | 3 (frontier) | code_generation, technical_design, analytical_reasoning | 0.000002 |
+
+   Cold start uses these declared tiers; after ~10 real requests per model per type, learned estimates take over. The response carries `x-litellm-adaptive-router-model` naming the model actually used. Force a frontier model on one request with the `x-litellm-min-quality-tier: 3` header (or `min_quality_tier` request metadata). Inspect what it has learned with `GET /adaptive_router/state` (admin). Learned state persists in Postgres (`LiteLLM_AdaptiveRouter*` tables) and survives restarts. Beta: latency is not scored and signals are regex/English-biased. Docs: [adaptive router](https://docs.litellm.ai/docs/adaptive_router).
 - **Keycloak**: Identity provider for SSO (auth.domain.com)
 - **PostgreSQL**: Shared relational database for Open WebUI, LiteLLM, and Keycloak
 - **Valkey**: High-performance Redis alternative for caching and sessions

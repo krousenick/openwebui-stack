@@ -16,4 +16,6 @@
     - grafana
     - traefik
     - json-exporter
+    - litellm
   delegate_to: localhost
+
