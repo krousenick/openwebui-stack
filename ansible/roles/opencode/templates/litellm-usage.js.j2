@@ -1,0 +1,44 @@
+// Logs one JSON line per completed assistant message to
+// {{ opencode_usage_log }} with the OS user, model, token counts, cost,
+// and duration. The LiteLLM proxy independently records spend per virtual
+// key (key alias {{ "opencode-" }}<username>), so this local log and
+// LiteLLM_SpendLogs cross-reference the same turns.
+//
+// event.properties.info is the SDK Message shape: tokens.input/output/
+// reasoning/cache.{read,write}, cost (USD), providerID, modelID, and
+// time.created/completed (epoch ms). Only messages with time.completed
+// are logged, which is the final update of the turn.
+import { appendFile, mkdir } from "node:fs/promises"
+import { dirname } from "node:path"
+import os from "node:os"
+
+const USAGE_LOG = `${os.homedir()}/{{ opencode_usage_log | replace('~/', '') }}`
+const USER = process.env.USER || os.userInfo().username
+
+export const LiteLLMUsagePlugin = async () => {
+  await mkdir(dirname(USAGE_LOG), { recursive: true })
+  return {
+    event: async ({ event }) => {
+      if (event.type !== "message.updated") return
+      const info = event.properties.info
+      if (!info || info.role !== "assistant" || info.time?.completed == null) return
+      if (!info.tokens || info.cost === undefined) return
+
+      const record = {
+        timestamp: new Date().toISOString(),
+        user: USER,
+        sessionID: info.sessionID,
+        providerID: info.providerID,
+        modelID: info.modelID,
+        input_tokens: info.tokens.input ?? 0,
+        output_tokens: info.tokens.output ?? 0,
+        reasoning_tokens: info.tokens.reasoning ?? 0,
+        cached_read_tokens: info.tokens.cache?.read ?? 0,
+        cached_write_tokens: info.tokens.cache?.write ?? 0,
+        cost: info.cost ?? 0,
+        duration_ms: info.time.completed - info.time.created,
+      }
+      await appendFile(USAGE_LOG, JSON.stringify(record) + "\n")
+    },
+  }
+}

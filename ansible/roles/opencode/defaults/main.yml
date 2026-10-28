@@ -1,0 +1,85 @@
+---
+# opencode (https://opencode.ai) - terminal AI coding agent pointed at the
+# stack's LiteLLM proxy so all model traffic is logged per user and per key.
+#
+# What the role deploys, per target user:
+#   - opencode binary installed globally via npm (opencode-ai)
+#   - ~/.config/opencode/opencode.json declaring a "litellm" custom provider
+#     (@ai-sdk/openai-compatible) whose baseURL is the LiteLLM proxy, plus
+#     the opencode-plugin-litellm npm plugin. The plugin auto-discovers
+#     every model in the LiteLLM model_list via /v1/models + /v1/model/info
+#     (caching them in ~/.cache/opencode-litellm, refreshed every 5 min),
+#     so no model list is maintained in opencode.json.
+#   - ~/.config/opencode/plugins/litellm-usage.js - a local plugin (auto
+#     -loaded from the plugins directory) that appends one JSON line per
+#     assistant message to ~/.local/share/opencode/usage.jsonl with user,
+#     model, token counts, and duration.
+#   - ~/.config/opencode/litellm.key - the user's LiteLLM virtual key
+#     (mode 0600), referenced from the config via {file:...}
+#
+# Per-user attribution: the role asks LiteLLM /key/generate with the master
+# key for each opencode_user, storing metadata.user=<username>. Every
+# request opencode makes then lands in LiteLLM_SpendLogs attributed to
+# that per-user virtual key, so the LiteLLM UI, /key/list and Grafana show
+# per-user token usage without extra headers.
+
+# List of host users to configure. Each entry needs a username; key_alias
+# and models are optional (models restricts the key's allowed model_names).
+opencode_users: []
+
+# LiteLLM proxy endpoints.
+opencode_litellm_base_url: "https://litellm.{{ domain | default('localhost') }}"
+
+# Where the deployed stack .env lives on the Photon host (master key source).
+opencode_env_file: "{{ project_root | default('/mnt/data1/openwebui-stack') }}/.env"
+
+# Master key lookup: read LITELLM_MASTER_KEY from the deployed .env on the
+# host. Override with opencode_litellm_master_key to inject from vault.
+opencode_litellm_master_key: >-
+  {{ lookup('ansible.builtin.file', opencode_env_file, errors='ignore')
+     | regex_search('(?im)^LITELLM_MASTER_KEY=(\S+)', '\\1')
+     | first
+     | default('', true) }}
+
+# Verify TLS on the LiteLLM API calls made by the role itself.
+opencode_litellm_validate_certs: "{{ keycloak_validate_certs | default(true) }}"
+
+# npm install state: "latest" upgrades, "present" is idempotent.
+opencode_npm_state: present
+
+# Model-discovery plugin (https://github.com/yuseferi/opencode-litellm).
+# Pin the version for reproducible installs; @latest tracks upstream.
+# Requires OpenCode >= 1.18.29.
+opencode_litellm_plugin: "opencode-plugin-litellm@latest"
+
+# Default model in the opencode config (<provider>/<model_name>), where
+# model_name comes from the LiteLLM model_list (auto-discovered).
+opencode_default_model: "litellm/gemini-4-argon"
+opencode_small_model: "litellm/gemini-3.5-flash-lite"
+
+# Optional curated overrides for discovered models. Keys are LiteLLM
+# model_names; the plugin preserves these verbatim and only adds models
+# whose key is not already defined. Set a display name, or add limit
+# fields when /v1/model/info does not report them.
+# Example:
+#   opencode_model_overrides:
+#     gemini-4-argon:
+#       name: "Gemini 4 Argon"
+opencode_model_overrides: {}
+
+# Provider-level timeouts (ms). LiteLLM request_timeout is 6000s, so a long
+# agent turn can legitimately run for a while.
+opencode_provider_timeout_ms: 600000
+opencode_provider_header_timeout_ms: 600000
+
+# Discovery request timeout for the plugin's /v1/models fetches, exported
+# through the user's shell profile (LITELLM_REQUEST_TIMEOUT_MS).
+opencode_discovery_timeout_ms: 15000
+
+# Per-user token usage log written by the local plugin.
+opencode_usage_log: "~/.local/share/opencode/usage.jsonl"
+
+# Optional per-key spend budget (USD). null = unlimited.
+opencode_key_max_budget: null
+# Rate limit requests per minute per key. null = unlimited.
+opencode_key_rpm: null
