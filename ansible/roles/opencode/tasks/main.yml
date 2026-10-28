@@ -1,0 +1,32 @@
+---
+- name: Validate opencode configuration
+  ansible.builtin.assert:
+    that:
+      - opencode_users | length > 0
+      - opencode_users | map(attribute='username') | select('defined') | list | length == opencode_users | length
+    fail_msg: >-
+      opencode_users must be a non-empty list of entries with a username key,
+      e.g. opencode_users: [{username: nicholas.krouse}].
+
+- name: Require the LiteLLM master key
+  ansible.builtin.assert:
+    that:
+      - opencode_litellm_master_key | length > 0
+    fail_msg: >-
+      LITELLM_MASTER_KEY not found in {{ opencode_env_file }} and
+      opencode_litellm_master_key is empty. Point opencode_env_file at the
+      deployed stack .env or set the variable from vault.
+  no_log: true
+
+- name: Install opencode globally
+  community.general.npm:
+    name: opencode-ai
+    global: true
+    state: "{{ opencode_npm_state }}"
+
+- name: Render opencode config for each user
+  ansible.builtin.include_tasks: user.yml
+  loop: "{{ opencode_users }}"
+  loop_control:
+    loop_var: opencode_user
+    label: "{{ opencode_user.username }}"

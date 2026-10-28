@@ -762,6 +762,9 @@ services:
       OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
       OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
       OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      # Prometheus metrics on a dedicated listener; scraped by the OTel
+      # collector's prometheus receiver (job "oauth2-proxy").
+      OAUTH2_PROXY_METRICS_ADDRESS: 0.0.0.0:4181
       OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY: "${OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY:-false}"
       # Upstream mode: oauth2-proxy owns the browser OAuth flow and proxies
       # authenticated traffic to Chatterbox itself. Traefik sends voice.<domain>

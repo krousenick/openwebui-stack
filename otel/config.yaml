@@ -80,45 +80,25 @@ receivers:
                 job: "keycloak"
           metrics_path: "/metrics"
 
-        # Chatterbox TTS JSON status, memory, health, voices, and languages.
-        # The API has no /metrics endpoint. json-exporter maps those JSON
-        # documents. GPU series are absent on the CPU profile.
+        # Chatterbox TTS JSON status endpoints (v2.0 API on port 8004).
+        # The old port-4123 monitoring API (/status, /memory, /voices, ...) was
+        # removed upstream; json-exporter maps the surviving JSON documents.
         - job_name: "chatterbox"
           scrape_interval: 15s
           metrics_path: /probe
           static_configs:
             - targets:
-                - http://chatterbox-tts:4123/status?include_memory=true&include_stats=true
+                - http://chatterbox-tts:8004/api/ui/initial-data
               labels:
-                module: chatterbox
+                module: chatterbox_initial_data
             - targets:
-                - http://chatterbox-tts:4123/status/statistics?include_memory=true
+                - http://chatterbox-tts:8004/api/model-info
               labels:
-                module: chatterbox_statistics
+                module: chatterbox_model_info
             - targets:
-                - http://chatterbox-tts:4123/memory
-              labels:
-                module: chatterbox_memory
-            - targets:
-                - http://chatterbox-tts:4123/memory/config
-              labels:
-                module: chatterbox_memory_config
-            - targets:
-                - http://chatterbox-tts:4123/voices
+                - http://chatterbox-tts:8004/get_predefined_voices
               labels:
                 module: chatterbox_voices
-            - targets:
-                - http://chatterbox-tts:4123/languages
-              labels:
-                module: chatterbox_languages
-            - targets:
-                - http://chatterbox-tts:4123/health
-              labels:
-                module: chatterbox_health
-            - targets:
-                - http://chatterbox-tts:4123/config
-              labels:
-                module: chatterbox_config
           relabel_configs:
             - source_labels: [__address__]
               target_label: __param_target
@@ -128,6 +108,14 @@ receivers:
               target_label: instance
             - target_label: __address__
               replacement: json-exporter:7979
+
+        # OAuth2 Proxy request metrics (metrics listener on :4181).
+        - job_name: "oauth2-proxy"
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["oauth2-proxy:4181"]
+              labels:
+                job: "oauth2-proxy"
 
   # Docker engine resource metrics for every running container.
   # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/dockerstatsreceiver
@@ -214,6 +202,15 @@ receivers:
       - type: move
         from: attributes.container_name
         to: resource.container.name
+      # Loki's OTLP endpoint only promotes service.* attributes to stream
+      # labels, so mirror the container name into service.name. This makes
+      # {service_name=~".*chatterbox.*"} selectors work for the dashboards.
+      - type: add
+        field: resource["service.name"]
+        value: unknown_service
+      - type: copy
+        from: resource["container.name"]
+        to: resource["service.name"]
 
   # OTLP receiver for traces and metrics from applications
   otlp:

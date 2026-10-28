@@ -1,0 +1,128 @@
+---
+# Per-user setup: mint a LiteLLM virtual key, then render the opencode
+# config, key file, and usage-logging plugin into the user's home.
+
+- name: Resolve user facts
+  ansible.builtin.user:
+    name: "{{ opencode_user.username }}"
+    state: present
+  register: opencode_account
+
+- name: Derive LiteLLM key alias
+  ansible.builtin.set_fact:
+    opencode_key_alias: "{{ opencode_user.key_alias | default('opencode-' + opencode_user.username) }}"
+
+- name: Check whether the user's LiteLLM key already exists
+  ansible.builtin.uri:
+    url: "{{ opencode_litellm_base_url }}/key/info?key={{ opencode_key_alias }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ opencode_litellm_master_key }}"
+    status_code: [200, 404]
+    validate_certs: "{{ opencode_litellm_validate_certs }}"
+  register: opencode_key_info
+  no_log: true
+
+- name: Mint a per-user LiteLLM virtual key
+  ansible.builtin.uri:
+    url: "{{ opencode_litellm_base_url }}/key/generate"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ opencode_litellm_master_key }}"
+      Content-Type: application/json
+    body:
+      key_alias: "{{ opencode_key_alias }}"
+      user_id: "{{ opencode_user.username }}"
+      models: "{{ opencode_user.models | default([]) }}"
+      max_budget: "{{ opencode_key_max_budget }}"
+      rpm_limit: "{{ opencode_key_rpm }}"
+      metadata:
+        user: "{{ opencode_user.username }}"
+        source: opencode
+    body_format: json
+    status_code: 201
+    validate_certs: "{{ opencode_litellm_validate_certs }}"
+  register: opencode_key_generated
+  when: opencode_key_info.status == 404
+  no_log: true
+
+- name: Fetch the existing key value
+  ansible.builtin.uri:
+    url: "{{ opencode_litellm_base_url }}/key/info?key={{ opencode_key_alias }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ opencode_litellm_master_key }}"
+    status_code: 200
+    validate_certs: "{{ opencode_litellm_validate_certs }}"
+  register: opencode_key_existing
+  when: opencode_key_info.status == 200
+  no_log: true
+
+- name: Derive the key value
+  ansible.builtin.set_fact:
+    opencode_key_value: >-
+      {{ (opencode_key_generated.json.key
+          if opencode_key_generated is not skipped
+          else opencode_key_existing.json.key_info.key) | string | trim }}
+  no_log: true
+
+- name: Create the opencode config directory
+  ansible.builtin.file:
+    path: "{{ opencode_account.home }}/.config/opencode"
+    state: directory
+    owner: "{{ opencode_user.username }}"
+    group: "{{ opencode_account.group }}"
+    mode: "0755"
+
+- name: Create the opencode data directory
+  ansible.builtin.file:
+    path: "{{ opencode_account.home }}/.local/share/opencode"
+    state: directory
+    owner: "{{ opencode_user.username }}"
+    group: "{{ opencode_account.group }}"
+    mode: "0755"
+
+- name: Write the user's LiteLLM key
+  ansible.builtin.copy:
+    content: "{{ opencode_key_value }}"
+    dest: "{{ opencode_account.home }}/.config/opencode/litellm.key"
+    owner: "{{ opencode_user.username }}"
+    group: "{{ opencode_account.group }}"
+    mode: "0600"
+  no_log: true
+
+- name: Render opencode.json
+  ansible.builtin.template:
+    src: opencode.json.j2
+    dest: "{{ opencode_account.home }}/.config/opencode/opencode.json"
+    owner: "{{ opencode_user.username }}"
+    group: "{{ opencode_account.group }}"
+    mode: "0644"
+
+- name: Install the usage logging plugin
+  ansible.builtin.template:
+    src: litellm-usage.js.j2
+    dest: "{{ opencode_account.home }}/.config/opencode/plugins/litellm-usage.js"
+    owner: "{{ opencode_user.username }}"
+    group: "{{ opencode_account.group }}"
+    mode: "0644"
+
+- name: Export LiteLLM discovery settings in the user's profile
+  ansible.builtin.lineinfile:
+    path: "{{ opencode_account.home }}/.profile"
+    line: 'export LITELLM_REQUEST_TIMEOUT_MS="{{ opencode_discovery_timeout_ms }}"'
+    regexp: '^export LITELLM_REQUEST_TIMEOUT_MS='
+    state: present
+    create: true
+    owner: "{{ opencode_user.username }}"
+    group: "{{ opencode_account.group }}"
+    mode: "0644"
+
+- name: Report configuration for the user
+  ansible.builtin.debug:
+    msg:
+      - "opencode configured for {{ opencode_user.username }}"
+      - "config: {{ opencode_account.home }}/.config/opencode/opencode.json"
+      - "models: auto-discovered from {{ opencode_litellm_base_url }}/v1/models"
+      - "usage log: {{ opencode_usage_log }}"
+      - "LiteLLM key alias: {{ opencode_key_alias }} (per-user spend shows in the LiteLLM UI /key/list and SpendLogs)"

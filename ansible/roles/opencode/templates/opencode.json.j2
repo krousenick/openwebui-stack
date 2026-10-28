@@ -1,0 +1,20 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "{{ opencode_default_model }}",
+  "small_model": "{{ opencode_small_model }}",
+  "plugin": ["{{ opencode_litellm_plugin }}"],
+  "provider": {
+    "litellm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LiteLLM ({{ domain | default('localhost') }})",
+      "options": {
+        "baseURL": "{{ opencode_litellm_base_url }}/v1",
+        "apiKey": "{file:{{ opencode_account.home }}/.config/opencode/litellm.key}",
+        "timeout": {{ opencode_provider_timeout_ms }},
+        "headerTimeout": {{ opencode_provider_header_timeout_ms }}
+      },
+      "models": {{ opencode_model_overrides | to_json }}
+    }
+  },
+  "enabled_providers": ["litellm"]
+}
