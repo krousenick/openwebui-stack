@@ -1,0 +1,24 @@
+---
+# Rig-only overrides, applied after group_vars. run.sh exports these as
+# environment variables; group_vars/vllm_compute/vars.yml keeps the real
+# production values for real nodes.
+#
+# vllm_image: the CPU stub image built by stub-setup.yml (real ray, stubbed
+#             vllm serve). Production uses vllm/vllm-openai:latest.
+# vllm_model: a local path; the stub ignores it but a real image would try to
+#             download from Hugging Face, which the rig avoids.
+vllm_image: "{{ lookup('ansible.builtin.env', 'VLLM_IMAGE_OVERRIDE', default='vllm/vllm-openai:test-stub') }}"
+vllm_model: "{{ lookup('ansible.builtin.env', 'VLLM_MODEL_OVERRIDE', default='/opt/models/test-model') }}"
+
+# Standalone mode: every node serves the model and LiteLLM load balances.
+# This avoids depending on real Ray cluster formation in the rig. Ray mode
+# is exercised separately by services.yml's ray tasks on the head node.
+vllm_deployment_mode: standalone
+
+# The rig VM has no /mnt/data1; use a local path.
+vllm_hf_cache_dir: /opt/vllm-hf-cache
+
+# Firewalld IS running in the rig; the real zone rules are the point of the
+# test. The OrbStack network is not the production compute segment, so open
+# the zone to the VM's own /24.
+vllm_manage_firewall: true
