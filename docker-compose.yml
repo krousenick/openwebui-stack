@@ -38,6 +38,7 @@ services:
           - grafana.${DOMAIN:-localhost}
           - litellm.${DOMAIN:-localhost}
           - voice.${DOMAIN:-localhost}
+          - playwright-mcp.${DOMAIN:-localhost}
       backend:
     labels:
       - "traefik.enable=true"
@@ -149,6 +150,8 @@ services:
       # Brave Search through the LiteLLM MCP gateway. ConfigVar: persisted after first boot.
       ENABLE_TOOL_SERVERS: "true"
       TOOL_SERVER_CONNECTIONS: '[{"type":"mcp","url":"http://litellm:4000/mcp/brave_search","auth_type":"bearer","key":"${LITELLM_MASTER_KEY}","config":{"enable":true},"info":{"id":"brave_search","name":"Brave Search","description":"Web search through the LiteLLM Brave MCP server"}}]'
+
+      ENABLE_ADMIN_CHAT_ACCESS: "true"
     networks:
       - frontend
       - backend
@@ -278,6 +281,8 @@ services:
       keycloak:
         condition: service_healthy
       lgtm:
+        condition: service_started
+      vllm-flux:
         condition: service_started
     labels:
       - traefik.enable=true
@@ -618,6 +623,46 @@ services:
       - frontend
 
   # ===========================================================================
+  # Playwright MCP Server - Web Clicking for LLM
+  # ===========================================================================
+  playwright-mcp:
+    image: mcr.microsoft.com/playwright/mcp
+    # No container_name: replicas must have unique names (compose rejects both).
+    init: true
+    logging: *default-logging
+    environment:
+      PLAYWRIGHT_MCP_HEADLESS: true
+      PLAYWRIGHT_MCP_CONSOLE_LEVEL: info
+      PLAYWRIGHT_MCP_BROWSER: chromium
+      PLAYWRIGHT_MCP_CAPS: pdf,devtools
+      PLAYWRIGHT_MCP_IGNORE_HTTPS_ERRORS: true
+      PLAYWRIGHT_MCP_NO_SANDBOX: true
+      PLAYWRIGHT_MCP_HOST: 0.0.0.0
+      PLAYWRIGHT_MCP_PORT: 8931
+      # Traefik forwards the incoming Host header (playwright-mcp.<domain>),
+      # which is not in the server's default localhost allowlist -> 403.
+      PLAYWRIGHT_MCP_ALLOWED_HOSTS: "*"
+    deploy:
+      replicas: 5
+    restart: unless-stopped
+    networks:
+      - backend
+      - frontend
+    labels:
+      - "traefik.enable=true"
+      # The `web` entrypoint 308-redirects to websecure; httpx (LiteLLM's MCP
+      # client) does not follow redirects, so route on the non-redirecting
+      # `mcp` entrypoint instead.
+      - "traefik.http.routers.playwright.rule=Host(`playwright-mcp.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.playwright.entrypoints=mcp"
+      # Tell Traefik exactly which internal container port to load balance across
+      - "traefik.http.services.playwright.loadbalancer.server.port=8931"
+      # MCP sessions live in each replica's process memory; sticky cookies keep
+      # every request of a session on the replica that owns it (no 404s).
+      - "traefik.http.services.playwright.loadbalancer.sticky.cookie=true"
+      - "traefik.http.services.playwright.loadbalancer.sticky.cookie.name=pwsticky"
+
+  # ===========================================================================
   # Chatterbox TTS - OpenAI-compatible voice cloning
   # https://github.com/devnen/Chatterbox-TTS-Server
   # UI: https://voice.${DOMAIN}  API (internal): http://chatterbox-tts:8004/v1
@@ -806,6 +851,68 @@ services:
           cpus: "0.5"
 
   # ===========================================================================
+  # vLLM - OpenAI-compatible inference server for Flux image generation
+  # Profile: gpu
+  # API: http://vllm-flux:8000/v1 (internal), exposed via LiteLLM
+  # ===========================================================================
+  vllm-flux:
+    image: vllm/vllm-openai:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_vllm-flux
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:${VLLM_FLUX_PORT:-8005}:8000"
+    environment:
+      # vLLM configuration
+      VLLM_LOGGING_LEVEL: INFO
+      VLLM_CONFIGURE_LOGGING: "1"
+      # Model configuration - Flux.1-dev is the quality model, Flux.1-schnell is faster
+      VLLM_MODEL: ${VLLM_FLUX_MODEL:-black-forest-labs/FLUX.1-dev}
+      # GPU configuration
+      CUDA_VISIBLE_DEVICES: "0"
+      GPU_MEMORY_UTILIZATION: 0.95
+      # Tensor parallelism for multi-GPU (set to number of GPUs)
+      TENSOR_PARALLEL_SIZE: ${VLLM_TENSOR_PARALLEL:-1}
+      # Max model length (Flux uses fewer tokens than text models)
+      MAX_MODEL_LEN: 2048
+      # Disable HF tokenizers for faster startup
+      HF_TOKENIZERS_PARALLELISM: "0"
+      # Enable OpenAI-compatible API
+      VLLM_API_KEY: ${VLLM_FLUX_API_KEY:-}
+      # Quantization options (optional - uncomment if needed)
+      # VLLM_QUANTIZATION: awq
+      # Enforce-eager disables CUDA graph optimization (slower but more compatible)
+      # VLLM_ENFORCE_EAGER: "1"
+    volumes:
+      - vllm_flux_cache:/root/.cache/huggingface
+    networks:
+      backend:
+        aliases:
+          - vllm-flux
+    profiles:
+      - gpu
+    deploy:
+      resources:
+        limits:
+          memory: 32G
+          cpus: "8.0"
+        reservations:
+          memory: 16G
+          cpus: "4.0"
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # ===========================================================================
   # NVIDIA GPU Exporter (Optional - requires NVIDIA runtime)
   # ===========================================================================
   nvidia-gpu-exporter:
@@ -842,37 +949,41 @@ services:
       - monitoring
 
   # ===========================================================================
-  # Docker log names
-  # filelog cannot ask the engine for a container name. This sidecar links
-  # each json-file log to /var/log/containers/<name>.log.
+  # Grafana Alloy - Docker container logs
+  # The local logging driver has no json-file for the collector to tail.
+  # Alloy reads each container through the Docker API and pushes to Loki.
+  # https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.docker/
   # ===========================================================================
-  docker-log-discovery:
-    image: python:3.13-slim
-    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_docker-log-discovery
+  alloy:
+    image: grafana/alloy:v1.21.3
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_alloy
     restart: unless-stopped
     logging: *default-logging
     user: "0:0"
-    entrypoint: ["python3", "/discover-docker-logs.py"]
-    environment:
-      PYTHONUNBUFFERED: "1"
+    group_add:
+      - "${DOCKER_GID:-999}"
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
     volumes:
-      - ./scripts/discover-docker-logs.py:/discover-docker-logs.py:ro
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy_data:/var/lib/alloy/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - type: bind
-        source: /var/log/containers
-        target: /var/log/containers
     networks:
       - backend
+    depends_on:
+      - lgtm
     profiles:
       - monitoring
 
   # ===========================================================================
-  # OpenTelemetry Collector - Metrics and container logs
-  # docker_stats and filelog need the engine socket and container log files.
-  # Official collector images run as non-root, so the host docker group is
-  # added. Set DOCKER_GID to the host `getent group docker` value when 999
-  # is wrong. filelog reads the json-file logs under /var/lib/docker.
+  # OpenTelemetry Collector - Metrics and application logs
+  # docker_stats needs the engine socket. The official collector image runs
+  # as non-root, so the host docker group is added. Set DOCKER_GID to the
+  # host `getent group docker` value when 999 is wrong. Container stdout is
+  # collected by Alloy, not this collector.
   # ===========================================================================
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
@@ -886,17 +997,11 @@ services:
     volumes:
       - ./otel/config.yaml:/etc/otel/config.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - type: bind
-        source: /var/log/containers
-        target: /var/log/containers
-        read_only: true
     networks:
       - backend
     depends_on:
       - lgtm
       - json-exporter
-      - docker-log-discovery
     profiles:
       - monitoring
 
@@ -960,5 +1065,7 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak_backups
   chatterbox_models:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox_models
-  docker_log_links:
-    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_docker_log_links
+  alloy_data:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_alloy_data
+  vllm_flux_cache:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_vllm_flux_cache
