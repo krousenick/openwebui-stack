@@ -11,11 +11,11 @@
       - passwd
       - -apr1
       - "{{ traefik_dashboard_password }}"
-  register: traefik_hash_result
+  register: openwebui_stack_traefik_hash
   changed_when: false
   no_log: true
 
 - name: Record the Traefik dashboard hash (compose-escaped)
   ansible.builtin.set_fact:
-    traefik_dashboard_password_hash: "{{ traefik_hash_result.stdout | trim | replace('$', '$$') }}"
+    traefik_dashboard_password_hash: "{{ openwebui_stack_traefik_hash.stdout | trim | replace('$', '$$') }}"
   no_log: true
