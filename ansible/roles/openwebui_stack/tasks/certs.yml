@@ -21,7 +21,7 @@
 - name: Check whether the certificate files already exist
   ansible.builtin.stat:
     path: "{{ project_root }}/certs/{{ item }}"
-  register: cert_files
+  register: openwebui_stack_cert_files
   loop:
     - "{{ ssl_cert_file }}"
     - "{{ ssl_key_file }}"
@@ -35,13 +35,13 @@
       certs/, or set ssl_cert_type to 'selfsigned' to generate a pair.
   when:
     - ssl_cert_type == 'existing'
-    - cert_files.results | selectattr('stat.exists', 'equalto', false) | list | length > 0
+    - openwebui_stack_cert_files.results | selectattr('stat.exists', 'equalto', false) | list | length > 0
 
 - name: Install python3-cryptography for community.crypto on Photon
   ansible.builtin.command:
     cmd: tdnf install -y python3-cryptography
-  register: certs_photon_cryptography
-  changed_when: "'Nothing to do' not in certs_photon_cryptography.stdout"
+  register: openwebui_stack_certs_photon_cryptography
+  changed_when: "'Nothing to do' not in openwebui_stack_certs_photon_cryptography.stdout"
   when:
     - ssl_cert_type == 'selfsigned'
     - ansible_facts.distribution == 'VMware Photon OS'
@@ -73,22 +73,30 @@
     force: false
   when: ssl_cert_type == 'selfsigned'
 
+- name: Generate the self-signed CSR
+  community.crypto.openssl_csr:
+    path: "{{ project_root }}/certs/{{ ssl_cert_file }}.csr"
+    privatekey_path: "{{ project_root }}/certs/{{ ssl_key_file }}"
+    subject_alt_name: "{{ selfsigned_san }}"
+    common_name: "{{ domain }}"
+    country_name: "{{ selfsigned_subject.country }}"
+    state_or_province_name: "{{ selfsigned_subject.state }}"
+    locality_name: "{{ selfsigned_subject.city }}"
+    organization_name: "{{ selfsigned_subject.org }}"
+    organizational_unit_name: "{{ selfsigned_subject.ou }}"
+    digest: sha256
+    mode: "0600"
+  when: ssl_cert_type == 'selfsigned'
+
 - name: Generate the self-signed certificate
   community.crypto.x509_certificate:
     path: "{{ project_root }}/certs/{{ ssl_cert_file }}"
+    csr_path: "{{ project_root }}/certs/{{ ssl_cert_file }}.csr"
     privatekey_path: "{{ project_root }}/certs/{{ ssl_key_file }}"
     provider: selfsigned
     selfsigned_not_after: "+{{ selfsigned_valid_days }}d"
     selfsigned_digest: sha256
     mode: "0644"
-    subject:
-      C: "{{ selfsigned_subject.country }}"
-      ST: "{{ selfsigned_subject.state }}"
-      L: "{{ selfsigned_subject.city }}"
-      O: "{{ selfsigned_subject.org }}"
-      OU: "{{ selfsigned_subject.ou }}"
-      CN: "{{ domain }}"
-    subject_alt_name: "{{ selfsigned_san }}"
   when: ssl_cert_type == 'selfsigned'
 
 - name: Render the Traefik dynamic certificate config
