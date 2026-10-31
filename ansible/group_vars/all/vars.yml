@@ -57,6 +57,11 @@ brave_search_api_key: >-
   {{ lookup('ansible.builtin.env', 'BRAVE_SEARCH_API_KEY')
      | trim | replace('"', '') | replace("'", '') }}
 
+# Optional. Enables the Open WebUI tool server connection to the Playwright
+# MCP cluster (docker-compose.yml service playwright-mcp). No secret needed;
+# the cluster authenticates to LiteLLM with the LiteLLM master key.
+playwright_mcp_enabled: false
+
 docker_compose_pull: true
 
 # ---------------------------------------------------------------------------
@@ -128,6 +133,20 @@ keycloak_apps:
 # Keycloak groups
 # Role names are the values docker-compose.yml reads from the roles claim.
 # ---------------------------------------------------------------------------
+
+# realm-management roles for the platform realm. Members administer the realm
+# from the Keycloak admin console (https://auth.{{ domain }}/admin/{{ keycloak_realm }}/console/).
+keycloak_platform_realm_admin_group: platform-admins
+keycloak_platform_realm_admin_roles:
+  - name: manage-realm
+  - name: view-realm
+  - name: manage-users
+  - name: view-users
+  - name: query-users
+  - name: manage-clients
+  - name: view-clients
+  - name: query-clients
+  - name: query-groups
 
 keycloak_group_role_mappings:
   - group: platform-admins

@@ -1,0 +1,35 @@
+// Docker container logs for the local logging driver.
+// loki.source.docker reads the engine API, so json-file logs are not required.
+// https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.docker/
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "service_name"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.write.lgtm.receiver]
+}
+
+loki.write "lgtm" {
+  endpoint {
+    url = "http://lgtm:3100/loki/api/v1/push"
+  }
+}

@@ -16,6 +16,7 @@
       ansible.builtin.dnf:
         name:
           - docker
+          - docker-compose
           - firewalld
           - openssh-server
         state: present

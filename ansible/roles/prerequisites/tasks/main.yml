@@ -1,0 +1,107 @@
+---
+# Global pre-flight checks for every host that runs docker compose workloads
+# (the openwebui stack host and the vllm_compute nodes). Both playbooks run
+# this role first so a missing Docker or Compose installation fails fast
+# with guidance, before any role renders configs or talks to containers.
+#
+# This role only checks Docker/Compose and installs the small base package
+# set the roles' own task steps need (curl, rsync, openssl, python3). The
+# Docker Engine, the compose plugin, and the NVIDIA driver are host
+# prerequisites: install them on each host first (see the fail messages and
+# the README).
+
+# ---------------------------------------------------------------------------
+# Base packages: curl + rsync support the roles' own task steps (uri checks,
+# ansible.posix.synchronize). Python is needed by Ansible itself.
+# ---------------------------------------------------------------------------
+
+- name: Install required packages on Debian-family hosts
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - openssl
+      - python3
+      - python3-pip
+    state: present
+    update_cache: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install required packages on RedHat-family hosts
+  ansible.builtin.dnf:
+    name:
+      - ca-certificates
+      - curl
+      - openssl
+      - python3
+      - rsync
+    state: present
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Install required packages on Photon OS
+  ansible.builtin.command:
+    cmd: tdnf install -y ca-certificates curl openssl python3 rsync
+  register: prerequisites_photon_packages
+  changed_when: "'Nothing to do' not in prerequisites_photon_packages.stdout"
+  when: ansible_facts.distribution == "VMware Photon OS"
+
+# ---------------------------------------------------------------------------
+# Docker + Compose: required before any compose task in any downstream role.
+# Both playbooks run this role first, so these asserts run on every host the
+# play targets.
+# ---------------------------------------------------------------------------
+
+- name: Check Docker
+  ansible.builtin.command:
+    cmd: docker version
+  register: prerequisites_docker_version
+  changed_when: false
+  failed_when: false
+
+- name: Check Docker Compose
+  ansible.builtin.command:
+    cmd: docker compose version
+  register: prerequisites_docker_compose_version
+  changed_when: false
+  failed_when: false
+
+- name: Require Docker and Docker Compose
+  ansible.builtin.assert:
+    that:
+      - prerequisites_docker_version.rc == 0
+      - prerequisites_docker_compose_version.rc == 0
+    fail_msg: >-
+      docker / docker compose is unavailable on {{ inventory_hostname }}.
+      Install Docker Engine and the compose plugin and start the service,
+      then re-run (Fedora: dnf install docker docker-compose &&
+      systemctl enable --now docker; Photon OS: tdnf install docker
+      docker-compose && systemctl enable --now docker).
+
+- name: Display Docker versions
+  ansible.builtin.debug:
+    msg:
+      - "{{ prerequisites_docker_version.stdout }}"
+      - "{{ prerequisites_docker_compose_version.stdout }}"
+
+# ---------------------------------------------------------------------------
+# Optional NVIDIA driver check. Off by default; enabled per host group via
+# prerequisites_check_nvidia. The vllm_compute group_vars set it true.
+# ---------------------------------------------------------------------------
+
+- name: Check for the NVIDIA driver
+  ansible.builtin.command:
+    cmd: nvidia-smi
+  register: prerequisites_nvidia_smi
+  changed_when: false
+  failed_when: false
+  when: prerequisites_check_nvidia | bool
+
+- name: Fail with guidance when the NVIDIA driver is missing
+  ansible.builtin.fail:
+    msg: >-
+      nvidia-smi is unavailable on {{ inventory_hostname }}.
+      Install the NVIDIA driver first (for example:
+      dnf install akmod-nvidia xorg-x11-drv-nvidia-cuda), then re-run.
+  when:
+    - prerequisites_check_nvidia | bool
+    - prerequisites_nvidia_smi.rc != 0

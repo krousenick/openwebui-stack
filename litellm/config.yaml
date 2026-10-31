@@ -319,10 +319,44 @@ model_list:
   #     max_input_tokens: 32768
   #     max_tokens: 32768
 
+  # vLLM Flux Image Generation
+  # Uses local vLLM server with FLUX.1-dev or FLUX.1-schnell model
+  - model_name: flux
+    litellm_params:
+      model: openai/flux
+      api_base: ${VLLM_FLUX_API_BASE:-http://vllm-flux:8000/v1}
+      api_key: ${VLLM_FLUX_API_KEY:-}
+    model_info:
+      mode: image_generation
+      description: "FLUX.1-dev via local vLLM - high quality image generation"
+      supports_function_calling: false
+      supports_vision: false
+
+  - model_name: flux-schnell
+    litellm_params:
+      model: openai/flux-schnell
+      api_base: ${VLLM_FLUX_API_BASE:-http://vllm-flux:8000/v1}
+      api_key: ${VLLM_FLUX_API_KEY:-}
+    model_info:
+      mode: image_generation
+      description: "FLUX.1-schnell via local vLLM - fast image generation"
+      supports_function_calling: false
+      supports_vision: false
+
 # MCP Servers Configuration
 mcp_servers:
   brave_search:
     url: "http://brave-search-mcp:8080/mcp"
     transport: "http"
+    auth_type: "none"
+    allow_all_keys: true
+  playwright_cluster:
+    # Route requests through Traefik's mcp entrypoint (:8082, no redirect),
+    # which distributes them across the playwright-mcp replicas.
+    # Sticky-cookie routing pins each MCP session to one replica.
+    url: "http://traefik:8082/mcp"
+    static_headers:
+      Host: "playwright-mcp.${DOMAIN:-localhost}" # Must match your Traefik router rule Host
+    transport: "http" # Connects via Streamable HTTP/SSE
     auth_type: "none"
     allow_all_keys: true

@@ -1,7 +1,7 @@
 ---
-- name: Install host prerequisites
-  ansible.builtin.import_tasks:
-    file: prerequisites.yml
+# Host prerequisites (base packages, Docker, docker compose) are checked first
+# by the global prerequisites role, which runs before this one in
+# playbooks/site.yml.
 
 - name: Create project directories
   ansible.builtin.import_tasks:
@@ -11,10 +11,9 @@
   ansible.builtin.import_tasks:
     file: sync.yml
 
-- name: Configure optional Brave Search
+- name: Configure optional MCP servers
   ansible.builtin.import_tasks:
-    file: brave.yml
-  when: brave_search_enabled | bool and brave_search_api_key | length > 0
+    file: mcp/main.yml
 
 - name: Configure Keycloak SSO
   ansible.builtin.import_tasks:

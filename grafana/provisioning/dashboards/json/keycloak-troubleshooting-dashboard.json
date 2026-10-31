@@ -97,7 +97,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -152,10 +152,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "count_over_time(\n  sum (up{\n    container=\"keycloak\", \n    namespace=\"$namespace\"\n  } > 0)[$__range:$__interval]\n)\n/\ncount_over_time(vector(1)[$__range:$__interval])",
+          "expr": "count_over_time(\n  sum (up{\n     \n    job=\"$job\"\n  } > 0)[$__range:$__interval]\n)\n/\ncount_over_time(vector(1)[$__range:$__interval])",
           "hide": false,
           "legendFormat": "__auto",
           "range": true,
@@ -168,7 +168,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -223,10 +223,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(\n  rate(\n    http_server_requests_seconds_bucket{\n      uri=~\"/realms/{realm}/protocol/{protocol}/.*|/realms/{realm}/login-actions/.*\", \n      le=\"0.25\", \n      container=\"keycloak\", \n      namespace=\"$namespace\"}\n    [$__range] \n  )\n) without (le,uri,status,outcome,method,pod,instance) \n/\nsum(\n  rate(\n    http_server_requests_seconds_count{\n      uri=~\"/realms/{realm}/protocol/{protocol}/.*|/realms/{realm}/login-actions/.*\", \n      container=\"keycloak\",\n      namespace=\"$namespace\"}\n    [$__range] \n  )\n) without (le,uri,status,outcome,method,pod,instance)",
+          "expr": "sum(\n  rate(\n    http_server_requests_seconds_bucket{\n      uri=~\"/realms/\\\\{realm\\\\}/protocol/\\\\{protocol\\\\}/.*|/realms/\\\\{realm\\\\}/login-actions/.*\", \n      le=\"0.25\", \n       \n      job=\"$job\"}\n    [$__range] \n  )\n) without (le,uri,status,outcome,method,pod,instance) \n/\nsum(\n  rate(\n    http_server_requests_seconds_count{\n      uri=~\"/realms/\\\\{realm\\\\}/protocol/\\\\{protocol\\\\}/.*|/realms/\\\\{realm\\\\}/login-actions/.*\", \n      \n      job=\"$job\"}\n    [$__range] \n  )\n) without (le,uri,status,outcome,method,pod,instance)",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -238,7 +238,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -290,10 +290,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(\n  rate(\n    http_server_requests_seconds_count{\n      uri=~\"/realms/{realm}/protocol/{protocol}.*|/realms/{realm}/login-actions.*\", \n      outcome=\"SERVER_ERROR\", \n      container=\"keycloak\", \n      namespace=\"$namespace\"}\n    [$__range] \n  )\n) or vector(0) \n/\nsum(\n  rate(\n    http_server_requests_seconds_count{\n      uri=~\"/realms/{realm}/protocol/{protocol}.*|/realms/{realm}/login-actions.*\", \n      container=\"keycloak\", \n      namespace=\"$namespace\"}\n    [$__range] \n  )\n)",
+          "expr": "sum(\n  rate(\n    http_server_requests_seconds_count{\n      uri=~\"/realms/\\\\{realm\\\\}/protocol/\\\\{protocol\\\\}.*|/realms/\\\\{realm\\\\}/login-actions.*\", \n      outcome=\"SERVER_ERROR\", \n       \n      job=\"$job\"}\n    [$__range] \n  )\n) or vector(0) \n/\nsum(\n  rate(\n    http_server_requests_seconds_count{\n      uri=~\"/realms/\\\\{realm\\\\}/protocol/\\\\{protocol\\\\}.*|/realms/\\\\{realm\\\\}/login-actions.*\", \n       \n      job=\"$job\"}\n    [$__range] \n  )\n)",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -305,7 +305,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "description": "This Prometheus query calculates the percentage of authentication requests that completed within 0.25 seconds relative to all authentication requests for specific Keycloak endpoints, targeting a particular namespace and pod, over the past 5 minutes.",
       "fieldConfig": {
@@ -394,11 +394,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
           "exemplar": true,
-          "expr": "sum(\n  irate(\n    http_server_requests_seconds_bucket{\n      uri=~\"/realms/{realm}/protocol/{protocol}.*|/realms/{realm}/login-actions.*\", \n      le=\"0.25\", \n      container=\"keycloak\", \n      namespace=\"$namespace\"}\n    [5m] \n  )\n) without (le,uri,status,outcome,method,instance) \n/\nsum(\n  irate(\n    http_server_requests_seconds_count{\n      uri=~\"/realms/{realm}/protocol/{protocol}.*|/realms/{realm}/login-actions.*\", \n      container=\"keycloak\",\n      namespace=\"$namespace\"}\n    [5m] \n  )\n) without (le,uri,status,outcome,method,instance)",
+          "expr": "sum(\n  irate(\n    http_server_requests_seconds_bucket{\n      uri=~\"/realms/\\\\{realm\\\\}/protocol/\\\\{protocol\\\\}.*|/realms/\\\\{realm\\\\}/login-actions.*\", \n      le=\"0.25\", \n       \n      job=\"$job\"}\n    [5m] \n  )\n) without (le,uri,status,outcome,method,instance) \n/\nsum(\n  irate(\n    http_server_requests_seconds_count{\n      uri=~\"/realms/\\\\{realm\\\\}/protocol/\\\\{protocol\\\\}.*|/realms/\\\\{realm\\\\}/login-actions.*\", \n      \n      job=\"$job\"}\n    [5m] \n  )\n) without (le,uri,status,outcome,method,instance)",
           "instant": false,
           "legendFormat": "{{pod}}",
           "range": true,
@@ -407,10 +407,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(\n  irate(\n    http_server_requests_seconds_bucket{\n      uri=~\"/realms/{realm}/protocol/{protocol}/.*|/realms/{realm}/login-actions/.*\", \n      le=\"0.25\", \n      container=\"keycloak\", \n      namespace=\"$namespace\"}\n    [5m] \n  )\n) without (le,uri,status,outcome,method,pod,instance) \n/\nsum(\n  irate(\n    http_server_requests_seconds_count{\n      uri=~\"/realms/{realm}/protocol/{protocol}/.*|/realms/{realm}/login-actions/.*\", \n      container=\"keycloak\",\n      namespace=\"$namespace\"}\n    [5m] \n  )\n) without (le,uri,status,outcome,method,pod,instance)",
+          "expr": "sum(\n  irate(\n    http_server_requests_seconds_bucket{\n      uri=~\"/realms/\\\\{realm\\\\}/protocol/\\\\{protocol\\\\}/.*|/realms/\\\\{realm\\\\}/login-actions/.*\", \n      le=\"0.25\", \n       \n      job=\"$job\"}\n    [5m] \n  )\n) without (le,uri,status,outcome,method,pod,instance) \n/\nsum(\n  irate(\n    http_server_requests_seconds_count{\n      uri=~\"/realms/\\\\{realm\\\\}/protocol/\\\\{protocol\\\\}/.*|/realms/\\\\{realm\\\\}/login-actions/.*\", \n      \n      job=\"$job\"}\n    [5m] \n  )\n) without (le,uri,status,outcome,method,pod,instance)",
           "hide": false,
           "legendFormat": "All pods",
           "range": true,
@@ -423,7 +423,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "description": "This Prometheus query calculates the percentage of authentication requests that returned a server side error for all authentication requests, targeting a particular namespace, over the past 5 minutes.",
       "fieldConfig": {
@@ -504,10 +504,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by(uri)\n(\n  rate(\n    http_server_requests_seconds_count{\n      outcome=\"SERVER_ERROR\",\n      uri=~\"/realms/{realm}/protocol/{protocol}.*|/realms/{realm}/login-actions/.*\", \n      container=\"keycloak\", \n      namespace=\"$namespace\"}\n    [5m] \n  )\n)\n/\nsum by (uri)\n(\n  rate(\n    http_server_requests_seconds_count{\n      uri=~\"/realms/{realm}/protocol/{protocol}.*|/realms/{realm}/login-actions/.*\", \n      container=\"keycloak\",\n      namespace=\"$namespace\"}\n    [5m] \n  )\n)",
+          "expr": "sum by(uri)\n(\n  rate(\n    http_server_requests_seconds_count{\n      outcome=\"SERVER_ERROR\",\n      uri=~\"/realms/{realm}/protocol/{protocol}.*|/realms/{realm}/login-actions/.*\", \n       \n      job=\"$job\"}\n    [5m] \n  )\n)\n/\nsum by (uri)\n(\n  rate(\n    http_server_requests_seconds_count{\n      uri=~\"/realms/{realm}/protocol/{protocol}.*|/realms/{realm}/login-actions/.*\", \n      \n      job=\"$job\"}\n    [5m] \n  )\n)",
           "hide": false,
           "legendFormat": "__auto",
           "range": true,
@@ -530,7 +530,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -595,11 +595,11 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "max(jvm_info_total{namespace=\"$namespace\"}) by (pod, vendor, runtime, version)",
+              "expr": "max(jvm_info_total{job=\"$job\"}) by (pod, vendor, runtime, version)",
               "format": "table",
               "instant": true,
               "legendFormat": "__auto",
@@ -626,7 +626,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "description": "This is available only in Kubernetes and only if your pods have cpu limits set",
           "fieldConfig": {
@@ -711,10 +711,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum(rate(container_cpu_usage_seconds_total{container=\"keycloak\", namespace=\"$namespace\"}[5m])) by (pod)\n/\non(pod) group_left\nsum(kube_pod_container_resource_limits{container=\"keycloak\", namespace=\"$namespace\", resource=\"cpu\"}) by (pod)",
+              "expr": "sum(rate(container_cpu_usage_seconds_total{job=\"$job\"}[5m])) by (pod)\n/\non(pod) group_left\nsum(kube_pod_container_resource_limits{job=\"$job\", resource=\"cpu\"}) by (pod)",
               "hide": false,
               "legendFormat": "__auto",
               "range": true,
@@ -727,7 +727,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -777,10 +777,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum_over_time((sum by (pod) (jvm_memory_used_bytes{namespace=\"$namespace\"}))[$__range:$__interval]) / count_over_time((sum by (pod) (jvm_memory_used_bytes{namespace=\"$namespace\"}))[$__range:$__interval]) ",
+              "expr": "sum_over_time((sum by (pod) (jvm_memory_used_bytes{job=\"$job\"}))[$__range:$__interval]) / count_over_time((sum by (pod) (jvm_memory_used_bytes{job=\"$job\"}))[$__range:$__interval]) ",
               "hide": false,
               "legendFormat": "__auto",
               "range": true,
@@ -793,7 +793,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -878,10 +878,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod) (jvm_memory_used_bytes{namespace=\"$namespace\"})",
+              "expr": "sum by (pod) (jvm_memory_used_bytes{job=\"$job\"})",
               "hide": false,
               "legendFormat": "{{pod}} - used",
               "range": true,
@@ -890,10 +890,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod) (jvm_memory_committed_bytes{namespace=\"$namespace\"})",
+              "expr": "sum by (pod) (jvm_memory_committed_bytes{job=\"$job\"})",
               "hide": false,
               "legendFormat": "{{pod}} - committed",
               "range": true,
@@ -906,7 +906,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -956,17 +956,17 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "refId": "A"
             },
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum(\n  rate(\n    jvm_gc_pause_seconds_sum{\n      container=\"keycloak\", \n      namespace=\"$namespace\"}\n    [$__range] \n  )\n) without (action,instance,cause) \n/\nsum(\n  rate(\n    jvm_gc_pause_seconds_count{\n      container=\"keycloak\",\n      namespace=\"$namespace\"}\n    [$__range] \n  )\n) without (action,instance,cause)",
+              "expr": "sum(\n  rate(\n    jvm_gc_pause_seconds_sum{\n       \n      job=\"$job\"}\n    [$__range] \n  )\n) without (action,instance,cause) \n/\nsum(\n  rate(\n    jvm_gc_pause_seconds_count{\n      \n      job=\"$job\"}\n    [$__range] \n  )\n) without (action,instance,cause)",
               "hide": false,
               "legendFormat": "{{pod}} - {{gc}}",
               "range": true,
@@ -979,7 +979,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -1066,10 +1066,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod,cause)(irate(jvm_gc_pause_seconds_sum{container=\"keycloak\", namespace=\"$namespace\"}[5m]))",
+              "expr": "sum by (pod,cause)(irate(jvm_gc_pause_seconds_sum{job=\"$job\"}[5m]))",
               "legendFormat": "{{pod}} - {{cause}}",
               "range": true,
               "refId": "A"
@@ -1081,7 +1081,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -1165,10 +1165,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod,cause)(irate(jvm_gc_pause_seconds_count{container=\"keycloak\", namespace=\"$namespace\"}[5m]))",
+              "expr": "sum by (pod,cause)(irate(jvm_gc_pause_seconds_count{job=\"$job\"}[5m]))",
               "legendFormat": "{{pod}} - {{cause}}",
               "range": true,
               "refId": "A"
@@ -1180,7 +1180,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "description": "I am not sure about this metric. I would expect _max to be only increasing number while here it is going up and down so I am not sure what this really means",
           "fieldConfig": {
@@ -1264,10 +1264,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "max by (pod,cause) (jvm_gc_pause_seconds_max{container=\"keycloak\", namespace=\"$namespace\"})",
+              "expr": "max by (pod,cause) (jvm_gc_pause_seconds_max{job=\"$job\"})",
               "legendFormat": "{{pod}} - {{cause}}",
               "range": true,
               "refId": "A"
@@ -1279,7 +1279,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "description": "The percentage of CPU time spent on garbage collection, indicating the impact of GC on application performance in the JVM. It refers to the proportion of the total CPU processing time that is dedicated to executing garbage collection (GC) operations, as opposed to running application code or performing other tasks. This metric helps determine how much overhead GC introduces, affecting the overall performance of the Keycloak’s JVM.",
           "fieldConfig": {
@@ -1363,10 +1363,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod) (jvm_gc_overhead{container=\"keycloak\", namespace=\"$namespace\"})",
+              "expr": "sum by (pod) (jvm_gc_overhead{job=\"$job\"})",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A"
@@ -1378,7 +1378,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -1466,11 +1466,11 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum by (pod)(jvm_threads_states_threads{namespace=\"$namespace\", container=\"keycloak\", state=\"waiting\"})",
+              "expr": "sum by (pod)(jvm_threads_states_threads{job=\"$job\", state=\"waiting\"})",
               "format": "time_series",
               "hide": false,
               "instant": false,
@@ -1485,7 +1485,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -1596,7 +1596,7 @@
             {
               "editorMode": "builder",
               "exemplar": false,
-              "expr": "process_cpu_usage{namespace=\"$namespace\", container=\"keycloak\"}",
+              "expr": "process_cpu_usage{job=\"$job\"}",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{pod}}",
@@ -1604,7 +1604,7 @@
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -1628,7 +1628,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -1678,10 +1678,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "avg by (pod) (sum_over_time(agroal_active_count{namespace=\"$namespace\"}[$__range:$__interval]) / sum_over_time((agroal_active_count{namespace=\"$namespace\"} + agroal_available_count{namespace=\"$namespace\"})[$__range:$__interval]))",
+              "expr": "avg by (pod) (sum_over_time(agroal_active_count{job=\"$job\"}[$__range:$__interval]) / sum_over_time((agroal_active_count{job=\"$job\"} + agroal_available_count{job=\"$job\"})[$__range:$__interval]))",
               "legendFormat": "__auto",
               "range": true,
               "refId": "A"
@@ -1693,7 +1693,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -1771,10 +1771,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "agroal_awaiting_count{container=\"keycloak\", namespace=\"$namespace\"}",
+              "expr": "agroal_awaiting_count{job=\"$job\"}",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A"
@@ -1786,7 +1786,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -1866,10 +1866,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "agroal_available_count{job=~\"${namespace}/keycloak-metrics|keycloak-service\",namespace=\"${namespace}\"}",
+              "expr": "agroal_available_count{job=\"$job\"}",
               "legendFormat": "{{pod}} - available connections",
               "range": true,
               "refId": "A"
@@ -1877,10 +1877,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "agroal_active_count{job=~\"${namespace}/keycloak-metrics|keycloak-service\",namespace=\"${namespace}\"}",
+              "expr": "agroal_active_count{job=\"$job\"}",
               "hide": false,
               "legendFormat": "{{pod}} - used connections",
               "range": true,
@@ -1893,7 +1893,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -1969,10 +1969,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod)(irate(agroal_acquire_count_total{container=\"keycloak\", namespace=\"$namespace\"}[5m]))",
+              "expr": "sum by (pod)(irate(agroal_acquire_count_total{job=\"$job\"}[5m]))",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A"
@@ -1998,7 +1998,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -2084,10 +2084,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod) (\n  irate(\n    http_server_requests_seconds_count{\n      container=\"keycloak\",\n      namespace=\"$namespace\"}\n    [5m] \n  )\n)",
+              "expr": "sum by (pod) (\n  irate(\n    http_server_requests_seconds_count{\n      \n      job=\"$job\"}\n    [5m] \n  )\n)",
               "legendFormat": "__auto",
               "range": true,
               "refId": "A"
@@ -2099,7 +2099,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -2187,10 +2187,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (uri,outcome) (http_server_requests_seconds_count{container=\"keycloak\", namespace=\"$namespace\"})",
+              "expr": "sum by (uri,outcome) (http_server_requests_seconds_count{job=\"$job\"})",
               "format": "time_series",
               "legendFormat": "{{uri}} - {{outcome}}",
               "range": true,
@@ -2203,7 +2203,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -2268,11 +2268,11 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum by (le) (idelta(http_server_requests_seconds_bucket{container=\"keycloak\", namespace=\"$namespace\"} [5m]))",
+              "expr": "sum by (le) (idelta(http_server_requests_seconds_bucket{job=\"$job\"} [5m]))",
               "format": "heatmap",
               "legendFormat": "{{le}}",
               "range": true,
@@ -2285,7 +2285,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -2370,10 +2370,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (uri,outcome) (irate(http_server_requests_seconds_count{container=\"keycloak\", namespace=\"$namespace\"}[5m]))",
+              "expr": "sum by (uri,outcome) (irate(http_server_requests_seconds_count{job=\"$job\"}[5m]))",
               "format": "time_series",
               "legendFormat": "{{uri}} - {{outcome}}",
               "range": true,
@@ -2386,7 +2386,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "description": "The current number of active requests processed by each pod",
           "fieldConfig": {
@@ -2468,10 +2468,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod) (http_server_active_requests{container=\"keycloak\", namespace=\"$namespace\"})",
+              "expr": "sum by (pod) (http_server_active_requests{job=\"$job\"})",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A"
@@ -2483,7 +2483,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -2570,10 +2570,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod,outcome) (irate(http_server_requests_seconds_count{container=\"keycloak\", namespace=\"$namespace\"}[5m]))",
+              "expr": "sum by (pod,outcome) (irate(http_server_requests_seconds_count{job=\"$job\"}[5m]))",
               "format": "time_series",
               "legendFormat": "{{pod}} - {{outcome}}",
               "range": true,
@@ -2586,7 +2586,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -2673,10 +2673,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod)(\n  irate(\n    http_server_bytes_written_sum{\n      container=\"keycloak\", \n      namespace=\"$namespace\"}\n    [5m] \n  )\n)\n/\nsum by (pod)(\n  irate(\n    http_server_bytes_written_count{\n      container=\"keycloak\",\n      namespace=\"$namespace\"}\n    [5m] \n  )\n)",
+              "expr": "sum by (pod)(\n  irate(\n    http_server_bytes_written_sum{\n       \n      job=\"$job\"}\n    [5m] \n  )\n)\n/\nsum by (pod)(\n  irate(\n    http_server_bytes_written_count{\n      \n      job=\"$job\"}\n    [5m] \n  )\n)",
               "hide": false,
               "legendFormat": "{{pod}}",
               "range": true,
@@ -2689,7 +2689,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -2739,10 +2739,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod)(\n  rate(\n    http_server_bytes_written_sum{\n      container=\"keycloak\", \n      namespace=\"$namespace\"}\n    [$__range] \n  )\n)\n/\nsum by(pod)(\n  rate(\n    http_server_bytes_written_count{\n      container=\"keycloak\",\n      namespace=\"$namespace\"}\n    [$__range] \n  )\n)",
+              "expr": "sum by (pod)(\n  rate(\n    http_server_bytes_written_sum{\n       \n      job=\"$job\"}\n    [$__range] \n  )\n)\n/\nsum by(pod)(\n  rate(\n    http_server_bytes_written_count{\n      \n      job=\"$job\"}\n    [$__range] \n  )\n)",
               "hide": false,
               "legendFormat": "__auto",
               "range": true,
@@ -2751,10 +2751,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "http_server_bytes_written_sum{\n      container=\"keycloak\", \n      namespace=\"$namespace\"}",
+              "expr": "http_server_bytes_written_sum{\n       \n      job=\"$job\"}",
               "hide": true,
               "legendFormat": "__auto",
               "range": true,
@@ -2767,7 +2767,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -2817,10 +2817,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod)(\n  rate(\n    http_server_bytes_read_sum{\n      container=\"keycloak\", \n      namespace=\"$namespace\"}\n    [$__range] \n  )\n)\n/\nsum by(pod)(\n  rate(\n    http_server_bytes_read_count{\n      container=\"keycloak\",\n      namespace=\"$namespace\"}\n    [$__range] \n  )\n)",
+              "expr": "sum by (pod)(\n  rate(\n    http_server_bytes_read_sum{\n       \n      job=\"$job\"}\n    [$__range] \n  )\n)\n/\nsum by(pod)(\n  rate(\n    http_server_bytes_read_count{\n      \n      job=\"$job\"}\n    [$__range] \n  )\n)",
               "hide": false,
               "legendFormat": "__auto",
               "range": true,
@@ -2829,10 +2829,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "http_server_bytes_written_sum{\n      container=\"keycloak\", \n      namespace=\"$namespace\"}",
+              "expr": "http_server_bytes_written_sum{\n       \n      job=\"$job\"}",
               "hide": true,
               "legendFormat": "__auto",
               "range": true,
@@ -2845,7 +2845,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -2932,10 +2932,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod)(\n  irate(\n    http_server_bytes_read_sum{\n      container=\"keycloak\", \n      namespace=\"$namespace\"}\n    [5m] \n  )\n)\n/\nsum by (pod)(\n  irate(\n    http_server_bytes_read_count{\n      container=\"keycloak\",\n      namespace=\"$namespace\"}\n    [5m] \n  )\n)",
+              "expr": "sum by (pod)(\n  irate(\n    http_server_bytes_read_sum{\n       \n      job=\"$job\"}\n    [5m] \n  )\n)\n/\nsum by (pod)(\n  irate(\n    http_server_bytes_read_count{\n      \n      job=\"$job\"}\n    [5m] \n  )\n)",
               "hide": false,
               "legendFormat": "{{pod}} - requests",
               "range": true,
@@ -2962,7 +2962,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -3044,13 +3044,13 @@
           "targets": [
             {
               "editorMode": "builder",
-              "expr": "vendor_cluster_size{namespace=\"$namespace\", container=\"keycloak\"}",
+              "expr": "vendor_cluster_size{job=\"$job\"}",
               "legendFormat": "{{node}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -3060,7 +3060,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -3149,14 +3149,14 @@
             {
               "editorMode": "code",
               "exemplar": false,
-              "expr": "histogram_quantile(0.99, sum by(le, node, target_node) (rate(vendor_jgroups_stats_sync_requests_seconds_bucket{namespace=\"$namespace\", container=\"keycloak\"}[$__rate_interval])))",
+              "expr": "histogram_quantile(0.99, sum by(le, node, target_node) (rate(vendor_jgroups_stats_sync_requests_seconds_bucket{job=\"$job\"}[$__rate_interval])))",
               "format": "time_series",
               "legendFormat": "{{node}} -> {{target_node}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -3166,7 +3166,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "description": "",
           "fieldConfig": {
@@ -3250,13 +3250,13 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "rate(vendor_jgroups_stats_sync_requests_seconds_sum{namespace=\"$namespace\", container=\"keycloak\"}[$__rate_interval]) / (rate(vendor_jgroups_stats_sync_requests_seconds_count{namespace=\"$namespace\", container=\"keycloak\"}[$__rate_interval]))",
+              "expr": "rate(vendor_jgroups_stats_sync_requests_seconds_sum{job=\"$job\"}[$__rate_interval]) / (rate(vendor_jgroups_stats_sync_requests_seconds_count{job=\"$job\"}[$__rate_interval]))",
               "legendFormat": "{{node}} -> {{target_node}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -3266,7 +3266,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -3349,13 +3349,13 @@
           "targets": [
             {
               "editorMode": "builder",
-              "expr": "rate(vendor_jgroups_unicast3_get_num_xmits{namespace=\"$namespace\", container=\"keycloak\"}[$__rate_interval])",
+              "expr": "rate(vendor_jgroups_unicast3_get_num_xmits{job=\"$job\"}[$__rate_interval])",
               "legendFormat": "{{node}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -3365,7 +3365,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -3448,13 +3448,13 @@
           "targets": [
             {
               "editorMode": "builder",
-              "expr": "rate(vendor_jgroups_red_get_dropped_messages{namespace=\"$namespace\", container=\"keycloak\"}[$__rate_interval])",
+              "expr": "rate(vendor_jgroups_red_get_dropped_messages{job=\"$job\"}[$__rate_interval])",
               "legendFormat": "{{node}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -3464,7 +3464,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -3547,22 +3547,22 @@
           "targets": [
             {
               "editorMode": "builder",
-              "expr": "rate(vendor_jgroups_tcp_get_num_msgs_sent{namespace=\"$namespace\", container=\"keycloak\"}[$__rate_interval])",
+              "expr": "rate(vendor_jgroups_tcp_get_num_msgs_sent{job=\"$job\"}[$__rate_interval])",
               "legendFormat": "{{node}} Sent",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             },
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "builder",
-              "expr": "rate(vendor_jgroups_tcp_get_num_msgs_received{namespace=\"$namespace\", container=\"keycloak\"}[$__rate_interval]) * -1",
+              "expr": "rate(vendor_jgroups_tcp_get_num_msgs_received{job=\"$job\"}[$__rate_interval]) * -1",
               "hide": false,
               "instant": false,
               "legendFormat": "{{node}} Received",
@@ -3590,7 +3590,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "description": "The approximate number of entries stored by the node, excluding backup copies.",
           "fieldConfig": {
@@ -3674,10 +3674,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod)(vendor_statistics_approximate_entries_unique{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"})",
+              "expr": "sum by (pod)(vendor_statistics_approximate_entries_unique{job=\"$job\", cache=\"$jdbc_cache_names\"})",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A"
@@ -3689,7 +3689,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "description": "The approximate number of entries stored by the node, including backup copies.",
           "fieldConfig": {
@@ -3773,10 +3773,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod)(vendor_statistics_approximate_entries_unique{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"})",
+              "expr": "sum by (pod)(vendor_statistics_approximate_entries_unique{job=\"$job\", cache=\"$jdbc_cache_names\"})",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A"
@@ -3788,7 +3788,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "description": "Eviction is the process to limit the cache size and, when full, an entry is removed to make room for a new entry to be cached. As Keycloak caches the database entities in the users, realms and authorization, database access always proceeds with an eviction event.\n\nA rapid increase of eviction and very high database CPU usage means the users or realms cache is too small for smooth Keycloak operation, as data needs to be re-loaded very often from the database which slows down responses. If enough memory is available, consider increasing the max cache size using the CLI options cache-embedded-users-max-count or cache-embedded-realms-max-count",
           "fieldConfig": {
@@ -3875,10 +3875,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod)(irate(vendor_statistics_evictions{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m]))",
+              "expr": "sum by (pod)(irate(vendor_statistics_evictions{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m]))",
               "legendFormat": "__auto",
               "range": true,
               "refId": "A"
@@ -3890,7 +3890,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -3973,10 +3973,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod)(irate(vendor_statistics_store_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m]))",
+              "expr": "sum by (pod)(irate(vendor_statistics_store_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m]))",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A"
@@ -3988,7 +3988,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -4072,10 +4072,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "avg by (pod)((\nirate(vendor_statistics_hit_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m]) + irate(vendor_statistics_miss_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m]))\n/\n(\n    irate(vendor_statistics_hit_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m]) + irate(vendor_statistics_miss_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m])\n    + \n    irate(vendor_statistics_remove_hit_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m]) + irate(vendor_statistics_remove_miss_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m]) \n    + \n    irate(vendor_statistics_store_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m])\n))",
+              "expr": "avg by (pod)((\nirate(vendor_statistics_hit_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m]) + irate(vendor_statistics_miss_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m]))\n/\n(\n    irate(vendor_statistics_hit_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m]) + irate(vendor_statistics_miss_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m])\n    + \n    irate(vendor_statistics_remove_hit_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m]) + irate(vendor_statistics_remove_miss_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m]) \n    + \n    irate(vendor_statistics_store_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m])\n))",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A"
@@ -4087,7 +4087,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -4137,10 +4137,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "avg by (pod)(\n  rate(\n    vendor_statistics_store_times_seconds_sum{\n      container=\"keycloak\", \n      namespace=\"$namespace\",\n      cache=\"$jdbc_cache_names\"}\n    [$__range] \n  )\n)\n/\nsum by(pod)(\n  rate(\n    vendor_statistics_store_times_seconds_count{\n      container=\"keycloak\",\n      namespace=\"$namespace\",\n      cache=\"$jdbc_cache_names\"}\n    [$__range] \n  )\n)",
+              "expr": "avg by (pod)(\n  rate(\n    vendor_statistics_store_times_seconds_sum{\n       \n      job=\"$job\",\n      cache=\"$jdbc_cache_names\"}\n    [$__range] \n  )\n)\n/\nsum by(pod)(\n  rate(\n    vendor_statistics_store_times_seconds_count{\n      \n      job=\"$job\",\n      cache=\"$jdbc_cache_names\"}\n    [$__range] \n  )\n)",
               "legendFormat": "__auto",
               "range": true,
               "refId": "A"
@@ -4152,7 +4152,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "description": "A read operation reads a value from the cache. It divides into two groups, a hit if a value is found, and a miss if not found.",
           "fieldConfig": {
@@ -4236,10 +4236,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod) (irate(vendor_statistics_hit_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m]) + irate(vendor_statistics_miss_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m]))",
+              "expr": "sum by (pod) (irate(vendor_statistics_hit_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m]) + irate(vendor_statistics_miss_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m]))",
               "legendFormat": "__auto",
               "range": true,
               "refId": "A"
@@ -4251,7 +4251,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -4336,10 +4336,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "avg by (pod)(irate(vendor_statistics_hit_times_seconds_count{container=\"keycloak\", cache=\"$jdbc_cache_names\", namespace=\"$namespace\"}[5m]) / (irate(vendor_statistics_hit_times_seconds_count{cache=\"$jdbc_cache_names\", namespace=\"$namespace\", container=\"keycloak\"}[5m]) + irate(vendor_statistics_miss_times_seconds_count{cache=\"$jdbc_cache_names\", namespace=\"$namespace\", container=\"keycloak\"}[5m])))",
+              "expr": "avg by (pod)(irate(vendor_statistics_hit_times_seconds_count{ cache=\"$jdbc_cache_names\", job=\"$job\"}[5m]) / (irate(vendor_statistics_hit_times_seconds_count{cache=\"$jdbc_cache_names\", job=\"$job\"}[5m]) + irate(vendor_statistics_miss_times_seconds_count{cache=\"$jdbc_cache_names\", job=\"$job\"}[5m])))",
               "hide": false,
               "legendFormat": "{{pod}}",
               "range": true,
@@ -4352,7 +4352,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "description": "A read operation reads a value from the cache. It divides into two groups, a hit if a value is found, and a miss if not found.",
           "fieldConfig": {
@@ -4436,10 +4436,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod) (irate(vendor_statistics_miss_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m]))",
+              "expr": "sum by (pod) (irate(vendor_statistics_miss_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m]))",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A"
@@ -4451,7 +4451,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "description": "A remove operation removes a value from the cache. It divides in two groups, a hit if a value exists, and a miss if the value does not exist.",
           "fieldConfig": {
@@ -4535,10 +4535,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod)(irate(vendor_statistics_remove_hit_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m]) + irate(vendor_statistics_remove_miss_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m]))",
+              "expr": "sum by (pod)(irate(vendor_statistics_remove_hit_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m]) + irate(vendor_statistics_remove_miss_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m]))",
               "legendFormat": "__auto",
               "range": true,
               "refId": "A"
@@ -4550,7 +4550,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -4635,10 +4635,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "avg by (pod)(irate(vendor_statistics_remove_hit_times_seconds_count{container=\"keycloak\", cache=\"$jdbc_cache_names\", namespace=\"$namespace\"}[5m]) / (irate(vendor_statistics_remove_hit_times_seconds_count{cache=\"$jdbc_cache_names\", namespace=\"$namespace\", container=\"keycloak\"}[5m]) + irate(vendor_statistics_remove_miss_times_seconds_count{cache=\"$jdbc_cache_names\", namespace=\"$namespace\", container=\"keycloak\"}[5m])))",
+              "expr": "avg by (pod)(irate(vendor_statistics_remove_hit_times_seconds_count{ cache=\"$jdbc_cache_names\", job=\"$job\"}[5m]) / (irate(vendor_statistics_remove_hit_times_seconds_count{cache=\"$jdbc_cache_names\", job=\"$job\"}[5m]) + irate(vendor_statistics_remove_miss_times_seconds_count{cache=\"$jdbc_cache_names\", job=\"$job\"}[5m])))",
               "hide": false,
               "legendFormat": "{{pod}}",
               "range": true,
@@ -4651,7 +4651,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "description": "A remove operation removes a value from the cache. It divides in two groups, a hit if a value exists, and a miss if the value does not exist.",
           "fieldConfig": {
@@ -4731,10 +4731,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum by (pod) (irate(vendor_statistics_remove_miss_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$jdbc_cache_names\"}[5m]))",
+              "expr": "sum by (pod) (irate(vendor_statistics_remove_miss_times_seconds_count{job=\"$job\", cache=\"$jdbc_cache_names\"}[5m]))",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A"
@@ -4761,7 +4761,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -4843,13 +4843,13 @@
           "targets": [
             {
               "editorMode": "builder",
-              "expr": "cache_size{namespace=\"$namespace\", container=\"keycloak\", cache=\"$caffeine_cache\"}",
+              "expr": "cache_size{job=\"$job\", cache=\"$caffeine_cache\"}",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -4859,7 +4859,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -4942,13 +4942,13 @@
           "targets": [
             {
               "editorMode": "builder",
-              "expr": "sum by(pod) (rate(cache_gets_total{namespace=\"$namespace\", container=\"keycloak\", cache=\"$caffeine_cache\"}[$__rate_interval]))",
+              "expr": "sum by(pod) (rate(cache_gets_total{job=\"$job\", cache=\"$caffeine_cache\"}[$__rate_interval]))",
               "legendFormat": "__auto",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -4958,7 +4958,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -5041,13 +5041,13 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "(rate(cache_gets_total{namespace=\"$namespace\", container=\"keycloak\", cache=\"$caffeine_cache\", result=\"hit\"}[$__rate_interval]))\n/ \n(rate(cache_gets_total{namespace=\"$namespace\", container=\"keycloak\", cache=\"$caffeine_cache\"}[$__rate_interval]))",
+              "expr": "(rate(cache_gets_total{job=\"$job\", cache=\"$caffeine_cache\", result=\"hit\"}[$__rate_interval]))\n/ \n(rate(cache_gets_total{job=\"$job\", cache=\"$caffeine_cache\"}[$__rate_interval]))",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -5057,7 +5057,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -5140,13 +5140,13 @@
           "targets": [
             {
               "editorMode": "builder",
-              "expr": "sum by(pod) (rate(cache_evictions_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$caffeine_cache\"}[$__rate_interval]))",
+              "expr": "sum by(pod) (rate(cache_evictions_count{job=\"$job\", cache=\"$caffeine_cache\"}[$__rate_interval]))",
               "legendFormat": "__auto",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -5171,7 +5171,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -5253,13 +5253,13 @@
           "targets": [
             {
               "editorMode": "builder",
-              "expr": "vendor_statistics_approximate_entries{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_local_cache\"}",
+              "expr": "vendor_statistics_approximate_entries{job=\"$job\", cache=\"$ispn_local_cache\"}",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -5269,7 +5269,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -5352,13 +5352,13 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "rate(vendor_statistics_hit_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_local_cache\"}[$__rate_interval]) + (rate(vendor_statistics_miss_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_local_cache\"}[$__rate_interval]))",
+              "expr": "rate(vendor_statistics_hit_times_seconds_count{job=\"$job\", cache=\"$ispn_local_cache\"}[$__rate_interval]) + (rate(vendor_statistics_miss_times_seconds_count{job=\"$job\", cache=\"$ispn_local_cache\"}[$__rate_interval]))",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -5368,7 +5368,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -5451,13 +5451,13 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "(\n  rate(vendor_statistics_hit_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_local_cache\"}[$__rate_interval])\n) / (\n rate(vendor_statistics_hit_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_local_cache\"}[$__rate_interval]) +\n rate(vendor_statistics_miss_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_local_cache\"}[$__rate_interval])\n) ",
+              "expr": "(\n  rate(vendor_statistics_hit_times_seconds_count{job=\"$job\", cache=\"$ispn_local_cache\"}[$__rate_interval])\n) / (\n rate(vendor_statistics_hit_times_seconds_count{job=\"$job\", cache=\"$ispn_local_cache\"}[$__rate_interval]) +\n rate(vendor_statistics_miss_times_seconds_count{job=\"$job\", cache=\"$ispn_local_cache\"}[$__rate_interval])\n) ",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -5467,7 +5467,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -5550,13 +5550,13 @@
           "targets": [
             {
               "editorMode": "builder",
-              "expr": "rate(vendor_statistics_evictions{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_local_cache\"}[$__rate_interval])",
+              "expr": "rate(vendor_statistics_evictions{job=\"$job\", cache=\"$ispn_local_cache\"}[$__rate_interval])",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -5581,7 +5581,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "description": "",
           "fieldConfig": {
@@ -5664,13 +5664,13 @@
           "targets": [
             {
               "editorMode": "builder",
-              "expr": "vendor_statistics_approximate_entries{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}",
+              "expr": "vendor_statistics_approximate_entries{job=\"$job\", cache=\"$ispn_clustered_caches\"}",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -5680,7 +5680,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -5763,13 +5763,13 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "vendor_rpc_manager_average_replication_time{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}",
+              "expr": "vendor_rpc_manager_average_replication_time{job=\"$job\", cache=\"$ispn_clustered_caches\"}",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -5779,7 +5779,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -5862,13 +5862,13 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "(\nrate(vendor_statistics_hit_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\nrate(vendor_statistics_miss_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n)\n/\n(\nrate(vendor_statistics_hit_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\nrate(vendor_statistics_miss_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\nrate(vendor_statistics_remove_hit_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) + \nrate(vendor_statistics_remove_miss_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) + \nrate(vendor_statistics_store_times_seconds_count{container=\"keycloak\", namespace=\"$namespace\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n)",
+              "expr": "(\nrate(vendor_statistics_hit_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\nrate(vendor_statistics_miss_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n)\n/\n(\nrate(vendor_statistics_hit_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\nrate(vendor_statistics_miss_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\nrate(vendor_statistics_remove_hit_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) + \nrate(vendor_statistics_remove_miss_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) + \nrate(vendor_statistics_store_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n)",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -5878,7 +5878,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -5961,13 +5961,13 @@
           "targets": [
             {
               "editorMode": "builder",
-              "expr": "rate(vendor_statistics_store_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])",
+              "expr": "rate(vendor_statistics_store_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -5977,7 +5977,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -6060,13 +6060,13 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "(\n  rate(vendor_statistics_store_times_seconds_sum{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n) / (\n  rate(vendor_statistics_store_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n)",
+              "expr": "(\n  rate(vendor_statistics_store_times_seconds_sum{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n) / (\n  rate(vendor_statistics_store_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n)",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -6076,7 +6076,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -6160,10 +6160,10 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               },
               "editorMode": "builder",
-              "expr": "rate(vendor_statistics_evictions{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])",
+              "expr": "rate(vendor_statistics_evictions{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])",
               "hide": false,
               "instant": false,
               "legendFormat": "{{pod}}",
@@ -6177,7 +6177,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -6260,13 +6260,13 @@
           "targets": [
             {
               "editorMode": "builder",
-              "expr": "rate(vendor_statistics_hit_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) + (rate(vendor_statistics_miss_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]))",
+              "expr": "rate(vendor_statistics_hit_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) + (rate(vendor_statistics_miss_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]))",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -6276,7 +6276,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -6359,13 +6359,13 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "(\n  rate(vendor_statistics_hit_times_seconds_sum{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\n  rate(vendor_statistics_miss_times_seconds_sum{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n) / (\n  rate(vendor_statistics_hit_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\n  rate(vendor_statistics_miss_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n)",
+              "expr": "(\n  rate(vendor_statistics_hit_times_seconds_sum{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\n  rate(vendor_statistics_miss_times_seconds_sum{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n) / (\n  rate(vendor_statistics_hit_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\n  rate(vendor_statistics_miss_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n)",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -6375,7 +6375,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -6458,13 +6458,13 @@
           "targets": [
             {
               "editorMode": "builder",
-              "expr": "rate(vendor_statistics_remove_hit_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) + (rate(vendor_statistics_remove_miss_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]))",
+              "expr": "rate(vendor_statistics_remove_hit_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) + (rate(vendor_statistics_remove_miss_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]))",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -6474,7 +6474,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -6557,13 +6557,13 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "(\n  rate(vendor_statistics_remove_hit_times_seconds_sum{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\n  rate(vendor_statistics_remove_miss_times_seconds_sum{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n) / (\n  rate(vendor_statistics_remove_hit_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\n  rate(vendor_statistics_remove_miss_times_seconds_count{namespace=\"$namespace\", container=\"keycloak\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n)",
+              "expr": "(\n  rate(vendor_statistics_remove_hit_times_seconds_sum{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\n  rate(vendor_statistics_remove_miss_times_seconds_sum{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n) / (\n  rate(vendor_statistics_remove_hit_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval]) +\n  rate(vendor_statistics_remove_miss_times_seconds_count{job=\"$job\", cache=\"$ispn_clustered_caches\"}[$__rate_interval])\n)",
               "legendFormat": "{{pod}}",
               "range": true,
               "refId": "A",
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "prometheus"
               }
             }
           ],
@@ -6585,14 +6585,15 @@
         "current": {},
         "datasource": {
           "type": "prometheus",
-          "uid": "${DS_PROMETHEUS}"
+          "uid": "prometheus"
         },
-        "definition": "label_values(namespace)",
+        "definition": "label_values(up{job=~\".*keycloak.*\"}, job)",
         "includeAll": false,
-        "name": "namespace",
+        "name": "job",
+        "label": "job",
         "options": [],
         "query": {
-          "query": "label_values(namespace)",
+          "query": "label_values(up{job=~\".*keycloak.*\"}, job)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 1,

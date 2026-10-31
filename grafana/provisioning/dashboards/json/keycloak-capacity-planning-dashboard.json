@@ -60,7 +60,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "description": "Shows the number of password validations performed by Keycloak",
       "fieldConfig": {
@@ -144,10 +144,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "irate(keycloak_credentials_password_hashing_validations_total{namespace=\"$namespace\", realm=\"$realm\"}[$__rate_interval])",
+          "expr": "irate(keycloak_credentials_password_hashing_validations_total{job=\"$job\", realm=\"$realm\"}[$__rate_interval])",
           "legendFormat": "{{pod}} => {{outcome}} - {{algorithm}}:{{hashing_strength}}",
           "range": true,
           "refId": "A"
@@ -159,7 +159,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -243,10 +243,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"code_to_token\", namespace=\"$namespace\", realm=\"$realm\", error!=\"\"}[$__rate_interval]))",
+          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"code_to_token\", job=\"$job\", realm=\"$realm\", error!=\"\"}[$__rate_interval]))",
           "intervalFactor": 1,
           "legendFormat": "{{pod}}:{{error}}",
           "range": true,
@@ -255,10 +255,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"code_to_token\", namespace=\"$namespace\", realm=\"$realm\"}[$__rate_interval]))",
+          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"code_to_token\", job=\"$job\", realm=\"$realm\"}[$__rate_interval]))",
           "hide": false,
           "intervalFactor": 1,
           "legendFormat": "{{pod}}",
@@ -272,7 +272,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -356,10 +356,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"client_login\", namespace=\"$namespace\", realm=\"$realm\"}[$__rate_interval]))",
+          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"client_login\", job=\"$job\", realm=\"$realm\"}[$__rate_interval]))",
           "intervalFactor": 1,
           "legendFormat": "{{pod}}",
           "range": true,
@@ -368,10 +368,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"client_login\", namespace=\"$namespace\", realm=\"$realm\", error!=\"\"}[$__rate_interval]))",
+          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"client_login\", job=\"$job\", realm=\"$realm\", error!=\"\"}[$__rate_interval]))",
           "hide": false,
           "intervalFactor": 1,
           "legendFormat": "{{pod}}:{{error}}",
@@ -385,7 +385,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -469,10 +469,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"refresh_token\", namespace=\"$namespace\", realm=\"$realm\", error!=\"\"}[$__rate_interval]))",
+          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"refresh_token\", job=\"$job\", realm=\"$realm\", error!=\"\"}[$__rate_interval]))",
           "intervalFactor": 1,
           "legendFormat": "{{pod}}:{{error}}",
           "range": true,
@@ -481,10 +481,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"refresh_token\", namespace=\"$namespace\", realm=\"$realm\"}[$__rate_interval]))",
+          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"refresh_token\", job=\"$job\", realm=\"$realm\"}[$__rate_interval]))",
           "hide": false,
           "intervalFactor": 1,
           "legendFormat": "{{pod}}",
@@ -498,7 +498,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -582,10 +582,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"login\", namespace=\"$namespace\", realm=\"$realm\"}[$__rate_interval]))",
+          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"login\", job=\"$job\", realm=\"$realm\"}[$__rate_interval]))",
           "hide": false,
           "intervalFactor": 1,
           "legendFormat": "{{pod}}",
@@ -595,10 +595,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"login\", namespace=\"$namespace\", realm=\"$realm\", error!=\"\"}[$__rate_interval]))",
+          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"login\", job=\"$job\", realm=\"$realm\", error!=\"\"}[$__rate_interval]))",
           "hide": false,
           "intervalFactor": 1,
           "legendFormat": "{{pod}}:{{error}}",
@@ -612,7 +612,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -696,10 +696,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"logout\", namespace=\"$namespace\", realm=\"$realm\"}[$__rate_interval]))",
+          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"logout\", job=\"$job\", realm=\"$realm\"}[$__rate_interval]))",
           "intervalFactor": 1,
           "legendFormat": "{{pod}}",
           "range": true,
@@ -708,10 +708,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"logout\", namespace=\"$namespace\", realm=\"$realm\", error!=\"\"}[$__rate_interval]))",
+          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"logout\", job=\"$job\", realm=\"$realm\", error!=\"\"}[$__rate_interval]))",
           "hide": false,
           "intervalFactor": 1,
           "legendFormat": "{{pod}}:{{error}}",
@@ -725,7 +725,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -809,10 +809,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"token_exchange\", namespace=\"$namespace\", realm=\"$realm\"}[$__rate_interval]))",
+          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"token_exchange\", job=\"$job\", realm=\"$realm\"}[$__rate_interval]))",
           "hide": false,
           "intervalFactor": 1,
           "legendFormat": "{{pod}}",
@@ -822,10 +822,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"token_exchange\", namespace=\"$namespace\", realm=\"$realm\", error!=\"\"}[$__rate_interval]))",
+          "expr": "sum by(pod) (irate(keycloak_user_events_total{event=\"token_exchange\", job=\"$job\", realm=\"$realm\", error!=\"\"}[$__rate_interval]))",
           "hide": false,
           "intervalFactor": 1,
           "legendFormat": "{{pod}}:{{error}}",
@@ -846,15 +846,15 @@
         "current": {},
         "datasource": {
           "type": "prometheus",
-          "uid": "${DS_PROMETHEUS}"
+          "uid": "prometheus"
         },
-        "definition": "label_values(namespace)",
+        "definition": "label_values(keycloak_user_events_total, job)",
         "includeAll": false,
-        "label": "namespace",
-        "name": "namespace",
+        "label": "job",
+        "name": "job",
         "options": [],
         "query": {
-          "query": "label_values(namespace)",
+          "query": "label_values(keycloak_user_events_total, job)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 1,
@@ -865,15 +865,15 @@
         "current": {},
         "datasource": {
           "type": "prometheus",
-          "uid": "${DS_PROMETHEUS}"
+          "uid": "prometheus"
         },
-        "definition": "label_values(realm)",
+        "definition": "label_values(keycloak_user_events_total{job=\"$job\"}, realm)",
         "includeAll": false,
         "label": "realm",
         "name": "realm",
         "options": [],
         "query": {
-          "query": "label_values(realm)",
+          "query": "label_values(keycloak_user_events_total{job=\"$job\"}, realm)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 1,

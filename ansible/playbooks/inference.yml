@@ -3,4 +3,7 @@
   hosts: vllm_compute
   become: true
   roles:
+    # Global host checks (Docker, compose, base packages, and the NVIDIA
+    # driver for this group via group_vars) run before the role deploys.
+    - role: ../roles/prerequisites
     - role: ../roles/vllm_compute

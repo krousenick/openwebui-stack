@@ -22,8 +22,10 @@ pg_dump --format=custom \
 
 if [ $? -eq 0 ]; then
 	echo "[$(date)] Backup created: ${BACKUP_FILE}"
+	echo "keycloak_backup_success 1"
 else
 	echo "[$(date)] ERROR: Backup failed!"
+	echo "keycloak_backup_success 0"
 	exit 1
 fi
 

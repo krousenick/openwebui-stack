@@ -25,3 +25,8 @@ brave_search_enabled: false
 brave_search_api_key: >-
   {{ lookup('ansible.builtin.env', 'BRAVE_SEARCH_API_KEY')
      | trim | replace('"', '') | replace("'", '') }}
+
+# Playwright MCP cluster is optional. When true, the playbook adds the
+# Open WebUI tool server connection for the playwright_cluster LiteLLM MCP
+# server. The containers and Traefik wiring live in docker-compose.yml.
+playwright_mcp_enabled: false

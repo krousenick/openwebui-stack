@@ -179,41 +179,6 @@ receivers:
       container.state.health.status:
         enabled: true
 
-  # Docker json-file logs for every container.
-  # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/filelogreceiver
-  filelog/containers:
-    include:
-      - /var/log/containers/*.log
-    include_file_name: true
-    include_file_path: false
-    start_at: end
-    poll_interval: 1s
-    max_log_size: 1MiB
-    operators:
-      - type: container
-        format: docker
-        add_metadata_from_filepath: false
-      - type: regex_parser
-        parse_from: attributes["log.file.name"]
-        regex: '^(?P<container_name>.+)\.log$'
-      - type: move
-        from: attributes["log.iostream"]
-        to: attributes.stream
-      # Loki's OTLP endpoint only promotes service.* attributes to stream
-      # labels, so mirror the container name into service.name. This makes
-      # {service_name=~".*chatterbox.*"} selectors work for the dashboards.
-      # (Do this before moving container_name into resource, because move
-      # deletes its source field.)
-      - type: add
-        field: resource["service.name"]
-        value: unknown_service
-      - type: copy
-        from: attributes.container_name
-        to: resource["service.name"]
-      - type: move
-        from: attributes.container_name
-        to: resource.container.name
-
   # OTLP receiver for traces and metrics from applications
   otlp:
     protocols:
@@ -270,9 +235,9 @@ service:
       processors: [memory_limiter, batch, resource]
       exporters: [otlphttp]
 
-    # Logs pipeline. filelog covers every container json-file log.
+    # Application logs sent over OTLP. Container stdout is collected by Alloy.
     logs:
-      receivers: [filelog/containers, otlp]
+      receivers: [otlp]
       processors: [memory_limiter, batch, resource]
       exporters: [otlphttp]
 

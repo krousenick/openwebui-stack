@@ -106,7 +106,7 @@ Compose profiles in this stack:
 | Profile | Services |
 |---|---|
 | *(none)* | traefik, open-webui, litellm, postgres, valkey, qdrant, keycloak, lgtm, brave-search-mcp, chatterbox-frontend, oauth2-proxy |
-| `monitoring` | node-exporter, postgres-exporter, json-exporter, docker-log-discovery, otel-collector |
+| `monitoring` | node-exporter, postgres-exporter, json-exporter, alloy, otel-collector |
 | `gpu` | nvidia-gpu-exporter (DCGM) |
 | `chatterbox-gpu` | chatterbox-tts-gpu (CUDA build) |
 | `chatterbox-cpu` | chatterbox-tts-cpu |
@@ -329,7 +329,7 @@ For HF-precision models across multiple GPU nodes connected by 10/25GbE, use the
    ansible-galaxy collection install -r requirements.yaml
    ansible-playbook playbooks/inference.yml
    ```
-   Per node the role: verifies the NVIDIA driver, installs Docker + `nvidia-container-toolkit`, registers the nvidia runtime, opens the pinned Ray ports (6379, 8265, 13377–13379, 14000–15000) in a `vllm-cluster` firewalld zone restricted to the compute CIDR, deploys `vllm-ray` and `vllm-serve` systemd units (containers run with `--network host --gpus all --ipc host --shm-size 16g`), waits for all Ray nodes to register, then waits for `GET /health` on port 8000.
+    Per node the global `prerequisites` role first checks that Docker, `docker compose`, and the NVIDIA driver are present (the driver via `prerequisites_check_nvidia: true` for the `vllm_compute` group). The `vllm_compute` role then opens the pinned Ray ports (6379, 8265, 13377–13379, 14000–15000) in a `vllm-cluster` firewalld zone restricted to the compute CIDR, deploys `vllm-ray` and `vllm-serve` systemd units (containers run with `--network host --gpus all --ipc host --shm-size 16g`), waits for all Ray nodes to register, then waits for `GET /health` on port 8000. Docker Engine, the compose plugin, `nvidia-container-toolkit`, the nvidia runtime registration (`nvidia-ctk runtime configure --runtime=docker`), and the NVIDIA driver itself are host prerequisites: install them on each node first (for example on Fedora: `dnf install docker docker-compose nvidia-container-toolkit` and `dnf install akmod-nvidia xorg-x11-drv-nvidia-cuda` for the driver).
 4. **Register with LiteLLM**: the run renders `litellm/vllm-models.yaml` (one cluster endpoint in ray mode, one entry per node in standalone). Merge it into `model_list` in `litellm/config.yaml` on the stack host, then `docker compose restart litellm`.
 
 Notes:
@@ -344,7 +344,7 @@ Start with `--profile monitoring` (the Ansible playbook enables it by default vi
 - Grafana at https://grafana.$DOMAIN, `admin` / `GF_SECURITY_ADMIN_PASSWORD`.
 - Pre-provisioned dashboards: LiteLLM, node-exporter, Open WebUI, PostgreSQL, Traefik, OpenTelemetry, NVIDIA DCGM (with `gpu` profile), tokenization, Keycloak, Chatterbox, stack logs, and container resources.
 - Traces: Grafana → Explore → Tempo.
-- Logs: Loki via the stack-logs dashboard; `docker-log-discovery` tails every container into Loki with label `container_name`.
+- Logs: Loki via the stack-logs dashboard. Grafana Alloy tails every container through the Docker API with label `service_name`.
 - Alerts: provisioned in `grafana/provisioning/alerting/`; add your Discord webhook as `GRAFANA_DISCORD_WEBHOOK_URL` in `.env` (setup step 6 can do it).
 
 ## Backups

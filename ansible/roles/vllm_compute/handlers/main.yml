@@ -3,11 +3,6 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
-- name: Restart docker
-  ansible.builtin.systemd:
-    name: docker
-    state: restarted
-
 - name: Restart vllm-ray
   ansible.builtin.systemd:
     name: "{{ vllm_ray_service_name }}"
