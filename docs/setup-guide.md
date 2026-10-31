@@ -76,25 +76,28 @@ git clone https://github.com/mhajder/openwebui-stack.git
 cd openwebui-stack
 ```
 
-### 2. Run the setup script
+### 2. Run the setup entrypoint
 
 ```bash
 chmod +x scripts/*.sh
 ./scripts/setup.sh
 ```
 
-The script walks through six steps. Answer the prompts; defaults are safe:
+`setup.sh` is a thin wrapper: it installs the Ansible collections (once) and runs `ansible-playbook playbooks/site.yml`. There are no interactive prompts anymore; configuration is declarative in `ansible/group_vars/all/` and everything the old prompts did is now a playbook step:
 
-| Step | What it does |
+| Playbook step | What it does |
 |---|---|
-| 1. Environment file | Creates `.env` from `.env.example` (say yes on a fresh machine) |
-| 2. Domain | Sets `DOMAIN` (default `localhost`). For a non-localhost domain it also appends the service hostnames to `/etc/hosts` |
-| 3. Passwords | Generates strong random passwords for Postgres, LiteLLM, Grafana, Keycloak, Valkey, Qdrant, Traefik dashboard, and all OIDC client secrets into `.env` |
-| 4. SSL certificates | (1) use your wildcard cert/key in `certs/`, (2) generate persistent self-signed via `scripts/generate-certs.sh`, (3) Traefik default. Choose 1 for production with a real cert, 2 for homelab |
-| 5. Start Docker stack | Pulls images, starts Postgres + Keycloak, waits for health, runs the Ansible playbook to provision the realm/clients/users (installs collections and exports secrets from `.env`), then brings up the rest |
-| 6. LLM providers | Optional: Discord webhook for Grafana alerts, Gemini API key, AWS Bedrock credentials, llama.cpp edge-node wizard |
+| Secrets | Resolves every stack secret in order: `vault_<name>` in `ansible/group_vars/all/vault.yml` → environment variable → value in the deployed `.env` → generated once and persisted back into the vault file. Existing deployments keep their secrets |
+| Environment file | Renders `.env` from `templates/env.j2` (mode 0600); includes the `$$`-escaped Traefik dashboard apr1 hash |
+| Domain | `domain` in `ansible/group_vars/all/vars.yml` (tiering: `DOMAIN` env var → deployed `.env` → `localhost`). For a non-localhost domain the playbook adds the service hostnames to `/etc/hosts` on the deployment host |
+| SSL certificates | `ssl_cert_type` in `group_vars/all/vars.yml`: `existing` (use `certs/<ssl_cert_file>` + `certs/<ssl_key_file>`), `selfsigned` (generate a persistent pair with `community.crypto`, replacing `scripts/generate-certs.sh`), or `traefik` (built-in default). Custom modes render `traefik/dynamic/certs.yml` |
+| Compose file | Renders `docker-compose.yml` from `templates/docker-compose.yml.j2`; `chatterbox_enabled: false` drops the Chatterbox services entirely |
+| Start Docker stack | Pulls images, brings up the stack with `docker_compose_profiles` (group_vars; the chatterbox role appends `chatterbox-gpu`/`chatterbox-cpu`), waits for health |
+| Keycloak | Provisions the realm, provisioner client, OIDC clients, groups, and users against the running Keycloak |
+| MCP servers | Optional per-server toggles in `group_vars/all/vars.yml` (`brave_search_enabled` + key, `playwright_mcp_enabled`) |
+| LLM providers | Optional keys exported as environment variables on the run (`GEMINI_API_KEY`, `AWS_*`) land in `.env`; the llama.cpp edge-node wizard is still `./scripts/setup-edge-nodes.sh` |
 
-If you skip step 5, start the stack manually:
+If you skip the compose step (`--skip-tags compose`), start the stack manually:
 
 ```bash
 docker compose up -d                    # core only
@@ -183,15 +186,14 @@ The playbook creates the `platform` realm, the `keycloak-provisioner` service ac
 
 ### Setup script integration
 
-`./scripts/setup.sh` step 5 runs the playbook for you. It:
+`./scripts/setup.sh` runs the playbook for you. It:
 
 1. Installs the Ansible collections (`ansible-galaxy collection install -r requirements.yaml`) when `middleware_automation.keycloak` is missing.
-2. Generates and stores `KEYCLOAK_PROVISIONER_CLIENT_SECRET` in `.env` when absent.
-3. Exports `.env` to the playbook's environment (master password, client secrets, domain).
-4. Generates run-only passwords for the six `KEYCLOAK_USER_*_PASSWORD` values when they are not set (these are not stored in `.env`; set them in the environment or use Ansible Vault to keep the same user passwords across runs).
-5. Runs `ansible-playbook playbooks/site.yml`.
+2. Runs `ansible-playbook playbooks/site.yml`, forwarding any extra CLI args.
 
-Prerequisite: `ansible-playbook` on the machine running setup.sh (ansible-core 2.21+). When it is missing, the script prints the manual commands and continues.
+Prerequisite: `ansible-playbook` (ansible-core 2.16+). When it is missing, the script prints the manual commands and exits.
+
+All secrets the playbook needs resolve through the tiering documented in `ansible/group_vars/all/vault.yml` (vault entry → environment → deployed `.env` → generated once and persisted). The six `KEYCLOAK_USER_*_PASSWORD` values follow the same tiering, so user passwords are stable across runs; on a first run they are generated and written back to the vault file instead of being ephemeral per run.
 
 ### Verify SSO end to end
 

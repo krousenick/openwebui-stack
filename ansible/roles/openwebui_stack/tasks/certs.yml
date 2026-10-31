@@ -1,0 +1,107 @@
+---
+# TLS certificates, replacing scripts/setup.sh step 4 and
+# scripts/generate-certs.sh. ssl_cert_type selects the mode:
+#
+#   existing  - use certs/<ssl_cert_file> + certs/<ssl_key_file> from the
+#               deployed tree (optionally pre-provisioned out of band).
+#   selfsigned- generate a persistent self-signed wildcard pair with
+#               community.crypto, then point Traefik at it.
+#   traefik   - no custom cert; Traefik regenerates its default per restart.
+#
+# In every custom mode the task renders traefik/dynamic/certs.yml so
+# Traefik loads the pair; in traefik mode any stale certs.yml is removed
+# to fall back to the built-in certificate.
+
+- name: Require a supported ssl_cert_type
+  ansible.builtin.assert:
+    that:
+      - ssl_cert_type in ['existing', 'selfsigned', 'traefik']
+    fail_msg: "ssl_cert_type must be existing, selfsigned, or traefik (got: {{ ssl_cert_type }})."
+
+- name: Check whether the certificate files already exist
+  ansible.builtin.stat:
+    path: "{{ project_root }}/certs/{{ item }}"
+  register: cert_files
+  loop:
+    - "{{ ssl_cert_file }}"
+    - "{{ ssl_key_file }}"
+  when: ssl_cert_type == 'existing'
+
+- name: Fail with guidance when the existing certificate is missing
+  ansible.builtin.fail:
+    msg: >-
+      ssl_cert_type is 'existing' but {{ project_root }}/certs/ lacks
+      {{ ssl_cert_file }} or {{ ssl_key_file }}. Copy the wildcard pair into
+      certs/, or set ssl_cert_type to 'selfsigned' to generate a pair.
+  when:
+    - ssl_cert_type == 'existing'
+    - cert_files.results | selectattr('stat.exists', 'equalto', false) | list | length > 0
+
+- name: Install python3-cryptography for community.crypto on Photon
+  ansible.builtin.command:
+    cmd: tdnf install -y python3-cryptography
+  register: certs_photon_cryptography
+  changed_when: "'Nothing to do' not in certs_photon_cryptography.stdout"
+  when:
+    - ssl_cert_type == 'selfsigned'
+    - ansible_facts.distribution == 'VMware Photon OS'
+
+- name: Install python3-cryptography for community.crypto on RedHat
+  ansible.builtin.dnf:
+    name: python3-cryptography
+    state: present
+  when:
+    - ssl_cert_type == 'selfsigned'
+    - ansible_facts.os_family == 'RedHat'
+    - ansible_facts.distribution != 'VMware Photon OS'
+
+- name: Install python3-cryptography for community.crypto on Debian
+  ansible.builtin.apt:
+    name: python3-cryptography
+    state: present
+    update_cache: true
+  when:
+    - ssl_cert_type == 'selfsigned'
+    - ansible_facts.os_family == 'Debian'
+
+- name: Generate the self-signed private key
+  community.crypto.openssl_privatekey:
+    path: "{{ project_root }}/certs/{{ ssl_key_file }}"
+    type: RSA
+    size: "{{ selfsigned_key_size }}"
+    mode: "0600"
+    force: false
+  when: ssl_cert_type == 'selfsigned'
+
+- name: Generate the self-signed certificate
+  community.crypto.x509_certificate:
+    path: "{{ project_root }}/certs/{{ ssl_cert_file }}"
+    privatekey_path: "{{ project_root }}/certs/{{ ssl_key_file }}"
+    provider: selfsigned
+    selfsigned_not_after: "+{{ selfsigned_valid_days }}d"
+    selfsigned_digest: sha256
+    mode: "0644"
+    subject:
+      C: "{{ selfsigned_subject.country }}"
+      ST: "{{ selfsigned_subject.state }}"
+      L: "{{ selfsigned_subject.city }}"
+      O: "{{ selfsigned_subject.org }}"
+      OU: "{{ selfsigned_subject.ou }}"
+      CN: "{{ domain }}"
+    subject_alt_name: "{{ selfsigned_san }}"
+  when: ssl_cert_type == 'selfsigned'
+
+- name: Render the Traefik dynamic certificate config
+  ansible.builtin.template:
+    src: certs.yml.j2
+    dest: "{{ project_root }}/traefik/dynamic/certs.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  when: ssl_cert_type in ['existing', 'selfsigned']
+
+- name: Remove a stale Traefik certificate config in traefik mode
+  ansible.builtin.file:
+    path: "{{ project_root }}/traefik/dynamic/certs.yml"
+    state: absent
+  when: ssl_cert_type == 'traefik'

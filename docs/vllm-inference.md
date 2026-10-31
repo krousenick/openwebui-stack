@@ -13,6 +13,28 @@ Both render into `litellm/vllm-models.yaml` (see [Register with LiteLLM](#regist
 
 ---
 
+## Supported operating systems
+
+**Fedora** is the supported and tested target (current releases; the integration rig runs Fedora 44 arm64 with GPU pieces stubbed, production nodes are Fedora x86_64). The role's requirements are RHEL-family behavior, not Fedora specifically — any distro providing the pieces below works:
+
+| Requirement | What uses it |
+|---|---|
+| `dnf` package management | `prerequisites` role base-package task; install guidance in fail messages |
+| **`firewalld`** (`firewall-cmd`) | `vllm_compute` firewall tasks (`tasks/firewall.yml`) |
+| `systemd` | the `vllm-ray`, `vllm-serve`, `vllm-flux-*` units |
+| Docker Engine + compose plugin, NVIDIA driver + container toolkit | container runtime; checked by `prerequisites`, installed per-node (see [Setup](#setup)) |
+
+| OS | Status | Notes |
+|---|---|---|
+| Fedora (current) | **Supported, tested** | Reference platform; rig + production |
+| RHEL / Alma / Rocky / other RHEL-family | Expected to work, untested | Needs `firewalld` installed/enabled |
+| VMware Photon OS | Partial | The `prerequisites` package task covers it (`tdnf`), **but the vllm firewall tasks are not Photon-compatible** — Photon does not ship `firewalld`. Set `vllm_manage_firewall: false` and restrict the Ray/API ports with Photon's own firewall (iptables rules), or expect the `firewall-cmd` tasks to fail. This combination is untested. |
+| Debian-family (Ubuntu, Debian, etc.) | Not supported | `prerequisites` installs base packages via `apt`, but nothing in `vllm_compute` handles Debian: no `firewalld`, and the fail-message install guidance is dnf/RHEL-specific. Would need a firewall-task variant and doc changes first. |
+
+The [Setup](#setup) steps and every install command in the role's fail messages assume Fedora/RHEL-family.
+
+---
+
 ## Architecture
 
 ```

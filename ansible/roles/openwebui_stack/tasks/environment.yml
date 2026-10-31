@@ -1,4 +1,8 @@
 ---
+- name: Render the Traefik dashboard basic-auth hash
+  ansible.builtin.import_tasks:
+    file: traefik_auth.yml
+
 - name: Render application environment
   ansible.builtin.template:
     src: env.j2
