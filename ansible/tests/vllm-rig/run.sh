@@ -24,8 +24,12 @@ export VLLM_IMAGE_OVERRIDE=vllm/vllm-openai:test-stub
 export VLLM_MODEL_OVERRIDE=/opt/models/test-model
 
 sync_to_controller() {
+	# Sync the repo root (not just ansible/) so litellm/ is present next to
+	# ansible/ on the controller; litellm_registration.yml renders
+	# playbook_dir/../../litellm/vllm-models.yaml, which resolves against
+	# the repo root.
 	orb -m fedora sudo mkdir -p "$CONTROLLER_DIR"
-	cd "$RIG_DIR/../.."
+	cd "$RIG_DIR/../../.."
 	tar cf - --exclude=.git --exclude=.env --exclude=certs \
 		--exclude='*.key' --exclude='*.pem' --exclude='*.bak*' \
 		. | orb -m fedora sudo tar xf - -C "$CONTROLLER_DIR"
@@ -36,12 +40,12 @@ run_playbook() {
 	shift
 	sync_to_controller
 	orb -m fedora sudo env \
-		ANSIBLE_CONFIG="$CONTROLLER_DIR/ansible.cfg" \
+		ANSIBLE_CONFIG="$CONTROLLER_DIR/ansible/ansible.cfg" \
 		VLLM_IMAGE_OVERRIDE="$VLLM_IMAGE_OVERRIDE" \
 		VLLM_MODEL_OVERRIDE="$VLLM_MODEL_OVERRIDE" \
 		VLLM_API_KEY=test-rig-key \
 		ansible-playbook \
-		-i "$CONTROLLER_DIR/tests/vllm-rig/inventory.yml" \
+		-i "$CONTROLLER_DIR/ansible/tests/vllm-rig/inventory.yml" \
 		"$pb" "$@"
 }
 
@@ -50,14 +54,14 @@ sync)
 	sync_to_controller
 	;;
 setup)
-	run_playbook "$CONTROLLER_DIR/tests/vllm-rig/stub-setup.yml"
+	run_playbook "$CONTROLLER_DIR/ansible/tests/vllm-rig/stub-setup.yml"
 	;;
 inference)
-	run_playbook "$CONTROLLER_DIR/playbooks/inference.yml"
+	run_playbook "$CONTROLLER_DIR/ansible/playbooks/inference.yml"
 	;;
 check)
 	local_log=/tmp/vllm-rig-run2.log
-	run_playbook "$CONTROLLER_DIR/playbooks/inference.yml" | tee "$local_log"
+	run_playbook "$CONTROLLER_DIR/ansible/playbooks/inference.yml" | tee "$local_log"
 	if grep -Eq "changed=[1-9]" "$local_log"; then
 		echo "FAIL: role is not idempotent"
 		exit 1

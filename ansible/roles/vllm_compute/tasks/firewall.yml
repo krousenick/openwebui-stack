@@ -68,7 +68,8 @@
           - --permanent
           - --zone=vllm-cluster
           - --add-port={{ item }}/tcp
-      when: item not in vllm_zone_ports.stdout.split()
+      # list-ports prints "6379/tcp"; compare with the /tcp suffix appended.
+      when: (item ~ '/tcp') not in vllm_zone_ports.stdout.split()
       register: vllm_fw_ports
       changed_when: true
       loop:

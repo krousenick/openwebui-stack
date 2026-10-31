@@ -75,8 +75,10 @@ vllm_install_dir: /opt/vllm
 # Container shared memory. Cross-node NCCL/Ray needs a large /dev/shm.
 vllm_shm_size: "16g"
 
-# Container restart policy.
-vllm_restart_policy: always
+# docker run GPU flag. --gpus all needs the NVIDIA container toolkit with a
+# real driver (CDI device discovery). Hosts without real GPUs (the test rig
+# stub runtime) can override with --runtime=nvidia.
+vllm_container_gpu_flag: "--gpus all"
 
 # Number of GPUs per node, used for assertions and docs. Autodetected from
 # nvidia-smi when empty.
