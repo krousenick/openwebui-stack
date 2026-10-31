@@ -27,3 +27,12 @@ vllm_container_gpu_flag: "--runtime=nvidia"
 # test. The OrbStack network is not the production compute segment, so open
 # the zone to the VM's own /24.
 vllm_manage_firewall: true
+
+# Exercise the flux tasks with the stub image. Both models land on the same
+# VM; ports follow vllm_flux_base_port.
+vllm_flux_enabled: true
+vllm_flux_models:
+  - name: flux
+    model: black-forest-labs/FLUX.1-dev
+  - name: flux-schnell
+    model: black-forest-labs/FLUX.1-schnell

@@ -10,11 +10,15 @@ User=root
 Group=root
 ExecStartPre=/bin/bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
 ExecStart={{ vllm_install_dir }}/ray-start.sh
+# --rm does not fire when systemd SIGTERMs the docker client; remove the
+# container explicitly so a restarted unit reuses the name cleanly.
+ExecStop=/bin/bash -c 'docker rm -f {{ vllm_container_name }}-ray || true'
+ExecStopPost=/bin/bash -c 'docker rm -f {{ vllm_container_name }}-ray || true'
 Restart=always
 RestartSec=10
 TimeoutStartSec=0
 TimeoutStopSec=60
-KillMode=mixed
+KillMode=control-group
 
 # Security
 NoNewPrivileges=true

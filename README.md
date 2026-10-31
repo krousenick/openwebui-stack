@@ -607,7 +607,7 @@ Use this for GGUF models served by `llama-server` (typically a Fedora host with 
 
 ### vLLM distributed inference compute nodes
 
-For full HF-precision models larger than a single llama.cpp node can serve, use the `vllm_compute` Ansible role. It deploys the official `vllm/vllm-openai` container (Docker + NVIDIA runtime) onto Fedora compute nodes connected over 10/25GbE, with two distributed modes:
+For full HF-precision models larger than a single llama.cpp node can serve, use the `vllm_compute` Ansible role. It deploys the official `vllm/vllm-openai` container (Docker + NVIDIA runtime) onto Fedora compute nodes connected over 10/25GbE, with two distributed modes. Full reference — architecture, all parallelism modes, variable reference, setup and operations: [docs/vllm-inference.md](docs/vllm-inference.md).
 
 - **Pipeline parallelism (`vllm_deployment_mode: ray`, default)**: one Ray head + workers, one `vllm serve` on the head. `--pipeline-parallel-size` defaults to the node count; each node serves a contiguous layer range. Fits the 10GbE fabric because PP transfers activations only at stage boundaries.
 - **Cross-node tensor parallelism**: set `vllm_cross_node_tensor_parallel: true`. Spreads TP across the cluster (`TP = tensor_parallel_size × nodes`). Verify the fabric can sustain it (25GbE+ recommended); 10GbE will bottleneck NCCL all-reduce.
@@ -623,6 +623,22 @@ For full HF-precision models larger than a single llama.cpp node can serve, use 
    ```
     The role runs after the global `prerequisites` check role (Docker + compose present; NVIDIA driver for this group via `prerequisites_check_nvidia: true` in `ansible/group_vars/vllm_compute/vars.yml`). The NVIDIA container toolkit and the nvidia runtime registration are now host setup: install the toolkit on each node and run `nvidia-ctk runtime configure --runtime=docker` there. The role opens pinned Ray ports (6379, 8265, 13377-13379, 14000-15000) in a dedicated `vllm-cluster` firewalld zone restricted to the compute CIDR, deploys systemd units (`vllm-ray`, `vllm-serve`), waits for Ray workers to join, then waits for `GET /health` on the API.
 4. **Register with LiteLLM**: the run renders `litellm/vllm-models.yaml` with the `model_list` snippet (single cluster endpoint in ray mode; one entry per node in standalone mode). Merge it into `litellm/config.yaml` on the photon host and `docker compose restart litellm`.
+
+#### Flux image-generation servers
+
+The `vllm-flux` container was removed from `docker-compose.yml`; the `vllm_compute` role now deploys Flux as systemd services on the compute nodes. Set `vllm_flux_enabled: true` and list models in `ansible/group_vars/vllm_compute/vars.yml`:
+
+```yaml
+vllm_flux_models:
+  - name: flux
+    model: black-forest-labs/FLUX.1-dev
+    port: 8005
+  - name: flux-schnell
+    model: black-forest-labs/FLUX.1-schnell
+    port: 8006
+```
+
+Each entry gets its own `vllm-flux-<name>` systemd unit, launch script, and host port; removing an entry from the list removes its unit and script. Per-entry keys (`name`, `model`, `port`, `tensor_parallel_size`, `max_model_len`, `gpu_memory_utilization`, `extra_args`) override the `vllm_flux_default_*` role defaults, so a bare `- model: <repo-id>` entry runs the fleet defaults. Flux model entries appear in `litellm/vllm-models.yaml` with `mode: image_generation`; merge them into `litellm/config.yaml` and `docker compose restart litellm`. Details: [docs/vllm-inference.md](docs/vllm-inference.md).
 
 Ray traffic is unauthenticated and can execute arbitrary code; keep `vllm_firewall_zone_source` limited to the compute segment and set `VLLM_API_KEY` on the controller so the API requires auth.
 

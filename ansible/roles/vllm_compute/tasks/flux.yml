@@ -1,0 +1,213 @@
+---
+# ===========================================================================
+# Flux image-generation servers (vllm_flux_enabled / vllm_flux_models)
+# ===========================================================================
+# One systemd unit + launch script per vllm_flux_models entry, deployed on
+# every vllm_compute host. Each entry is a single-model standalone
+# `vllm serve` (no Ray, no cross-node sharding) on its own host port.
+# Flow: merge list entries with the vllm_flux_default_* defaults -> validate
+# -> open the port in the cluster zone -> deploy scripts + units -> clean up
+# entries that were removed from the list -> start and wait for /health.
+# ===========================================================================
+
+- name: Build the effective flux model list
+  # Accumulate one merged dict per entry: explicit keys win, missing keys
+  # take the vllm_flux_default_* values, port defaults to base_port + index.
+  # The result (vllm_flux_effective_models) drives every task below and the
+  # LiteLLM snippet.
+  ansible.builtin.set_fact:
+    vllm_flux_effective_models: "{{ (vllm_flux_effective_models | default([])) + [flux_merged] }}"
+  vars:
+    flux_defaulted_model: "{{ item.model | default(vllm_flux_default_model) }}"
+    flux_merged:
+      name: "{{ item.name | default(flux_defaulted_model.split('/')[-1]) }}"
+      model: "{{ flux_defaulted_model }}"
+      served_model_name: "{{ item.served_model_name | default(item.name | default(flux_defaulted_model.split('/')[-1])) }}"
+      port: "{{ item.port | default(vllm_flux_base_port | int + ansible_loop.index0) | int }}"
+      tensor_parallel_size: "{{ item.tensor_parallel_size | default(vllm_flux_default_tensor_parallel_size) | int }}"
+      max_model_len: "{{ item.max_model_len | default(vllm_flux_default_max_model_len) }}"
+      gpu_memory_utilization: "{{ item.gpu_memory_utilization | default(vllm_flux_default_gpu_memory_utilization) }}"
+      extra_args: "{{ item.extra_args | default(vllm_flux_default_extra_args) }}"
+  loop: "{{ vllm_flux_models | default([]) }}"
+  loop_control:
+    extended: true
+  when: vllm_flux_enabled | bool
+
+- name: Assert flux model list is valid
+  ansible.builtin.assert:
+    that:
+      - vllm_flux_effective_models is defined
+      - vllm_flux_effective_models | length > 0
+      - flux_item.model | length > 0
+      - flux_item.tensor_parallel_size | int >= 1
+      - flux_item.tensor_parallel_size | int <= vllm_gpus_per_node | int
+    fail_msg: >-
+      vllm_flux_enabled is true but the flux model list is empty or an entry
+      is invalid (empty model, or tensor_parallel_size exceeding the GPUs
+      detected on {{ inventory_hostname }}).
+  loop: "{{ vllm_flux_effective_models | default([]) }}"
+  loop_control:
+    loop_var: flux_item
+  when: vllm_flux_enabled | bool
+
+- name: Assert flux host ports are unique
+  # Ports default to base_port + index, so explicit ports are the only way
+  # to collide; two servers cannot bind the same host port.
+  ansible.builtin.assert:
+    that:
+      - vllm_flux_effective_models | map(attribute='port') | list | unique | length == vllm_flux_effective_models | length
+    fail_msg: "Two or more flux models share the same host port."
+  when: vllm_flux_enabled | bool
+
+- name: Open the flux API port in the cluster firewall
+  # Same zone the primary model uses (vllm-cluster); the when-clause skips
+  # ports firewall-cmd already lists, keeping reruns idempotent.
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --permanent
+      - --zone=vllm-cluster
+      - --add-port={{ flux_item.port }}/tcp
+  when: >-
+    vllm_flux_enabled | bool and vllm_manage_firewall | bool
+    and (flux_item.port ~ '/tcp') not in vllm_zone_ports.stdout.split()
+  loop: "{{ vllm_flux_effective_models | default([]) }}"
+  loop_control:
+    loop_var: flux_item
+  register: vllm_flux_fw_ports
+  changed_when: true
+
+- name: Reload firewalld after flux ports
+  ansible.builtin.command:
+    cmd: firewall-cmd --reload
+  when: >-
+    vllm_flux_enabled | bool and vllm_manage_firewall | bool
+    and vllm_flux_fw_ports is changed
+  changed_when: true
+
+- name: Deploy the flux launch scripts and systemd units
+  when: vllm_flux_enabled | bool
+  block:
+    - name: Create the flux per-model install directories
+      ansible.builtin.file:
+        path: "{{ vllm_install_dir }}/{{ flux_item.name }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: "{{ vllm_flux_effective_models }}"
+      loop_control:
+        loop_var: flux_item
+
+    - name: Deploy the flux launch scripts
+      ansible.builtin.template:
+        src: vllm-flux.sh.j2
+        dest: "{{ vllm_install_dir }}/{{ flux_item.name }}/vllm-flux.sh"
+        owner: root
+        group: root
+        mode: "0750"
+      loop: "{{ vllm_flux_effective_models }}"
+      loop_control:
+        loop_var: flux_item
+      notify: Restart flux services
+
+    - name: Deploy the flux systemd units
+      ansible.builtin.template:
+        src: vllm-flux.service.j2
+        dest: /etc/systemd/system/vllm-flux-{{ flux_item.name }}.service
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ vllm_flux_effective_models }}"
+      loop_control:
+        loop_var: flux_item
+      notify:
+        - Reload systemd
+        - Restart flux services
+
+- name: Remove flux units for models no longer configured
+  # Model switching: whatever is NOT in vllm_flux_effective_models gets its
+  # unit stopped+disabled, unit file removed, and launch script directory
+  # deleted. This block runs even when flux is disabled, which fully tears
+  # down any flux deployment after vllm_flux_enabled: false.
+  block:
+    - name: List deployed flux units
+      ansible.builtin.find:
+        paths: /etc/systemd/system
+        patterns: "vllm-flux-*.service"
+      register: vllm_flux_deployed_units
+
+    - name: Stop and disable removed flux units
+      # failed_when: false tolerates units that are already stopped/absent.
+      ansible.builtin.systemd:
+        name: "{{ flux_unit.path | basename }}"
+        state: stopped
+        enabled: false
+      loop: "{{ vllm_flux_deployed_units.files }}"
+      loop_control:
+        loop_var: flux_unit
+      when: >-
+        (flux_unit.path | basename | regex_replace('^vllm-flux-(.*)[.]service$', '\\1'))
+        not in (vllm_flux_effective_models | default([]) | map(attribute='name') | list)
+      failed_when: false
+
+    - name: Remove removed flux unit files
+      ansible.builtin.file:
+        path: "{{ flux_unit.path }}"
+        state: absent
+      loop: "{{ vllm_flux_deployed_units.files }}"
+      loop_control:
+        loop_var: flux_unit
+      when: >-
+        (flux_unit.path | basename | regex_replace('^vllm-flux-(.*)[.]service$', '\\1'))
+        not in (vllm_flux_effective_models | default([]) | map(attribute='name') | list)
+
+    - name: Remove removed flux launch script directories
+      ansible.builtin.file:
+        path: "{{ vllm_install_dir }}/{{ flux_unit.path | basename | regex_replace('^vllm-flux-(.*)[.]service$', '\\1') }}"
+        state: absent
+      loop: "{{ vllm_flux_deployed_units.files }}"
+      loop_control:
+        loop_var: flux_unit
+      when: >-
+        (flux_unit.path | basename | regex_replace('^vllm-flux-(.*)[.]service$', '\\1'))
+        not in (vllm_flux_effective_models | default([]) | map(attribute='name') | list)
+
+- name: Enable and start the flux services
+  ansible.builtin.systemd:
+    name: vllm-flux-{{ flux_item.name }}
+    state: started
+    enabled: true
+    daemon_reload: true
+  loop: "{{ vllm_flux_effective_models | default([]) }}"
+  loop_control:
+    loop_var: flux_item
+  when: vllm_flux_enabled | bool
+
+- name: Wait for the flux APIs to accept requests
+  # vllm serve /health reports ok once the model is loaded; a real FLUX.1
+  # model takes minutes on first download, so 60 x 10s retries.
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -sf
+      - --max-time
+      - "5"
+      - http://127.0.0.1:{{ flux_item.port }}/health
+  register: vllm_flux_health
+  until: vllm_flux_health.rc == 0
+  retries: 60
+  delay: 10
+  changed_when: false
+  loop: "{{ vllm_flux_effective_models | default([]) }}"
+  loop_control:
+    loop_var: flux_item
+  when: vllm_flux_enabled | bool
+
+- name: Confirm the flux APIs are healthy
+  ansible.builtin.debug:
+    msg: "Flux API for {{ flux_item.name }} healthy on {{ vllm_host_ip }}:{{ flux_item.port }}."
+  loop: "{{ vllm_flux_effective_models | default([]) }}"
+  loop_control:
+    loop_var: flux_item
+  when: vllm_flux_enabled | bool

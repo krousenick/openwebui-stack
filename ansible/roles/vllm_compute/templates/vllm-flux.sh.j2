@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Managed by Ansible (role: vllm_compute). vLLM Flux image-generation server
+# for model {{ flux_item.name }}.
+#
+# One instance per vllm_flux_models entry, run by its vllm-flux-{{ flux_item.name }}
+# systemd unit on this node. Single-model standalone `vllm serve` - no Ray, no
+# cross-node sharding; --tensor-parallel-size spans this node's GPUs only.
+# Shares the HF cache dir with the primary model server.
+set -euo pipefail
+
+readonly IMAGE="{{ vllm_flux_image }}"
+readonly NAME="{{ vllm_container_name }}-flux-{{ flux_item.name }}"
+{% if vllm_hf_token | length > 0 %}
+readonly HF_TOKEN="{{ vllm_hf_token }}"
+{% endif %}
+
+docker pull --quiet "$IMAGE" >/dev/null 2>&1 || true
+
+exec docker run \
+  --rm \
+  --name "$NAME" \
+  --network host \
+  --shm-size {{ vllm_shm_size }} \
+  {{ vllm_container_gpu_flag }} \
+  --ipc host \
+  --entrypoint /bin/bash \
+  -v {{ vllm_hf_cache_dir }}:/root/.cache/huggingface \
+{% if vllm_hf_token | length > 0 %}
+  -e HF_TOKEN="$HF_TOKEN" \
+{% endif %}
+  -e HF_TOKENIZERS_PARALLELISM=0 \
+{% if vllm_flux_api_key | length > 0 %}
+  -e VLLM_API_KEY="{{ vllm_flux_api_key }}" \
+{% endif %}
+  -e VLLM_LOGGING_LEVEL=INFO \
+  "$IMAGE" \
+  -lc "vllm serve {{ flux_item.model }} \
+    --served-model-name {{ flux_item.served_model_name }} \
+    --host 0.0.0.0 \
+    --port {{ flux_item.port }} \
+    --max-model-len {{ flux_item.max_model_len }} \
+    --gpu-memory-utilization {{ flux_item.gpu_memory_utilization }} \
+    --tensor-parallel-size {{ flux_item.tensor_parallel_size }} \
+    {{ flux_item.extra_args | join(' ') }}"

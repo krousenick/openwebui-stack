@@ -1,4 +1,14 @@
 ---
+# ===========================================================================
+# Primary-model deployment: launch scripts + systemd units + startup waits.
+# What lands on each node:
+#   ray mode   ray-start.sh + vllm-ray.service on every node; vllm-serve.sh
+#              + vllm-serve.service on the head only (it shards the model
+#              across the Ray cluster).
+#   standalone vllm-serve.sh + vllm-serve.service on every node (full model
+#              replica each); no ray units.
+# ===========================================================================
+
 - name: Create vLLM install directory
   ansible.builtin.file:
     path: "{{ vllm_install_dir }}"
@@ -26,6 +36,8 @@
   notify: Restart vllm-ray
 
 - name: Deploy the vLLM serve script
+  # Only the head runs `vllm serve` in ray mode (it drives the whole shard
+  # through Ray); in standalone every node runs its own replica.
   ansible.builtin.template:
     src: vllm-serve.sh.j2
     dest: "{{ vllm_install_dir }}/vllm-serve.sh"
@@ -71,11 +83,15 @@
   when: vllm_deployment_mode == 'ray'
 
 - name: Wait for Ray workers to join the cluster
+  # The serve command connects to the Ray cluster at startup; every node
+  # must be registered before `vllm serve` can place its pipeline stages.
   when:
     - vllm_deployment_mode == 'ray'
     - vllm_ray_role == 'head'
   block:
     - name: Wait for all Ray nodes to register
+      # Counts Alive nodes inside the head container until it matches the
+      # vllm_compute inventory size. 30 x 10s covers slow worker starts.
       ansible.builtin.command:
         argv:
           - docker
@@ -104,6 +120,7 @@
   when: vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'
 
 - name: Wait for the vLLM API to accept requests
+  # Model load can take minutes (weights + CUDA graphs); 60 x 10s retries.
   ansible.builtin.command:
     argv:
       - curl

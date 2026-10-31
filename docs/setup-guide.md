@@ -9,7 +9,7 @@ This guide takes a bare machine to a fully working Open WebUI AI platform with K
 - [Adding users and passkeys](#adding-users-and-passkeys)
 - [Using the platform](#using-the-platform)
 - [Local inference: llama.cpp edge nodes](#local-inference-llamacpp-edge-nodes)
-- [Local inference: vLLM distributed compute](#local-inference-vllm-distributed-compute)
+- [Local inference: vLLM distributed compute](#local-inference-vllm-distributed-compute) — full reference in [vllm-inference.md](vllm-inference.md)
 - [Monitoring](#monitoring)
 - [Backups](#backups)
 - [Upgrades and version pinning](#upgrades-and-version-pinning)
@@ -302,7 +302,7 @@ For GGUF models on a single GPU host (typically Fedora with an NVIDIA GPU):
 
 ## Local inference: vLLM distributed compute
 
-For HF-precision models across multiple GPU nodes connected by 10/25GbE, use the `vllm_compute` Ansible role. It deploys `vllm/vllm-openai` (latest release v0.32.0) with Docker + NVIDIA runtime on Fedora nodes, in three modes:
+For HF-precision models across multiple GPU nodes connected by 10/25GbE, use the `vllm_compute` Ansible role. It deploys `vllm/vllm-openai` (latest release v0.32.0) with Docker + NVIDIA runtime on Fedora nodes, in three modes. **Full reference — architecture diagram, all parallelism modes with the exact flags each renders, variable reference, setup and operations: [vllm-inference.md](vllm-inference.md).**
 
 | Mode | Topology | Best for |
 |---|---|---|
@@ -330,7 +330,9 @@ For HF-precision models across multiple GPU nodes connected by 10/25GbE, use the
    ansible-playbook playbooks/inference.yml
    ```
     Per node the global `prerequisites` role first checks that Docker, `docker compose`, and the NVIDIA driver are present (the driver via `prerequisites_check_nvidia: true` for the `vllm_compute` group). The `vllm_compute` role then opens the pinned Ray ports (6379, 8265, 13377–13379, 14000–15000) in a `vllm-cluster` firewalld zone restricted to the compute CIDR, deploys `vllm-ray` and `vllm-serve` systemd units (containers run with `--network host --gpus all --ipc host --shm-size 16g`), waits for all Ray nodes to register, then waits for `GET /health` on port 8000. Docker Engine, the compose plugin, `nvidia-container-toolkit`, the nvidia runtime registration (`nvidia-ctk runtime configure --runtime=docker`), and the NVIDIA driver itself are host prerequisites: install them on each node first (for example on Fedora: `dnf install docker docker-compose nvidia-container-toolkit` and `dnf install akmod-nvidia xorg-x11-drv-nvidia-cuda` for the driver).
-4. **Register with LiteLLM**: the run renders `litellm/vllm-models.yaml` (one cluster endpoint in ray mode, one entry per node in standalone). Merge it into `model_list` in `litellm/config.yaml` on the stack host, then `docker compose restart litellm`.
+ 4. **Register with LiteLLM**: the run renders `litellm/vllm-models.yaml` (one cluster endpoint in ray mode, one entry per node in standalone). Merge it into `model_list` in `litellm/config.yaml` on the stack host, then `docker compose restart litellm`.
+
+    **Flux image generation** is deployed by the same role via `vllm_flux_enabled: true` and the `vllm_flux_models` list in `ansible/group_vars/vllm_compute/vars.yml` - one standalone container and `vllm-flux-<name>` systemd unit per configured model, each on its own host port. It is no longer a `docker-compose.yml` service; flux entries (with `mode: image_generation`) render into `litellm/vllm-models.yaml` with the rest.
 
 Notes:
 - Ray traffic is unauthenticated and can execute code; keep `vllm_firewall_zone_source` to the compute segment and always set `VLLM_API_KEY`.

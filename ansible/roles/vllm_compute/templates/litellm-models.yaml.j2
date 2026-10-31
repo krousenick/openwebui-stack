@@ -26,3 +26,23 @@
       max_tokens: {{ vllm_max_model_len }}
 {% endfor %}
 {% endif %}
+{% if vllm_flux_enabled | default(false) | bool and (vllm_flux_effective_models | default([]) | length > 0) %}
+# Flux image-generation servers, one entry per vllm_flux_models entry. These
+# land on every vllm_compute host; the rendered api_base points at the host
+# this run rendered from. mode: image_generation makes LiteLLM route
+# image-generation calls to them.
+{% for flux_item in vllm_flux_effective_models %}
+  - model_name: {{ flux_item.served_model_name }}
+    litellm_params:
+      model: openai/{{ flux_item.served_model_name }}
+      api_base: http://{{ vllm_host_ip }}:{{ flux_item.port }}/v1
+      api_key: {{ 'os.environ/VLLM_FLUX_API_KEY' if vllm_flux_api_key | length > 0 else 'local' }}
+    model_info:
+      mode: image_generation
+      description: "{{ flux_item.served_model_name }} - vLLM Flux on {{ inventory_hostname }}"
+      max_input_tokens: {{ flux_item.max_model_len }}
+      max_tokens: {{ flux_item.max_model_len }}
+      supports_function_calling: false
+      supports_vision: false
+{% endfor %}
+{% endif %}

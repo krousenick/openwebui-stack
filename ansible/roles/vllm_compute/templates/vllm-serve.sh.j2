@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 # Managed by Ansible (role: vllm_compute). vLLM OpenAI server.
+#
+# Runs on every node in standalone mode, head only in ray mode.
+# Rendered values that matter for sharding:
+#   --tensor-parallel-size  vllm_effective_tp: GPUs within a node (standalone,
+#                            ray+PP) or across the whole cluster (ray+TP).
+#   --pipeline-parallel-size vllm_effective_pp: nodes in the ray shard; 1 in
+#                            standalone and ray+TP.
+# Ray mode points RAY_ADDRESS at the head so `vllm serve` places its workers
+# across the cluster instead of spawning them locally.
 set -euo pipefail
 
 readonly IMAGE="{{ vllm_image }}"

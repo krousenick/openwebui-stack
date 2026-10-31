@@ -1,4 +1,18 @@
 ---
+# ===========================================================================
+# vllm_compute main task flow
+# ===========================================================================
+# Order matters:
+#   1. Validate configuration and inventory (asserts fail fast).
+#   2. Detect GPUs and derive the parallel sizes each node will pass to
+#      `vllm serve` / `ray start`.
+#   3. Resolve Ray topology (head host, per-node roles) when in ray mode.
+#   4. Open the firewalld zone for cluster traffic.
+#   5. Deploy the primary model services (services.yml).
+#   6. Deploy flux image-generation servers (flux.yml), independent of the
+#      primary topology.
+#   7. Render the LiteLLM snippet last so it sees every deployed model.
+# ===========================================================================
 - name: Validate vLLM configuration
   ansible.builtin.assert:
     that:
@@ -78,6 +92,10 @@
     vllm_host_ip: "{{ hostvars[inventory_hostname]['ansible_host'] | default(inventory_hostname) }}"
 
 - name: Compute effective parallel sizes
+  # The `vllm serve` command line takes ONE --tensor-parallel-size and ONE
+  # --pipeline-parallel-size covering the whole shard. Standalone and ray+PP
+  # use the per-node TP; ray+TP multiplies it by the node count and collapses
+  # PP to 1 (each GPU rank is one tensor parallel worker).
   ansible.builtin.set_fact:
     vllm_effective_tp: "{{ (vllm_tensor_parallel_size | int) * (vllm_pipeline_parallel_size | int)
       if (vllm_deployment_mode == 'ray' and vllm_cross_node_tensor_parallel | bool)
@@ -103,8 +121,18 @@
   when: vllm_manage_firewall | bool
 
 - name: Deploy vLLM services
+  # Primary model: ray-start.sh + vllm-serve.sh scripts and their systemd
+  # units, then start them and wait for the cluster and API to come up.
   ansible.builtin.import_tasks:
     file: services.yml
+
+- name: Deploy Flux image-generation servers
+  # Independent per-model servers; skipped entirely when vllm_flux_enabled
+  # is false. Runs before the LiteLLM render so flux entries land in the
+  # snippet too.
+  ansible.builtin.import_tasks:
+    file: flux.yml
+  when: vllm_flux_enabled | bool
 
 - name: Render LiteLLM registration snippet
   ansible.builtin.import_tasks:

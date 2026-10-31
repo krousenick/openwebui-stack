@@ -14,3 +14,12 @@
     name: "{{ vllm_vllm_service_name }}"
     state: restarted
     daemon_reload: true
+
+- name: Restart flux services
+  ansible.builtin.systemd:
+    name: "vllm-flux-{{ flux_item.name }}"
+    state: restarted
+    daemon_reload: true
+  loop: "{{ vllm_flux_effective_models | default([]) }}"
+  loop_control:
+    loop_var: flux_item
