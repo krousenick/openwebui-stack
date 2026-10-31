@@ -15,9 +15,8 @@ exec docker run \
   --name "$NAME" \
   --network host \
   --shm-size {{ vllm_shm_size }} \
-  --gpus all \
+  {{ vllm_container_gpu_flag }} \
   --ipc host \
-  --restart {{ vllm_restart_policy }} \
   --entrypoint /bin/bash \
   -v {{ vllm_hf_cache_dir }}:/root/.cache/huggingface \
 {% if vllm_hf_token | length > 0 %}

@@ -18,6 +18,11 @@ vllm_deployment_mode: standalone
 # The rig VM has no /mnt/data1; use a local path.
 vllm_hf_cache_dir: /opt/vllm-hf-cache
 
+# The rig has no real GPUs, so --gpus all fails at Docker's CDI GPU-vendor
+# discovery. The stub-setup registers a fake nvidia runtime backed by runc;
+# --runtime=nvidia selects it without touching device discovery.
+vllm_container_gpu_flag: "--runtime=nvidia"
+
 # Firewalld IS running in the rig; the real zone rules are the point of the
 # test. The OrbStack network is not the production compute segment, so open
 # the zone to the VM's own /24.
