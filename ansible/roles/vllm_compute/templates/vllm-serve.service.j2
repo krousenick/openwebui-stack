@@ -16,11 +16,15 @@ User=root
 Group=root
 ExecStartPre=/bin/bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
 ExecStart={{ vllm_install_dir }}/vllm-serve.sh
+# --rm does not fire when systemd SIGTERMs the docker client; remove the
+# container explicitly so a restarted unit reuses the name cleanly.
+ExecStop=/bin/bash -c 'docker rm -f {{ vllm_container_name }}-serve || true'
+ExecStopPost=/bin/bash -c 'docker rm -f {{ vllm_container_name }}-serve || true'
 Restart=always
 RestartSec=15
 TimeoutStartSec=0
 TimeoutStopSec=120
-KillMode=mixed
+KillMode=control-group
 # Model download and NCCL init are slow. Wait before marking failed.
 StartLimitIntervalSec=600
 StartLimitBurst=10

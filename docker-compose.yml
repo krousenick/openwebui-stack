@@ -282,8 +282,6 @@ services:
         condition: service_healthy
       lgtm:
         condition: service_started
-      vllm-flux:
-        condition: service_started
     labels:
       - traefik.enable=true
       - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
@@ -855,68 +853,6 @@ services:
           cpus: "0.5"
 
   # ===========================================================================
-  # vLLM - OpenAI-compatible inference server for Flux image generation
-  # Profile: gpu
-  # API: http://vllm-flux:8000/v1 (internal), exposed via LiteLLM
-  # ===========================================================================
-  vllm-flux:
-    image: vllm/vllm-openai:latest
-    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_vllm-flux
-    restart: unless-stopped
-    logging: *default-logging
-    security_opt:
-      - no-new-privileges:true
-    ports:
-      - "127.0.0.1:${VLLM_FLUX_PORT:-8005}:8000"
-    environment:
-      # vLLM configuration
-      VLLM_LOGGING_LEVEL: INFO
-      VLLM_CONFIGURE_LOGGING: "1"
-      # Model configuration - Flux.1-dev is the quality model, Flux.1-schnell is faster
-      VLLM_MODEL: ${VLLM_FLUX_MODEL:-black-forest-labs/FLUX.1-dev}
-      # GPU configuration
-      CUDA_VISIBLE_DEVICES: "0"
-      GPU_MEMORY_UTILIZATION: 0.95
-      # Tensor parallelism for multi-GPU (set to number of GPUs)
-      TENSOR_PARALLEL_SIZE: ${VLLM_TENSOR_PARALLEL:-1}
-      # Max model length (Flux uses fewer tokens than text models)
-      MAX_MODEL_LEN: 2048
-      # Disable HF tokenizers for faster startup
-      HF_TOKENIZERS_PARALLELISM: "0"
-      # Enable OpenAI-compatible API
-      VLLM_API_KEY: ${VLLM_FLUX_API_KEY:-}
-      # Quantization options (optional - uncomment if needed)
-      # VLLM_QUANTIZATION: awq
-      # Enforce-eager disables CUDA graph optimization (slower but more compatible)
-      # VLLM_ENFORCE_EAGER: "1"
-    volumes:
-      - vllm_flux_cache:/root/.cache/huggingface
-    networks:
-      backend:
-        aliases:
-          - vllm-flux
-    profiles:
-      - gpu
-    deploy:
-      resources:
-        limits:
-          memory: 32G
-          cpus: "8.0"
-        reservations:
-          memory: 16G
-          cpus: "4.0"
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 120s
-
-  # ===========================================================================
   # NVIDIA GPU Exporter (Optional - requires NVIDIA runtime)
   # ===========================================================================
   nvidia-gpu-exporter:
@@ -1071,5 +1007,3 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox_models
   alloy_data:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_alloy_data
-  vllm_flux_cache:
-    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_vllm_flux_cache

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Managed by Ansible (role: vllm_compute). Ray {{ vllm_ray_role }} node.
+# Starts the Ray daemon the vLLM workers attach to. Head starts the GCS
+# server on vllm_ray_head_port with the pinned dashboard/manager ports;
+# workers connect to the head address. Ports must match the firewalld zone
+# opened by firewall.yml.
 set -euo pipefail
 
 readonly IMAGE="{{ vllm_image }}"

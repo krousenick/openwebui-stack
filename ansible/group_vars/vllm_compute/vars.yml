@@ -1,26 +1,47 @@
 ---
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # vLLM distributed inference compute nodes (role: vllm_compute)
-# ---------------------------------------------------------------------------
-# Nodes are connected over 10GbE (upgradeable to 25GbE). Default topology:
-# pipeline parallel across nodes, tensor parallel within a node. Cross-node
-# tensor parallelism needs 25GbE+ to be usable; set
-# vllm_cross_node_tensor_parallel: true and confirm the fabric first.
+# ===========================================================================
+# Production cluster: 3 nodes on 10GbE (upgradeable to 25GbE), 1 GPU per
+# node. Full reference: docs/vllm-inference.md.
+#
+# Topology of the primary (chat/completion) model:
+#
+#   ray (default)        pipeline parallel across nodes - each node holds a
+#                        contiguous layer range; only stage-boundary
+#                        activations cross the 10GbE fabric. Fits large
+#                        models on modest interconnect.
+#   ray + cross-node TP  set vllm_cross_node_tensor_parallel: true; every
+#                        all-reduce crosses the fabric. Needs 25GbE+.
+#   standalone           every node serves the full model; LiteLLM load
+#                        balances across endpoints. Only for models that
+#                        fit in one node's GPUs.
+#
+# Layer counts: total GPUs = vllm_tensor_parallel_size (per node)
+# x vllm_pipeline_parallel_size (nodes). The role asserts TP never exceeds
+# the GPUs it detects on a node (vllm_gpus_per_node autodetects from
+# nvidia-smi when 0).
 
 vllm_deployment_mode: ray
 
+# Primary model served by the cluster. HF repo id or a path that exists on
+# every node (weights land in vllm_hf_cache_dir).
 vllm_model: "meta-llama/Llama-3.1-8B-Instruct"
 
-# GPUs per node drives --tensor-parallel-size.
+# GPUs per node = --tensor-parallel-size within a node. 1 here because the
+# nodes are single-GPU.
 vllm_tensor_parallel_size: 1
 
-# Pipeline stages = node count. Override to match your cluster.
+# Pipeline stages = node count (3). Override when a node holds more than
+# one stage, or to exclude a node from the shard.
 vllm_pipeline_parallel_size: 3
 
+# Keep false on 10GbE; see the topology note above before enabling.
 vllm_cross_node_tensor_parallel: false
 
 # Ray cluster networking. The zone source should be the 10/25GbE compute
-# segment; Ray traffic is unauthenticated, so restrict it to these hosts.
+# segment; Ray traffic is unauthenticated and can execute arbitrary code,
+# so restrict it to these hosts.
 vllm_firewall_zone_source: "10.0.105.0/24"
 
 # Compute nodes run GPU containers; the global prerequisites role checks the
@@ -29,10 +50,29 @@ prerequisites_check_nvidia: true
 
 vllm_manage_firewall: true
 
-# Shared Hugging Face cache on each node's data volume.
+# Shared Hugging Face cache on each node's data volume. Also used by the
+# flux servers below, so a node downloads each model once.
 vllm_hf_cache_dir: /mnt/data1/huggingface
 
 # API key the nodes require. Supply via the environment on the controller
 # (VLLM_API_KEY) or override here. Empty disables authentication - the
 # firewall zone must then be the only protection.
 vllm_api_key: "{{ lookup('ansible.builtin.env', 'VLLM_API_KEY') | default('local-vllm-key', true) }}"
+
+# ---------------------------------------------------------------------------
+# Flux image-generation servers. Independent of the topology above: each
+# entry runs one single-model server on every node, on its own port.
+# Edit this list to switch models or run several at once; removing an entry
+# removes its unit. Keys: name, model, port, tensor_parallel_size,
+# max_model_len, gpu_memory_utilization, extra_args - unset keys take the
+# vllm_flux_default_* role defaults.
+# ---------------------------------------------------------------------------
+vllm_flux_enabled: true
+
+vllm_flux_models:
+  - name: flux                    # unit vllm-flux-flux, port 8005
+    model: black-forest-labs/FLUX.1-dev
+    port: 8005
+  - name: flux-schnell            # unit vllm-flux-flux-schnell, port 8006
+    model: black-forest-labs/FLUX.1-schnell
+    port: 8006

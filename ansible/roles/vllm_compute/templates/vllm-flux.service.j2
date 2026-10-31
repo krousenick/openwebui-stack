@@ -1,0 +1,31 @@
+[Unit]
+Description=vLLM Flux image-generation server ({{ flux_item.name }})
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStartPre=/bin/bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
+ExecStart={{ vllm_install_dir }}/{{ flux_item.name }}/vllm-flux.sh
+# --rm does not fire when systemd SIGTERMs the docker client; remove the
+# container explicitly so a restarted unit reuses the name cleanly.
+ExecStop=/bin/bash -c 'docker rm -f {{ vllm_container_name }}-flux-{{ flux_item.name }} || true'
+ExecStopPost=/bin/bash -c 'docker rm -f {{ vllm_container_name }}-flux-{{ flux_item.name }} || true'
+Restart=always
+RestartSec=15
+TimeoutStartSec=0
+TimeoutStopSec=120
+KillMode=control-group
+# Model download and CUDA init are slow. Wait before marking failed.
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+# Security
+NoNewPrivileges=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

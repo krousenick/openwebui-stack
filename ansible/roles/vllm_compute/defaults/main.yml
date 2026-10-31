@@ -1,16 +1,40 @@
 ---
-# ---------------------------------------------------------------------------
-# vLLM compute node defaults
-# ---------------------------------------------------------------------------
-# Each node runs the official vllm/vllm-openai container with the NVIDIA
-# runtime. Modes:
-#   standalone  - node-level replicas; every node serves the full model and
-#                 LiteLLM load balances across endpoints. No cross-node
-#                 traffic; 10/25GbE only carries API requests.
-#   ray         - Ray cluster; one head + workers. vLLM runs once on the
-#                 head with --pipeline-parallel-size = node count (default)
-#                 or --tensor-parallel-size spread across nodes.
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# vLLM compute node defaults (role: vllm_compute)
+# ===========================================================================
+# Each node runs the official vllm/vllm-openai container under systemd
+# (docker run, not compose; the compute nodes are separate hosts from the
+# Open WebUI stack). Two layers of inference serving live in this role:
+#
+#   1. The primary chat/completion model - one logical model sharded across
+#      the cluster in one of three topologies (see vllm_deployment_mode).
+#   2. Flux image-generation servers - N independent single-model servers
+#      listed in vllm_flux_models (see the Flux section at the bottom).
+#
+# Topologies for the primary model:
+#
+#   standalone  Every node loads the full model and serves it on
+#              vllm_port. No cross-node traffic at all; LiteLLM load
+#              balances across the endpoints. Highest aggregate
+#              throughput when the model fits in one node's GPUs.
+#
+#   ray + PP    (default) One Ray head + N-1 workers. `vllm serve` runs
+#              only on the head and shards the model by pipeline stage:
+#              --pipeline-parallel-size = node count. Each node holds a
+#              contiguous layer range; inter-node traffic is only the
+#              activations at stage boundaries, which fits 10GbE. Best
+#              for models too large for one node.
+#
+#   ray + TP    Set vllm_cross_node_tensor_parallel: true. Tensor
+#              parallelism spreads across nodes instead:
+#              --tensor-parallel-size = TP-per-node x node count, PP=1.
+#              Every layer's all-reduce crosses the fabric every step, so
+#              25GbE+ is required to be usable.
+#
+# The chosen topology only changes how the model is sharded; from LiteLLM's
+# point of view there is always one model_name (ray) or one per node
+# (standalone).
+# ===========================================================================
 
 vllm_deployment_mode: ray
 
@@ -23,56 +47,70 @@ vllm_model: "meta-llama/Llama-3.1-8B-Instruct"
 # Model id LiteLLM exposes. Defaults to the repo id's basename.
 vllm_served_model_name: "{{ vllm_model.split('/')[-1] }}"
 
-# GPU tensor parallelism *within* a node (GPUs per node).
+# Tensor parallelism *within* a node = number of GPUs per node. vLLM shards
+# each layer's matrices across these GPUs (NCCL all-reduce over NVLink/PCIe).
+# Standalone and ray+TP modes pass this straight to --tensor-parallel-size;
+# ray+PP uses it for the within-node dimension of the pipeline stages.
 vllm_tensor_parallel_size: 1
 
-# Pipeline parallelism across nodes. Ignored in standalone mode; in ray
-# mode it defaults to the number of vllm_compute hosts when unset here.
+# Pipeline parallelism across nodes - one stage per node. Only meaningful
+# in ray mode: `vllm serve` on the head gets --pipeline-parallel-size.
+# Defaults to the number of vllm_compute hosts (one stage per node).
 vllm_pipeline_parallel_size: "{{ groups['vllm_compute'] | default([]) | length }}"
 
-# Cross-node tensor parallelism. Only valid in ray mode. Overrides the
-# pipeline default when set: total GPUs = TP * node count.
+# Switch ray mode from pipeline-parallel to cross-node tensor parallelism.
+# When true the head runs --tensor-parallel-size = vllm_tensor_parallel_size
+# x node count and PP collapses to 1. Total GPUs = TP x node count.
+# 25GbE+ fabric recommended; 10GbE bottlenecks NCCL all-reduce.
 vllm_cross_node_tensor_parallel: false
 
-# Serving
+# Serving knobs passed to `vllm serve` on the head (ray) or every node
+# (standalone). vllm_extra_args appends raw vLLM CLI flags, e.g.
+#   vllm_extra_args: ["--enforce-eager", "--swap-space 2"]
 vllm_port: 8000
 vllm_max_model_len: 32768
 vllm_gpu_memory_utilization: 0.90
 vllm_extra_args: []
 vllm_api_key: "{{ lookup('ansible.builtin.env', 'VLLM_API_KEY') | default('', true) }}"
 
-# Hugging Face cache directory shared by all vllm containers.
+# Hugging Face cache directory shared by all vllm containers. Put it on the
+# node's large data volume; the same weights are read by the primary model
+# server and every flux server.
 vllm_hf_cache_dir: /mnt/data1/huggingface
 
+# Hugging Face token for gated models, read from the controller environment.
 vllm_hf_token: "{{ lookup('ansible.builtin.env', 'HF_TOKEN') | default('', true) }}"
 
-# Ray cluster ports. Pinning these makes the firewalld rules deterministic.
-vllm_ray_head_port: 6379
-vllm_ray_dashboard_port: 8265
-vllm_ray_node_manager_port: 13377
-vllm_ray_object_manager_port: 13378
+# Ray cluster ports. Every node pins these so the firewalld rules and the
+# ray start command line stay deterministic; they are the ports opened in
+# the vllm-cluster firewalld zone.
+vllm_ray_head_port: 6379        # Ray GCS server (head only)
+vllm_ray_dashboard_port: 8265   # Ray dashboard (head only)
+vllm_ray_node_manager_port: 13377     # per-node worker manager
+vllm_ray_object_manager_port: 13378   # per-node object store
 vllm_ray_runtime_env_agent_port: 13379
-vllm_ray_min_worker_port: 14000
+vllm_ray_min_worker_port: 14000 # worker port range (open 14000-15000)
 vllm_ray_max_worker_port: 15000
 
 # The address workers use to reach the Ray head. Computed by the role from
 # the inventory host marked vllm_ray_head: true; set explicitly to override.
 vllm_ray_head_address: ""
 
-# Networking
+# Networking. Ray traffic is unauthenticated and can execute arbitrary
+# code, so the firewalld zone only admits the compute segment.
 vllm_manage_firewall: true
-# Restrict cluster traffic to this CIDR (the compute network). 10GbE/25GbE
-# Ray traffic is unencrypted; only allow the compute segment.
 vllm_firewall_zone_source: "10.0.105.0/24"
 
-# Systemd unit files.
+# Systemd unit names for the primary-model services.
 vllm_ray_service_name: vllm-ray
 vllm_vllm_service_name: vllm-serve
 
-# Install directory for the generated launch scripts.
+# Install directory for the generated launch scripts (one per service, plus
+# one subdirectory per flux model).
 vllm_install_dir: /opt/vllm
 
-# Container shared memory. Cross-node NCCL/Ray needs a large /dev/shm.
+# Container shared memory. Cross-node NCCL/Ray needs a large /dev/shm;
+# 16g matches the default the vllm docs recommend for distributed serving.
 vllm_shm_size: "16g"
 
 # docker run GPU flag. --gpus all needs the NVIDIA container toolkit with a
@@ -80,6 +118,57 @@ vllm_shm_size: "16g"
 # stub runtime) can override with --runtime=nvidia.
 vllm_container_gpu_flag: "--gpus all"
 
-# Number of GPUs per node, used for assertions and docs. Autodetected from
-# nvidia-smi when empty.
+# Number of GPUs per node. Autodetected from nvidia-smi when 0; the role
+# asserts tensor_parallel_size never exceeds it, and flux entries clamp the
+# same way.
 vllm_gpus_per_node: 0
+
+# ===========================================================================
+# Flux image-generation servers
+# ===========================================================================
+# Independent of the primary model topology: no Ray, no sharding across
+# nodes. Each vllm_flux_models entry deploys ONE single-model vllm serve
+# container (systemd unit vllm-flux-<name>) on its own host port, on EVERY
+# vllm_compute node. Removing an entry removes its unit and script; editing
+# one restarts it. This is how you switch image models or run several
+# (FLUX.1-dev for quality, FLUX.1-schnell for speed) side by side.
+#
+# Keys per entry (all optional except model):
+#   name                 unit/model id suffix; also the model name LiteLLM
+#                        exposes when served_model_name is unset
+#   model                HF repo id or local path (defaults:
+#                        vllm_flux_default_model)
+#   port                 host port; default vllm_flux_base_port + index
+#   tensor_parallel_size GPUs for this server (default 1 = one GPU)
+#   max_model_len        context length (default 2048; flux prompts are short)
+#   gpu_memory_utilization fraction of GPU memory this server may use
+#   extra_args           raw vLLM CLI flags appended to `vllm serve`
+#
+# GPU budget: each entry consumes tensor_parallel_size GPUs on every node
+# while it is running. The role asserts the tensor_parallel_size of each
+# entry against vllm_gpus_per_node, but total simultaneous servers must fit
+# your GPU count - e.g. on a 4-GPU node you can run four TP=1 flux servers,
+# or one TP=2 server plus the primary model at TP=2, and so on.
+# ===========================================================================
+vllm_flux_enabled: false
+
+vllm_flux_models: []
+
+# Default values merged into every vllm_flux_models entry that does not
+# set its own. Change these to switch the fleet-wide default model.
+vllm_flux_default_model: "black-forest-labs/FLUX.1-dev"
+vllm_flux_default_tensor_parallel_size: 1
+vllm_flux_default_max_model_len: 2048
+vllm_flux_default_gpu_memory_utilization: 0.95
+vllm_flux_default_extra_args: []
+
+# Base host port for flux servers when an entry sets none; entry i binds
+# vllm_flux_base_port + i (8005, 8006, ...).
+vllm_flux_base_port: 8005
+
+# Image for flux containers. Defaults to the main vLLM image.
+vllm_flux_image: "{{ vllm_image }}"
+
+# Optional API key for the flux endpoints. Empty leaves them unauthenticated;
+# they are only reachable on the node's host port.
+vllm_flux_api_key: "{{ lookup('ansible.builtin.env', 'VLLM_FLUX_API_KEY') | default('', true) }}"
