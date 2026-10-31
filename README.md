@@ -118,15 +118,27 @@ graph TB
    cd openwebui-stack
    ```
 
-2. **Run the setup script**
+2. **Run the setup entrypoint**
    ```bash
    chmod +x scripts/*.sh
    ./scripts/setup.sh
    ```
 
+   `scripts/setup.sh` is a thin wrapper: it installs the Ansible collections (once) and runs `ansible-playbook playbooks/site.yml`. All configuration formerly done by interactive prompts now lives in `ansible/group_vars/all/vars.yml` (domain, TLS mode, compose profiles) and is rendered declaratively:
+
+   - **`.env`** — rendered from `templates/env.j2` with every secret
+   - **`docker-compose.yml`** — rendered from `templates/docker-compose.yml.j2`; the `chatterbox_enabled` toggle drops the Chatterbox services entirely
+   - **TLS certificates** — `ssl_cert_type: existing | selfsigned | traefik`; self-signed pairs are generated with `community.crypto` and wired into Traefik via `traefik/dynamic/certs.yml` (replaces `scripts/generate-certs.sh`)
+   - **`/etc/hosts`** — service hostnames added on the deployment host for non-localhost domains
+   - **Secrets** — resolved in order: vault entry (`vault_<name>` in `ansible/group_vars/all/vault.yml`) → environment variable → deployed `.env` value → generated once and persisted back into the vault file. Existing deployments keep their secrets; nothing regenerates on re-run.
+
+   Edit `ansible/group_vars/all/vars.yml` before the first run to set `domain`, `ssl_cert_type`, `docker_compose_profiles`, and `chatterbox_device`/`chatterbox_enabled`. Encrypt `ansible/group_vars/all/vault.yml` with `ansible-vault` for production and commit only the encrypted file.
+
 In `docker-compose.yml` change `ENABLE_SIGNUP` to `true` if you want to register the first admin user via Open WebUI. You can disable it again after the first user is created.
 
 3. **Start the stack**
+
+   The playbook brings the stack up itself (`tasks/compose.yml` applies `docker_compose_profiles`). To run it by hand:
    ```bash
    docker compose --profile monitoring --profile gpu up -d
    ```
@@ -163,7 +175,7 @@ Access the Keycloak Admin Console to manage users and applications:
 
 - **URL**: https://auth.example.com/admin
 - **Username**: `admin` (or `KEYCLOAK_ADMIN_USER`)
-- **Password**: Set during setup (`KEYCLOAK_ADMIN_PASSWORD`)
+- **Password**: resolves through the secret tiering (vault entry → environment → deployed `.env` → generated once); see `ansible/group_vars/all/vault.yml`
 
 ### First-Time Setup
 
@@ -172,9 +184,9 @@ Access the Keycloak Admin Console to manage users and applications:
    ansible-galaxy collection install -r requirements.yaml
    ansible-playbook playbooks/site.yml
    ```
-   This creates the `platform` realm, the `keycloak-provisioner` service account, confidential clients for Grafana, Open WebUI, and LiteLLM, client roles that match `docker-compose.yml`, group-to-role mappings, and one login user per group. It also turns on passkeys for that realm: Keycloak shows **Sign in with Passkey** on the username form, and users can register a passwordless credential from the account console. Set `keycloak_passkeys_enabled: false` in `ansible/group_vars/all/vars.yml` to leave password login unchanged. It also syncs `otel/`, `grafana/`, `traefik/`, and `json-exporter/` to `project_root` as mode `0644`. The collector image runs as uid `10001`, and a `0640` root-owned `otel/config.yaml` makes it crash-loop. Client secrets are the `*_OIDC_CLIENT_SECRET` values the role writes to `.env`. Set `KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_PROVISIONER_CLIENT_SECRET`, those three secrets, and the `KEYCLOAK_USER_*_PASSWORD` values before the run, or store the user passwords as `vault_keycloak_user_*_password` in Ansible Vault.
+   This creates the `platform` realm, the `keycloak-provisioner` service account, confidential clients for Grafana, Open WebUI, and LiteLLM, client roles that match `docker-compose.yml`, group-to-role mappings, and one login user per group. It also turns on passkeys for that realm: Keycloak shows **Sign in with Passkey** on the username form, and users can register a passwordless credential from the account console. Set `keycloak_passkeys_enabled: false` in `ansible/group_vars/all/vars.yml` to leave password login unchanged. It also syncs `otel/`, `grafana/`, `traefik/`, and `json-exporter/` to `project_root` as mode `0644`. The collector image runs as uid `10001`, and a `0640` root-owned `otel/config.yaml` makes it crash-loop. Client secrets are the `*_OIDC_CLIENT_SECRET` values the role writes to `.env`. Every Keycloak secret (admin password, provisioner client secret, OIDC client secrets, and the `keycloak_user_*` passwords) resolves through the documented tiering; on a first run with nothing set, the playbook generates each missing secret once and persists it as a `vault_<name>` entry in `ansible/group_vars/all/vault.yml`.
 
-2. Only Grafana, Open WebUI, and LiteLLM use Keycloak. Traefik, Keycloak admin, and the exporters keep their own credentials. `./scripts/setup.sh` step 5 can run the playbook for you (it installs collections and exports the secrets from `.env` when present).
+2. Only Grafana, Open WebUI, and LiteLLM use Keycloak. Traefik, Keycloak admin, and the exporters keep their own credentials. `./scripts/setup.sh` runs the playbook for you after installing collections.
 
 3. Optional MCP servers are configured by the playbook through per-server task files in `ansible/roles/openwebui_stack/tasks/mcp/`. Each server is toggled by a variable in `ansible/group_vars/all/vars.yml`, and `tasks/mcp/main.yml` includes only the enabled ones:
 
@@ -295,25 +307,26 @@ Key environment variables in `.env`:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
+| (provenance) | `.env` is rendered by `ansible/roles/openwebui_stack/templates/env.j2`; every secret resolves through the tiering in `ansible/group_vars/all/vault.yml` (vault → environment → deployed `.env` → generated once) | |
 | `COMPOSE_PROJECT_NAME` | Docker Compose project name | `openwebui-stack` |
 | `DOMAIN` | Base domain for services | `localhost` or `example.com` |
 | `POSTGRES_USER` | PostgreSQL admin user | `postgres` |
-| `POSTGRES_PASSWORD` | PostgreSQL admin password | Generated by setup script |
+| `POSTGRES_PASSWORD` | PostgreSQL admin password | Generated by the playbook on first run |
 | `OPENWEBUI_DB_NAME` | Open WebUI database name | `openwebui` |
 | `OPENWEBUI_DB_USER` | Open WebUI database user | `openwebui` |
-| `OPENWEBUI_DB_PASSWORD` | Open WebUI database password | Generated by setup script |
+| `OPENWEBUI_DB_PASSWORD` | Open WebUI database password | Generated by the playbook on first run |
 | `LITELLM_DB_NAME` | LiteLLM database name | `litellm` |
 | `LITELLM_DB_USER` | LiteLLM database user | `litellm` |
-| `LITELLM_DB_PASSWORD` | LiteLLM database password | Generated by setup script |
-| `OPENWEBUI_SECRET_KEY` | Secret key for Open WebUI sessions | Generated by setup script |
-| `LITELLM_MASTER_KEY` | Master API key for LiteLLM | Generated by setup script |
-| `LITELLM_SALT_KEY` | Salt key for LiteLLM encryption | Generated by setup script |
+| `LITELLM_DB_PASSWORD` | LiteLLM database password | Generated by the playbook on first run |
+| `OPENWEBUI_SECRET_KEY` | Secret key for Open WebUI sessions | Generated by the playbook on first run |
+| `LITELLM_MASTER_KEY` | Master API key for LiteLLM | Generated by the playbook on first run |
+| `LITELLM_SALT_KEY` | Salt key for LiteLLM encryption | Generated by the playbook on first run |
 | `TRAEFIK_DASHBOARD_USER` | Traefik dashboard username | `admin` |
-| `TRAEFIK_DASHBOARD_PASSWORD` | Traefik dashboard password (plain) | Generated by setup script |
-| `TRAEFIK_DASHBOARD_PASSWORD_HASH` | Traefik dashboard password (apr1 hash) | Auto-generated by setup script |
-| `GF_SECURITY_ADMIN_PASSWORD` | Grafana admin password | Generated by setup script |
-| `KEYCLOAK_DB_PASSWORD` | Keycloak database password | Generated by setup script |
-| `KEYCLOAK_ADMIN_PASSWORD` | Keycloak admin password | Generated by setup script |
+| `TRAEFIK_DASHBOARD_PASSWORD` | Traefik dashboard password (plain) | Generated by the playbook on first run |
+| `TRAEFIK_DASHBOARD_PASSWORD_HASH` | Traefik dashboard password (apr1 hash, `$$`-escaped for compose) | Computed by the playbook |
+| `GF_SECURITY_ADMIN_PASSWORD` | Grafana admin password | Generated by the playbook on first run |
+| `KEYCLOAK_DB_PASSWORD` | Keycloak database password | Generated by the playbook on first run |
+| `KEYCLOAK_ADMIN_PASSWORD` | Keycloak admin password | Generated by the playbook on first run |
 | `KEYCLOAK_ADMIN_IP_RANGE` | Allowed IPs for admin console | `0.0.0.0/0` (all) |
 | `OPENWEBUI_OIDC_CLIENT_SECRET` | Open WebUI OIDC client secret | Auto-configured |
 | `LITELLM_OIDC_CLIENT_SECRET` | LiteLLM OIDC client secret | Auto-configured |
@@ -367,7 +380,7 @@ Key environment variables in `.env`:
 - **Valkey**: High-performance Redis alternative for caching and sessions
 - **Brave Search MCP**: Official Brave Search MCP server (`mcp/brave-search`) over streamable HTTP. LiteLLM mounts it at `/mcp/brave_search` and injects the tools into every chat request (see [Web Search](#web-search-brave-search-mcp)). Not published to the internet; only reachable on the backend network.
 - **Playwright MCP cluster**: Five `mcr.microsoft.com/playwright/mcp` replicas behind Traefik, giving concurrent browser automation (clicks, PDFs, devtools) for chat models. MCP sessions live in each replica's process memory, so the Traefik `playwright` service pins every request of a session to one replica with sticky cookies; without it, round-robin routing returns `404 Session not found`. LiteLLM mounts the cluster as `playwright_cluster` via Traefik's non-redirecting `mcp` entrypoint (`http://traefik:8082/mcp`). See [Browser Automation (Playwright MCP cluster)](#browser-automation-playwright-mcp-cluster).
-- **Chatterbox TTS**: Local OpenAI-compatible text-to-speech with voice cloning (`voice.domain.com`). Open WebUI calls `http://chatterbox-tts:4123/v1` on the backend network. The UI and public API share `https://voice.${DOMAIN}`: Traefik sends `/v1`, `/audio`, `/voices`, and the API docs to the API, and everything else to the React frontend. Both public routes use the `voice-auth@file` ForwardAuth middleware. [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/keycloak_oidc/) `v7.15.1` checks the Keycloak `platform` realm and redirects anonymous browsers to `https://auth.${DOMAIN}`. The callback is `https://voice.${DOMAIN}/oauth2/callback`, not `auth.${DOMAIN}`, because that host is Keycloak. Open WebUI keeps calling `http://chatterbox-tts:4123/v1` on the backend network, so speech in chat does not go through the proxy. Set `VOICE_OIDC_CLIENT_SECRET` and `OAUTH2_PROXY_COOKIE_SECRET` before starting the proxy. `scripts/setup.sh` generates both. Re-run `ansible-playbook playbooks/site.yml` so the `voice` client and `voice_user` role exist; `platform-admins` receive that role. Set Ansible `chatterbox_device` to `gpu` or `cpu` (default `gpu` in `ansible/group_vars/all/vars.yml`). The playbook adds profile `chatterbox-gpu` or `chatterbox-cpu`. GPU builds [travisvn/chatterbox-tts-api](https://github.com/travisvn/chatterbox-tts-api) `main` with `docker/Dockerfile.uv.gpu` (CUDA 12.4) and needs the NVIDIA Container Toolkit. CPU uses `docker/Dockerfile.cpu` and does not request a GPU. Do not enable both profiles. Without Ansible: `docker compose --profile chatterbox-gpu up -d` or `--profile chatterbox-cpu`. The first speech request downloads the model into `chatterbox_models` and can take several minutes. Traefik's default `responseHeaderTimeout` is 10s, which closes a speech request before the model returns audio. The `chatterbox@file` serversTransport sets that timeout to `0s` (no limit) for the Chatterbox API service only. Upstream notes that non-CUDA multilingual builds are currently unreliable; use the `stable` branch if the CPU image fails. Upload a voice at the UI, then set **TTS Voice** in Open WebUI to that library name (`CHATTERBOX_TTS_VOICE`). OpenAI voice names with no alias (`alloy`, and the rest) use the built-in sample. `AUDIO_TTS_*` are persisted after the first boot, so later changes belong in **Admin → Settings → Audio**. Integration notes: [Chatterbox TTS](https://docs.openwebui.com/features/chat-conversations/audio/text-to-speech/chatterbox-tts-api-integration). Env names checked against [Open WebUI v0.12.1](https://docs.openwebui.com/reference/env-configuration/).
+- **Chatterbox TTS**: Local OpenAI-compatible text-to-speech with voice cloning (`voice.domain.com`). Open WebUI calls `http://chatterbox-tts:4123/v1` on the backend network. The UI and public API share `https://voice.${DOMAIN}`: Traefik sends `/v1`, `/audio`, `/voices`, and the API docs to the API, and everything else to the React frontend. Both public routes use the `voice-auth@file` ForwardAuth middleware. [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/keycloak_oidc/) `v7.15.1` checks the Keycloak `platform` realm and redirects anonymous browsers to `https://auth.${DOMAIN}`. The callback is `https://voice.${DOMAIN}/oauth2/callback`, not `auth.${DOMAIN}`, because that host is Keycloak. Open WebUI keeps calling `http://chatterbox-tts:4123/v1` on the backend network, so speech in chat does not go through the proxy. Set `VOICE_OIDC_CLIENT_SECRET` and `OAUTH2_PROXY_COOKIE_SECRET` before starting the proxy; both are generated by the playbook on first run (tiering in `ansible/group_vars/all/vault.yml`). Re-run `ansible-playbook playbooks/site.yml` so the `voice` client and `voice_user` role exist; `platform-admins` receive that role. Set Ansible `chatterbox_device` to `gpu` or `cpu` (default `gpu` in `ansible/group_vars/all/vars.yml`). The playbook adds profile `chatterbox-gpu` or `chatterbox-cpu`. GPU builds [travisvn/chatterbox-tts-api](https://github.com/travisvn/chatterbox-tts-api) `main` with `docker/Dockerfile.uv.gpu` (CUDA 12.4) and needs the NVIDIA Container Toolkit. CPU uses `docker/Dockerfile.cpu` and does not request a GPU. Do not enable both profiles. Without Ansible: `docker compose --profile chatterbox-gpu up -d` or `--profile chatterbox-cpu`. The first speech request downloads the model into `chatterbox_models` and can take several minutes. Traefik's default `responseHeaderTimeout` is 10s, which closes a speech request before the model returns audio. The `chatterbox@file` serversTransport sets that timeout to `0s` (no limit) for the Chatterbox API service only. Upstream notes that non-CUDA multilingual builds are currently unreliable; use the `stable` branch if the CPU image fails. Upload a voice at the UI, then set **TTS Voice** in Open WebUI to that library name (`CHATTERBOX_TTS_VOICE`). OpenAI voice names with no alias (`alloy`, and the rest) use the built-in sample. `AUDIO_TTS_*` are persisted after the first boot, so later changes belong in **Admin → Settings → Audio**. Integration notes: [Chatterbox TTS](https://docs.openwebui.com/features/chat-conversations/audio/text-to-speech/chatterbox-tts-api-integration). Env names checked against [Open WebUI v0.12.1](https://docs.openwebui.com/reference/env-configuration/).
 
 #### Storage & Search
 
@@ -567,7 +580,7 @@ Open WebUI does not talk to Ollama or llama.cpp directly (`ENABLE_OLLAMA_API` is
 
 ### llama.cpp edge nodes
 
-Use this for GGUF models served by `llama-server` (typically a Fedora host with an NVIDIA GPU). `./scripts/setup.sh` can launch the same flow when you answer yes to local llama.cpp edge nodes.
+Use this for GGUF models served by `llama-server` (typically a Fedora host with an NVIDIA GPU). Run `./scripts/setup-edge-nodes.sh` for the interactive node wizard; it writes `LLAMA_CPP_EDGE_NODES` to the deployed `.env`.
 
 1. **Configure the nodes**
    ```bash

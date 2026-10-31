@@ -1,0 +1,16 @@
+---
+# Render docker-compose.yml from the Jinja template. The template is the
+# deploy-time truth: it picks up config knobs (chatterbox service, edge
+# nodes, monitoring profiles) that vary per deployment, which the
+# checked-in docker-compose.yml cannot express through ${VAR} defaults
+# alone. Rendered output goes to the deployed project root; the repo copy
+# stays the canonical hand-edited source for docker compose runs without
+# Ansible.
+
+- name: Render the Docker Compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ compose_file }}"
+    owner: root
+    group: root
+    mode: "0640"

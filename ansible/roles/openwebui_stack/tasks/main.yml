@@ -2,14 +2,54 @@
 # Host prerequisites (base packages, Docker, docker compose) are checked first
 # by the global prerequisites role, which runs before this one in
 # playbooks/site.yml.
+#
+# Order matters: secrets and certs must exist before the .env and compose
+# file are rendered; Keycloak must be up before its realm is provisioned,
+# which the keycloak task handles by waiting on the endpoint.
+
+- name: Resolve stack secrets
+  ansible.builtin.import_tasks:
+    file: secrets.yml
+  tags:
+    - secrets
+    - environment
+
+- name: Manage host name resolution
+  ansible.builtin.import_tasks:
+    file: hosts.yml
+  when: manage_hosts_file | bool
 
 - name: Create project directories
   ansible.builtin.import_tasks:
     file: directories.yml
 
+- name: Provision TLS certificates
+  ansible.builtin.import_tasks:
+    file: certs.yml
+  tags:
+    - certs
+
 - name: Sync stack files
   ansible.builtin.import_tasks:
     file: sync.yml
+
+- name: Render application environment
+  ansible.builtin.import_tasks:
+    file: environment.yml
+  tags:
+    - environment
+
+- name: Render the Docker Compose file
+  ansible.builtin.import_tasks:
+    file: compose_template.yml
+  tags:
+    - environment
+
+- name: Deploy Docker Compose stack
+  ansible.builtin.import_tasks:
+    file: compose.yml
+  tags:
+    - compose
 
 - name: Configure optional MCP servers
   ansible.builtin.import_tasks:

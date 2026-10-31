@@ -1,0 +1,18 @@
+# =============================================================================
+# Traefik Dynamic Configuration - Custom Certificates
+# =============================================================================
+# Rendered by the openwebui_stack Ansible role from ssl_cert_type /
+# ssl_cert_file / ssl_key_file. Delete the file to fall back to Traefik's
+# built-in self-signed certificate, or set ssl_cert_type: traefik and
+# re-run the playbook.
+
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/{{ ssl_cert_file }}
+      keyFile: /etc/traefik/certs/{{ ssl_key_file }}
+
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /etc/traefik/certs/{{ ssl_cert_file }}
+        keyFile: /etc/traefik/certs/{{ ssl_key_file }}

@@ -5,15 +5,104 @@ compose_file: "{{ project_root }}/docker-compose.yml"
 
 env_file: "{{ project_root }}/.env"
 
+# Path of the deployed .env read by the secret tiering in vault.yml.
+deployed_env_file: "{{ project_root }}/.env"
+
+# Path of the controller-side vault file the secrets task persists to.
+# Defaults to the group_vars copy next to the playbook.
+vault_vars_file: "{{ playbook_dir }}/../group_vars/all/vault.yml"
+
 keycloak_validate_certs: true
 
 docker_compose_pull: true
+
+docker_compose_wait_timeout: 180
 
 docker_compose_profiles:
   - monitoring
 
 # gpu -> Dockerfile (CUDA). cpu -> Dockerfile.cpu. Consumed by the chatterbox role.
 chatterbox_device: gpu
+
+# Include the chatterbox services in the rendered compose file at all.
+chatterbox_enabled: true
+
+# Write /etc/hosts entries on the deployment host for non-localhost
+# domains. Set false when name resolution is handled by DNS.
+manage_hosts_file: true
+
+# Traefik dashboard basic-auth. The apr1 hash is computed at run time; the
+# password itself resolves through the tiering in vault.yml.
+traefik_dashboard_user: admin
+
+# TLS mode: existing | selfsigned | traefik (see tasks/certs.yml).
+ssl_cert_type: existing
+
+ssl_cert_file: "wildcard.crt"
+ssl_key_file: "wildcard.key"
+
+selfsigned_key_size: 4096
+selfsigned_valid_days: 365
+selfsigned_subject:
+  country: US
+  state: State
+  city: City
+  org: Open WebUI Stack
+  ou: Development
+selfsigned_san:
+  - "DNS:{{ domain }}"
+  - "DNS:*.{{ domain }}"
+  - "DNS:localhost"
+  - "DNS:*.localhost"
+  - "IP:127.0.0.1"
+  - "IP:::1"
+
+# Stack secrets resolved by the tiering in group_vars/all/vault.yml and
+# generated once by tasks/secrets.yml when no tier yields a value.
+stack_secret_charset: "ascii_letters,digits"
+stack_secret_names:
+  - postgres_password
+  - openwebui_db_password
+  - litellm_db_password
+  - openwebui_secret_key
+  - litellm_master_key
+  - litellm_salt_key
+  - grafana_admin_password
+  - qdrant_api_key
+  - valkey_password
+  - keycloak_db_password
+  - keycloak_admin_password
+  - openwebui_oidc_client_secret
+  - litellm_oidc_client_secret
+  - grafana_oidc_client_secret
+  - voice_oidc_client_secret
+  - oauth2_proxy_cookie_secret
+  - keycloak_provisioner_client_secret
+  - keycloak_user_platform_admin_password
+  - keycloak_user_grafana_editor_password
+  - keycloak_user_grafana_viewer_password
+  - keycloak_user_openwebui_user_password
+  - keycloak_user_litellm_user_password
+  - keycloak_user_litellm_viewer_password
+  - traefik_dashboard_password
+
+docker_gid: "999"
+
+backup_retention_days: 7
+
+# Keycloak admin console IP allowlist (commented Traefik ipwhitelist in the
+# compose file consumes it).
+keycloak_admin_ip_range: "0.0.0.0/0"
+
+grafana_discord_webhook_url: "{{ lookup('ansible.builtin.env', 'GRAFANA_DISCORD_WEBHOOK_URL', default='') }}"
+
+gemini_api_key: "{{ lookup('ansible.builtin.env', 'GEMINI_API_KEY', default='') | trim }}"
+
+aws_access_key_id: "{{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID', default='') | trim }}"
+aws_secret_access_key: "{{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY', default='') | trim }}"
+aws_region: "{{ lookup('ansible.builtin.env', 'AWS_REGION', default('us-east-1')) | trim }}"
+
+hf_token: "{{ lookup('ansible.builtin.env', 'HF_TOKEN', default='') | trim }}"
 
 # Brave Search is optional. Set the key in Ansible Vault or the deployment
 # environment. When both are present, the playbook enables the gateway search

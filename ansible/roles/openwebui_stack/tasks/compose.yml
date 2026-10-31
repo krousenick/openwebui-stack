@@ -1,0 +1,25 @@
+---
+# Deploy the stack with docker compose. Profiles come from
+# docker_compose_profiles (group_vars) plus whatever the chatterbox role
+# appended (chatterbox-gpu / chatterbox-cpu). The .env rendered by
+# environment.yml satisfies every ${VAR:?error} interpolation.
+
+- name: Pull Docker images
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    pull: always
+    state: present
+  when: docker_compose_pull | bool
+
+- name: Start Docker Compose stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    state: present
+    wait: true
+    wait_timeout: "{{ docker_compose_wait_timeout }}"

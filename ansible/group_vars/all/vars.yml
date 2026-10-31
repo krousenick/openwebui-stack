@@ -6,7 +6,11 @@
 project_root: /mnt/data1/openwebui-stack
 compose_project_name: openwebui-stack
 
-domain: "{{ lookup('ansible.builtin.env', 'DOMAIN') | default('localhost', true) }}"
+# Domain tiering: DOMAIN environment variable first (fresh installs), then
+# the value in the deployed .env (upgrades keep the deployed domain), then
+# localhost. With ansible_connection: local the controller is the
+# deployment host, so the lookup reads the same .env the stack uses.
+domain: "{{ lookup('ansible.builtin.env', 'DOMAIN', default=None) or lookup('ansible.builtin.ini', 'DOMAIN', file=deployed_env_file, type='properties', errors='ignore') | default('localhost', true) }}"
 
 timezone: UTC
 
@@ -14,17 +18,22 @@ timezone: UTC
 # Keycloak
 # ---------------------------------------------------------------------------
 
-keycloak_realm: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_REALM') | default('platform', true) }}"
+keycloak_realm: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_REALM', default=None) or lookup('ansible.builtin.ini', 'KEYCLOAK_REALM', file=deployed_env_file, type='properties', errors='ignore') | default('platform', true) }}"
 keycloak_url: "https://auth.{{ domain }}"
 
-keycloak_validate_certs: "{{ (lookup('ansible.builtin.env', 'KEYCLOAK_VALIDATE_CERTS') | default('true', true)) | bool }}"
+# TLS verification for the controller-side Keycloak API calls. The
+# deployment serves a Cloudflare Origin certificate on auth.<domain>; the
+# Origin CA is not in the host trust store, so verification is off here.
+# Set true when auth.<domain> serves a publicly trusted certificate.
+keycloak_validate_certs: "{{ (lookup('ansible.builtin.env', 'KEYCLOAK_VALIDATE_CERTS', default=None) or 'false') | bool }}"
 
-# The provisioning credentials should come from Ansible Vault.
+# The provisioning credentials resolve through the secret tiering in
+# group_vars/all/vault.yml (vault entry -> environment -> deployed .env ->
+# generated once). The *_password / *_secret variables themselves are
+# defined there; only the non-secret IDs live in this file.
 keycloak_provisioner_client_id: keycloak-provisioner
 keycloak_realm_management_client_id: master-realm
 keycloak_admin_user: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_USER') | default('admin', true) }}"
-keycloak_admin_password: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_PASSWORD') }}"
-keycloak_provisioner_client_secret: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_PROVISIONER_CLIENT_SECRET') }}"
 
 # Keycloak 26 enables passkeys on the default browser flow. Users register
 # a passwordless credential, then sign in from the username form.
@@ -36,8 +45,11 @@ keycloak_passkeys_enabled: true
 
 ssl_cert_type: existing
 
-ssl_cert_file: "wildcard.crt"
-ssl_key_file: "wildcard.key"
+# Basenames under certs/ of the deployed pair. The Photon deployment uses
+# a Cloudflare Origin certificate; a fresh lab install sets these to
+# wildcard.crt / wildcard.key or switches ssl_cert_type to selfsigned.
+ssl_cert_file: "cf-origin.crt"
+ssl_key_file: "cf-origin.key"
 
 # ---------------------------------------------------------------------------
 # Docker
