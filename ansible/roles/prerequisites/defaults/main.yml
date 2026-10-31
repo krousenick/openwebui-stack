@@ -1,0 +1,5 @@
+---
+# Run the optional NVIDIA driver check on this host. Set true in
+# group_vars for GPU node groups (vllm_compute). Check-only: the host is
+# expected to have the driver installed already.
+prerequisites_check_nvidia: false

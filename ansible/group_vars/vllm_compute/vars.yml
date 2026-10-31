@@ -23,6 +23,10 @@ vllm_cross_node_tensor_parallel: false
 # segment; Ray traffic is unauthenticated, so restrict it to these hosts.
 vllm_firewall_zone_source: "10.0.105.0/24"
 
+# Compute nodes run GPU containers; the global prerequisites role checks the
+# NVIDIA driver before the vllm_compute role deploys.
+prerequisites_check_nvidia: true
+
 vllm_manage_firewall: true
 
 # Shared Hugging Face cache on each node's data volume.

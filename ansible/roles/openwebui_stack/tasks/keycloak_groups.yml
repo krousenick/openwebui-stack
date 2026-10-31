@@ -16,6 +16,24 @@
     label: "{{ item.group }}"
   delegate_to: localhost
 
+- name: Grant the platform admin group realm-management access
+  middleware_automation.keycloak.keycloak_client_rolemapping:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: "{{ keycloak_realm }}"
+    auth_client_id: "{{ keycloak_provisioner_client_id }}"
+    auth_client_secret: "{{ keycloak_provisioner_client_secret }}"
+
+    realm: "{{ keycloak_realm }}"
+
+    client_id: realm-management
+    group_name: "{{ keycloak_platform_realm_admin_group }}"
+
+    roles: "{{ keycloak_platform_realm_admin_roles }}"
+
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
+
 - name: Map Keycloak groups to application roles
   middleware_automation.keycloak.keycloak_client_rolemapping:
     auth_keycloak_url: "{{ keycloak_url }}"

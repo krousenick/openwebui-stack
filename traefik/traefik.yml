@@ -31,6 +31,13 @@ entryPoints:
     http:
       tls: {}
 
+  # Internal MCP entrypoint: no redirect, plain HTTP for LiteLLM's httpx
+  # client, which does not follow redirects and cannot verify internal TLS.
+  mcp:
+    address: ":8082"
+    observability:
+      metrics: true
+
   traefik:
     address: ":8080"
     observability:

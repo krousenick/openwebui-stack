@@ -97,10 +97,6 @@
   run_once: true
   delegate_to: localhost
 
-- name: Install node prerequisites
-  ansible.builtin.import_tasks:
-    file: prerequisites.yml
-
 - name: Configure firewall for the cluster network
   ansible.builtin.import_tasks:
     file: firewall.yml

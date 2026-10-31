@@ -176,6 +176,15 @@ Access the Keycloak Admin Console to manage users and applications:
 
 2. Only Grafana, Open WebUI, and LiteLLM use Keycloak. Traefik, Keycloak admin, and the exporters keep their own credentials. `./scripts/setup.sh` step 5 can run the playbook for you (it installs collections and exports the secrets from `.env` when present).
 
+3. Optional MCP servers are configured by the playbook through per-server task files in `ansible/roles/openwebui_stack/tasks/mcp/`. Each server is toggled by a variable in `ansible/group_vars/all/vars.yml`, and `tasks/mcp/main.yml` includes only the enabled ones:
+
+   | Variable | Task file | What it configures |
+   |----------|-----------|---------------------|
+   | `brave_search_enabled` + `BRAVE_SEARCH_API_KEY` | `mcp/brave.yml` | Open WebUI web search and the `brave_search` tool server connection |
+   | `playwright_mcp_enabled` | `mcp/playwright.yml` | The `playwright_cluster` tool server connection (no secret; containers run from docker-compose.yml) |
+
+   Add a future MCP server by dropping `<name>.yml` in `tasks/mcp/`, guarding it in `tasks/mcp/main.yml` with `mcp_<name>_enabled`, and adding that variable to `group_vars/all/vars.yml` and the role defaults.
+
 ### Role Mapping
 
 Users are assigned roles based on their Keycloak group membership:
@@ -357,6 +366,7 @@ Key environment variables in `.env`:
 - **PostgreSQL**: Shared relational database for Open WebUI, LiteLLM, and Keycloak
 - **Valkey**: High-performance Redis alternative for caching and sessions
 - **Brave Search MCP**: Official Brave Search MCP server (`mcp/brave-search`) over streamable HTTP. LiteLLM mounts it at `/mcp/brave_search` and injects the tools into every chat request (see [Web Search](#web-search-brave-search-mcp)). Not published to the internet; only reachable on the backend network.
+- **Playwright MCP cluster**: Five `mcr.microsoft.com/playwright/mcp` replicas behind Traefik, giving concurrent browser automation (clicks, PDFs, devtools) for chat models. MCP sessions live in each replica's process memory, so the Traefik `playwright` service pins every request of a session to one replica with sticky cookies; without it, round-robin routing returns `404 Session not found`. LiteLLM mounts the cluster as `playwright_cluster` via Traefik's non-redirecting `mcp` entrypoint (`http://traefik:8082/mcp`). See [Browser Automation (Playwright MCP cluster)](#browser-automation-playwright-mcp-cluster).
 - **Chatterbox TTS**: Local OpenAI-compatible text-to-speech with voice cloning (`voice.domain.com`). Open WebUI calls `http://chatterbox-tts:4123/v1` on the backend network. The UI and public API share `https://voice.${DOMAIN}`: Traefik sends `/v1`, `/audio`, `/voices`, and the API docs to the API, and everything else to the React frontend. Both public routes use the `voice-auth@file` ForwardAuth middleware. [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/keycloak_oidc/) `v7.15.1` checks the Keycloak `platform` realm and redirects anonymous browsers to `https://auth.${DOMAIN}`. The callback is `https://voice.${DOMAIN}/oauth2/callback`, not `auth.${DOMAIN}`, because that host is Keycloak. Open WebUI keeps calling `http://chatterbox-tts:4123/v1` on the backend network, so speech in chat does not go through the proxy. Set `VOICE_OIDC_CLIENT_SECRET` and `OAUTH2_PROXY_COOKIE_SECRET` before starting the proxy. `scripts/setup.sh` generates both. Re-run `ansible-playbook playbooks/site.yml` so the `voice` client and `voice_user` role exist; `platform-admins` receive that role. Set Ansible `chatterbox_device` to `gpu` or `cpu` (default `gpu` in `ansible/group_vars/all/vars.yml`). The playbook adds profile `chatterbox-gpu` or `chatterbox-cpu`. GPU builds [travisvn/chatterbox-tts-api](https://github.com/travisvn/chatterbox-tts-api) `main` with `docker/Dockerfile.uv.gpu` (CUDA 12.4) and needs the NVIDIA Container Toolkit. CPU uses `docker/Dockerfile.cpu` and does not request a GPU. Do not enable both profiles. Without Ansible: `docker compose --profile chatterbox-gpu up -d` or `--profile chatterbox-cpu`. The first speech request downloads the model into `chatterbox_models` and can take several minutes. Traefik's default `responseHeaderTimeout` is 10s, which closes a speech request before the model returns audio. The `chatterbox@file` serversTransport sets that timeout to `0s` (no limit) for the Chatterbox API service only. Upstream notes that non-CUDA multilingual builds are currently unreliable; use the `stable` branch if the CPU image fails. Upload a voice at the UI, then set **TTS Voice** in Open WebUI to that library name (`CHATTERBOX_TTS_VOICE`). OpenAI voice names with no alias (`alloy`, and the rest) use the built-in sample. `AUDIO_TTS_*` are persisted after the first boot, so later changes belong in **Admin → Settings → Audio**. Integration notes: [Chatterbox TTS](https://docs.openwebui.com/features/chat-conversations/audio/text-to-speech/chatterbox-tts-api-integration). Env names checked against [Open WebUI v0.12.1](https://docs.openwebui.com/reference/env-configuration/).
 
 #### Storage & Search
@@ -504,6 +514,53 @@ curl -sk https://litellm.localhost/v1/chat/completions \
 
 Open WebUI's **direct** MCP path (Admin Settings → Tool Servers) is independent: an `mcp`-type tool server connects per-chat via tool IDs (`server:mcp:<id>`) and logs `Initialized 0 tool server(s)` at boot, which is expected for MCP-only configs. The Gemini Workspace models ship with Default Tools set, so streaming chats get web search without per-chat tool selection. Other models (Bedrock, Ollama) get it by adding `server:mcp:brave_search` to their Default Tools, or by picking the tool in the chat composer.
 
+## Browser Automation (Playwright MCP cluster)
+
+Chat models can drive a real headless Chromium through the official [Playwright MCP server](https://github.com/microsoft/playwright-mcp). The stack runs five replicas (`deploy.replicas: 5`) behind Traefik so multiple users get parallel browser sessions.
+
+### How it works
+
+1. **Five `playwright-mcp` replicas** run `mcr.microsoft.com/playwright/mcp` (headless Chromium, `pdf` and `devtools` capabilities) on the backend and frontend networks, port 8931. The service has no `container_name`: Compose rejects `container_name` together with `replicas` because replica names must be unique.
+2. **Traefik load-balances across the replicas.** The `playwright` router matches `Host(playwright-mcp.${DOMAIN})` on the dedicated `mcp` entrypoint (`:8082`), not `web` — `web` 308-redirects every request to `websecure`, and LiteLLM's MCP client (httpx) does not follow redirects.
+3. **Sticky cookies keep MCP sessions working.** Playwright MCP keeps each streamable-HTTP session (`mcp-session-id`) in the replica process's memory. Round-robin routing sends follow-up calls to replicas that never saw the `initialize` and they answer `404 Session not found`. The `playwright` service sets `loadbalancer.sticky.cookie=true` (cookie `pwsticky`), so Traefik pins all requests of one session to the replica that owns it. LiteLLM's MCP client reuses Traefik's `Set-Cookie` automatically (httpx cookie jar), so no client-side wiring is needed.
+4. **`PLAYWRIGHT_MCP_ALLOWED_HOSTS: "*"` passes the Host check.** The server enforces a Host allowlist (DNS-rebinding protection) that only contains `localhost:8931` by default. Traefik forwards the incoming `Host: playwright-mcp.<domain>` header, which would get a `403 Access is only allowed at localhost:8931` without the wildcard.
+5. **LiteLLM mounts it as `playwright_cluster`** (`mcp_servers:` in [litellm/config.yaml](litellm/config.yaml)) with `url: http://traefik:8082/mcp`, a `Host` header matching the router rule, and `allow_all_keys`-style open access. Tools are exposed with the `playwright_cluster-` prefix (for example `playwright_cluster-browser_navigate`).
+
+Scaling up or down: change `deploy.replicas` in `docker-compose.yml`, then `docker compose up -d playwright-mcp`. Existing sessions stay pinned to their replica via the sticky cookie; a new `initialize` lands on whichever replica Traefik picks next.
+
+### Verification
+
+```bash
+# 1. All replicas healthy
+docker compose ps playwright-mcp
+
+# 2. Traefik has every replica behind the playwright service (sticky cookie set)
+curl -s http://traefik:8080/api/http/services -H "Authorization: Basic ..." | \
+  jq '.[] | select(.name | startswith("playwright")) | {name, status, servers: [.loadBalancer.servers[].url]}'
+
+# 3. End-to-end through the load balancer: initialize, then reuse the session
+curl -sD /tmp/h -X POST http://traefik:8082/mcp \
+  -H "Host: playwright-mcp.localhost" -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}'
+# Mcp-Session-Id header present + Set-Cookie: pwsticky=... -> session created and pinned
+
+curl -s -X POST http://traefik:8082/mcp -b "pwsticky=<cookie>" \
+  -H "Host: playwright-mcp.localhost" -H "Mcp-Session-Id: <id>" \
+  -H "Accept: application/json, text/event-stream" -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'   # HTTP 200, not 404
+```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `404 Session not found` on follow-up tool calls | Sticky cookies disabled or cookie not sent | Keep `loadbalancer.sticky.cookie=true`; verify `Set-Cookie: pwsticky` on `initialize` |
+| `403 Access is only allowed at localhost:8931` | Server Host allowlist rejects the forwarded Host | Keep `PLAYWRIGHT_MCP_ALLOWED_HOSTS: "*"` |
+| `can't set container_name ... must be unique: invalid compose project` | `container_name` left on the replicas service | Remove `container_name` from `playwright-mcp` |
+| LiteLLM gets `301/308` or connection errors on the MCP server | URL points at the redirecting `web` entrypoint | Use `http://traefik:8082/mcp` (the `mcp` entrypoint) |
+| Compose cannot resolve `traefik` from litellm | Services not sharing a network | `litellm` and `traefik` both attach to `frontend` |
+
 ## Local models
 
 Open WebUI does not talk to Ollama or llama.cpp directly (`ENABLE_OLLAMA_API` is `false`). It uses LiteLLM. Register local models on LiteLLM and they show up in the chat UI.
@@ -564,7 +621,7 @@ For full HF-precision models larger than a single llama.cpp node can serve, use 
    ansible-galaxy collection install -r requirements.yaml
    ansible-playbook playbooks/inference.yml
    ```
-   The role installs Docker + the NVIDIA container toolkit, registers the nvidia runtime, opens pinned Ray ports (6379, 8265, 13377-13379, 14000-15000) in a dedicated `vllm-cluster` firewalld zone restricted to the compute CIDR, deploys systemd units (`vllm-ray`, `vllm-serve`), waits for Ray workers to join, then waits for `GET /health` on the API.
+    The role runs after the global `prerequisites` check role (Docker + compose present; NVIDIA driver for this group via `prerequisites_check_nvidia: true` in `ansible/group_vars/vllm_compute/vars.yml`). The NVIDIA container toolkit and the nvidia runtime registration are now host setup: install the toolkit on each node and run `nvidia-ctk runtime configure --runtime=docker` there. The role opens pinned Ray ports (6379, 8265, 13377-13379, 14000-15000) in a dedicated `vllm-cluster` firewalld zone restricted to the compute CIDR, deploys systemd units (`vllm-ray`, `vllm-serve`), waits for Ray workers to join, then waits for `GET /health` on the API.
 4. **Register with LiteLLM**: the run renders `litellm/vllm-models.yaml` with the `model_list` snippet (single cluster endpoint in ray mode; one entry per node in standalone mode). Merge it into `litellm/config.yaml` on the photon host and `docker compose restart litellm`.
 
 Ray traffic is unauthenticated and can execute arbitrary code; keep `vllm_firewall_zone_source` limited to the compute segment and set `VLLM_API_KEY` on the controller so the API requires auth.
@@ -667,12 +724,12 @@ The stack includes several pre-configured dashboards:
    - llama.cpp prompt and predicted tokens per second
    - Requires `callbacks: ["otel", "prometheus"]` and a scrape of `litellm:4000/metrics` with the master key. llama.cpp panels need `--metrics`.
 
-8. **keycloak-dashboard.json** - Keycloak authentication monitoring
-   - Login attempts (success/failed)
-   - Active sessions
-   - Database connection pool
-   - JVM memory usage
-   - Failed login alerts
+ 8. **keycloak-dashboard.json** - Keycloak authentication monitoring
+    - Login success and failure from `keycloak_user_events_total` (`event="login"`, empty `error` is success)
+    - Authentication latency SLO, P50/P95/P99, and server error rate
+    - Password hash validations, database pool, JVM memory, and scrape status
+    - Keycloak container logs and keycloak-backup container logs
+    - Last backup result, success count, failure count, and age of the last success
 
 9. **chatterbox-dashboard.json** - Chatterbox TTS (`monitoring` profile)
    - Health, model load, live progress, success rate, and errors
@@ -686,9 +743,9 @@ The stack includes several pre-configured dashboards:
 11. **container-resources-dashboard.json** - Per-container Docker stats (`monitoring` profile)
     - CPU, memory, network, disk, restarts, PIDs, and uptime
 
-Traefik v3.7 only emits `traefik_entrypoint_*` request metrics when the entrypoint sets `observability.metrics: true`. The `web` and `websecure` entrypoints do. The internal `traefik` entrypoint stays off. Node dashboards default to job `openwebui-stack/node` and instance `node-exporter:9100`. Open WebUI and LiteLLM panels use their OTel HTTP series (`http_server_requests_total`, `http_server_duration_milliseconds_bucket`). Keycloak panels use `http_server_requests_seconds_*`; this build does not emit `keycloak_user_events_total`.
+Traefik v3.7 only emits `traefik_entrypoint_*` request metrics when the entrypoint sets `observability.metrics: true`. The `web` and `websecure` entrypoints do. The internal `traefik` entrypoint stays off. Node dashboards default to job `openwebui-stack/node` and instance `node-exporter:9100`. Open WebUI and LiteLLM panels use their OTel HTTP series (`http_server_requests_total`, `http_server_duration_milliseconds_bucket`). Keycloak panels use job `openwebui-stack/keycloak`. HTTP URIs are templates such as `/realms/{realm}/protocol/{protocol}/auth`, so match the braces literally. User events use `keycloak_user_events_total` with lowercase `event` (`login`, not `LOGIN`) and an `error` label that is empty on success. Password checks use `keycloak_credentials_password_hashing_validations_total`. The official troubleshooting and capacity dashboards are retargeted the same way. They no longer filter on Kubernetes `namespace`, `pod`, or `container` labels.
 
-Chatterbox does not expose Prometheus. With `--profile monitoring`, `json-exporter` reads `/status`, `/status/statistics`, `/memory`, `/memory/config`, `/health`, `/voices`, `/languages`, and `/config`, and the collector scrapes those series. CUDA series are missing on the CPU profile. The same profile tails every container log into Loki. `docker-log-discovery` links each Docker json-file log to `/var/log/containers/<container>.log`, and the collector reads that directory. Loki label `container_name` is the container name. The collector also reads `/var/run/docker.sock` for Docker engine stats. It runs as root and joins group `DOCKER_GID` (default `999`). Set `DOCKER_GID` from `getent group docker` when that group id differs. App logs that already use OTLP (Open WebUI, LiteLLM, Keycloak) are still exported as well.
+Chatterbox does not expose Prometheus. With `--profile monitoring`, `json-exporter` reads `/status`, `/status/statistics`, `/memory`, `/memory/config`, `/health`, `/voices`, `/languages`, and `/config`, and the collector scrapes those series. CUDA series are missing on the CPU profile. The compose logging driver is `local`, so there is no json-file log to tail. Grafana Alloy (`loki.source.docker`) reads every container through the Docker API and pushes to Loki with `service_name` set to the container name. Select Keycloak logs with `{service_name=~".*keycloak"}` and backup logs with `{service_name=~".*keycloak-backup.*"}`. Alloy stores its read positions in the `alloy_data` volume. The collector still reads `/var/run/docker.sock` for Docker engine stats. Both run as root and join group `DOCKER_GID` (default `999`). Set `DOCKER_GID` from `getent group docker` when that group id differs. App logs that already use OTLP (Open WebUI, LiteLLM, Keycloak) are still exported as well. A backup run prints `keycloak_backup_success 1` or `keycloak_backup_success 0`. The Keycloak dashboard counts those lines. The backup container only exists while `docker compose --profile backup up keycloak-backup` is running.
 
 ### Available Metrics
 

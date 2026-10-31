@@ -26,6 +26,9 @@
       tags:
         - keycloak
   roles:
+    # Global host checks (Docker, compose, base packages) run on every host
+    # before any role touches docker compose.
+    - role: ../roles/prerequisites
     - role: ../roles/openwebui_stack
     - role: ../roles/chatterbox
       tags:

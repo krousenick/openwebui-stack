@@ -106,7 +106,8 @@ groups:
               expr: |
                 histogram_quantile(0.95,
                   sum(rate(http_server_requests_seconds_bucket{
-                    uri=~"/realms/.*/(protocol|login-actions)/.*"
+                    job=~".*keycloak.*",
+                    uri=~"/realms/\\{realm\\}/(protocol|login-actions)/.*"
                   }[5m])) by (le)
                 ) > 0.5
               refId: A
@@ -152,7 +153,8 @@ groups:
               expr: |
                 histogram_quantile(0.95,
                   sum(rate(http_server_requests_seconds_bucket{
-                    uri=~"/realms/.*/(protocol|login-actions)/.*"
+                    job=~".*keycloak.*",
+                    uri=~"/realms/\\{realm\\}/(protocol|login-actions)/.*"
                   }[5m])) by (le)
                 ) > 1
               refId: A
@@ -197,12 +199,14 @@ groups:
             model:
               expr: |
                 sum(rate(http_server_requests_seconds_count{
-                  uri=~"/realms/.*/(protocol|login-actions)/.*",
+                  job=~".*keycloak.*",
+                  uri=~"/realms/\\{realm\\}/(protocol|login-actions)/.*",
                   outcome="SERVER_ERROR"
                 }[5m]))
                 /
                 sum(rate(http_server_requests_seconds_count{
-                  uri=~"/realms/.*/(protocol|login-actions)/.*"
+                  job=~".*keycloak.*",
+                  uri=~"/realms/\\{realm\\}/(protocol|login-actions)/.*"
                 }[5m])) > 0.001
               refId: A
           - refId: B
@@ -244,7 +248,7 @@ groups:
               to: 0
             datasourceUid: prometheus
             model:
-              expr: agroal_awaiting_count > 0
+              expr: agroal_awaiting_count{job=~".*keycloak.*"} > 0
               refId: A
           - refId: B
             datasourceUid: __expr__
@@ -286,10 +290,9 @@ groups:
             datasourceUid: prometheus
             model:
               expr: |
-                sum(rate(keycloak_user_events_total{event="LOGIN_ERROR"}[5m]))
+                sum(rate(keycloak_user_events_total{event="login", error!=""}[5m]))
                 /
-                (sum(rate(keycloak_user_events_total{event="LOGIN"}[5m]))
-                 + sum(rate(keycloak_user_events_total{event="LOGIN_ERROR"}[5m]))) > 0.2
+                sum(rate(keycloak_user_events_total{event="login"}[5m])) > 0.2
               refId: A
           - refId: B
             datasourceUid: __expr__

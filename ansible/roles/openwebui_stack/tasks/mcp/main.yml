@@ -1,0 +1,14 @@
+---
+# MCP servers are optional. Each server lives in its own task file and is
+# included here when its toggle variable is true and its required secrets
+# are present. Add a future MCP server by dropping <name>.yml in this
+# directory and guarding it with mcp_<name>_enabled below.
+- name: Configure Brave Search MCP
+  ansible.builtin.import_tasks:
+    file: brave.yml
+  when: brave_search_enabled | bool and brave_search_api_key | length > 0
+
+- name: Configure Playwright MCP cluster
+  ansible.builtin.import_tasks:
+    file: playwright.yml
+  when: playwright_mcp_enabled | bool
