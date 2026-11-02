@@ -1,0 +1,14 @@
+---
+# Render the LiteLLM config. The playwright_cluster MCP server routes
+# through Traefik's mcp entrypoint, which matches on the
+# playwright-mcp.<domain> Host header; litellm reads config values
+# literally (no ${VAR} substitution), so the Host must be rendered from
+# the group_vars domain rather than left as a shell-style default.
+
+- name: Render the LiteLLM config
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ project_root }}/litellm/config.yaml"
+    owner: root
+    group: root
+    mode: "0644"

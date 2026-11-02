@@ -67,3 +67,9 @@ backup_retention_days: 7
 # Keycloak admin console IP allowlist (commented Traefik ipwhitelist in the
 # compose file consumes it).
 keycloak_admin_ip_range: "0.0.0.0/0"
+
+# Playwright MCP cluster. When true, the playbook adds the Open WebUI tool
+# server connection for the playwright_cluster LiteLLM MCP server. The
+# containers and Traefik wiring live in docker-compose.yml. Set false in
+# group_vars to skip the wiring.
+playwright_mcp_enabled: true

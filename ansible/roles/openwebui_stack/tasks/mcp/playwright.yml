@@ -31,18 +31,13 @@
       - SELECT value::text FROM config WHERE key = 'tool_server.connections'
   register: playwright_tool_server_current
   changed_when: false
+  # Check mode skips this command, leaving stdout empty; the merge task
+  # then falls back to an empty list instead of failing to parse "".
+  failed_when: false
   no_log: true
 
-- name: Merge the Playwright connection into the desired tool server list
+- name: Build the Playwright tool server connection
   ansible.builtin.set_fact:
-    # Keep existing connections (Brave, anything added later) and append the
-    # Playwright entry only when it is not already present, matching by info.id.
-    playwright_tool_server_desired: >-
-      {{ (playwright_tool_server_current.stdout | trim | default('[]') | from_json)
-         | selectattr('info.id', 'defined')
-         | rejectattr('info.id', 'equalto', 'playwright_cluster')
-         | list
-         | union([playwright_connection]) }}
     playwright_connection:
       - type: mcp
         url: http://litellm:4000/mcp/playwright_cluster
@@ -55,6 +50,20 @@
           id: playwright_cluster
           name: Playwright MCP
           description: Browser automation through the LiteLLM Playwright MCP cluster
+  no_log: true
+
+- name: Merge the Playwright connection into the desired tool server list
+  ansible.builtin.set_fact:
+    # Keep existing connections (Brave, anything added later) and append the
+    # Playwright entry only when it is not already present, matching by
+    # info.id. Empty stdout (check mode, or no connections row yet) reads
+    # as an empty list.
+    playwright_tool_server_desired: >-
+      {{ (playwright_tool_server_current.stdout | trim | default('', true) or '[]' | from_json)
+         | selectattr('info.id', 'defined')
+         | rejectattr('info.id', 'equalto', 'playwright_cluster')
+         | list
+         | union(playwright_connection) }}
   no_log: true
 
 - name: Update persisted Playwright MCP configuration
@@ -73,13 +82,15 @@
       - "{{ openwebui_db_user }}"
       - -d
       - "{{ openwebui_db_name }}"
-    args:
-      stdin: |
-        UPDATE config SET value = '{{ playwright_tool_server_desired | to_json | replace("'", "''") }}'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'tool_server.connections';
+    stdin: |
+      UPDATE config SET value = '{{ playwright_tool_server_desired | to_json | replace("'", "''") }}'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'tool_server.connections';
   register: playwright_config_update
+  # Compare parsed structures, not raw strings: psql emits JSON with its own
+  # key order and spacing that never matches to_json byte-for-byte, which
+  # would recreate the services on every run.
   changed_when: >-
-    (playwright_tool_server_current.stdout | trim | default('') )
-    != (playwright_tool_server_desired | to_json)
+    ((playwright_tool_server_current.stdout | trim | default('', true) or '[]') | from_json | sort(attribute='info.id'))
+    != (playwright_tool_server_desired | sort(attribute='info.id'))
   no_log: true
 
 - name: Recreate Playwright-enabled services

@@ -96,11 +96,6 @@ docker_compose_pull: true
 # search, and the Brave MCP connection.
 brave_search_enabled: true
 
-# Playwright MCP cluster. When true, the playbook adds the Open WebUI tool
-# server connection for the playwright_cluster LiteLLM MCP server. The
-# containers and Traefik wiring live in docker-compose.yml.
-playwright_mcp_enabled: false
-
 # opencode (terminal AI coding agent). Host users who get an opencode
 # install pointed at the LiteLLM proxy. Empty list disables the role.
 opencode_users: []

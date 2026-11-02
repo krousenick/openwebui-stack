@@ -33,6 +33,12 @@
   ansible.builtin.import_tasks:
     file: sync.yml
 
+- name: Render the LiteLLM config
+  ansible.builtin.import_tasks:
+    file: litellm_config.yml
+  tags:
+    - environment
+
 - name: Render application environment
   ansible.builtin.import_tasks:
     file: environment.yml

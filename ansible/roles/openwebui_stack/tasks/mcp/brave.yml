@@ -32,11 +32,14 @@
         )
   register: brave_current_config
   changed_when: false
+  # Check mode skips this command, leaving stdout empty; the merge task then
+  # falls back to defaults instead of failing on a JSON parse of "".
+  failed_when: false
   no_log: true
 
-- name: Build the desired Brave configuration
+- name: Build the desired Brave connection entry
   ansible.builtin.set_fact:
-    brave_desired_connection:
+    brave_connection_entry:
       - type: mcp
         url: http://litellm:4000/mcp/brave_search
         path: ""
@@ -48,6 +51,21 @@
           id: brave_search
           name: Brave Search
           description: Web search through the LiteLLM Brave MCP server
+  no_log: true
+
+- name: Merge the Brave connection into the desired tool server list
+  ansible.builtin.set_fact:
+    # Keep existing connections (Playwright, anything added later) and
+    # append the Brave entry only when not already present, matching by
+    # info.id. Empty stdout (check mode, or no connections row yet) reads
+    # as an empty list. The Brave task runs first; the Playwright task
+    # merges the same row and must not drop Brave (and vice versa).
+    brave_tool_server_desired: >-
+      {{ ((brave_current_config.stdout | trim | from_json).connection | from_json
+          | selectattr('info.id', 'defined')
+          | rejectattr('info.id', 'equalto', 'brave_search')
+          | list
+          | union(brave_connection_entry)) }}
   no_log: true
 
 - name: Update persisted Brave Search configuration
@@ -66,17 +84,20 @@
       - "{{ openwebui_db_user }}"
       - -d
       - "{{ openwebui_db_name }}"
-  args:
     stdin: |
       UPDATE config SET value = 'true'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'web.search.enable';
       UPDATE config SET value = '"brave"'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'web.search.engine';
       UPDATE config SET value = to_jsonb('{{ brave_search_api_key | replace("'", "''") }}'::text), updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'web.search.brave_search_api_key';
-      UPDATE config SET value = '{{ brave_desired_connection | to_json | replace("'", "''") }}'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'tool_server.connections';
+      UPDATE config SET value = '{{ brave_tool_server_desired | to_json | replace("'", "''") }}'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'tool_server.connections';
   register: brave_config_update
+  # Compare parsed structures, not raw strings: psql emits JSON with its own
+  # key order and spacing that never matches to_json byte-for-byte, which
+  # would recreate the services on every run.
   changed_when: >-
     (brave_current_config.stdout | trim | from_json).enabled != 'true'
     or (brave_current_config.stdout | trim | from_json).engine != '"brave"'
-    or (brave_current_config.stdout | trim | from_json).connection != (brave_desired_connection | to_json)
+    or ((brave_current_config.stdout | trim | from_json).connection | from_json | sort(attribute='info.id'))
+    != (brave_tool_server_desired | sort(attribute='info.id'))
   no_log: true
 
 - name: Recreate Brave-enabled services
