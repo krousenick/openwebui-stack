@@ -59,11 +59,13 @@
     # info.id. Empty stdout (check mode, or no connections row yet) reads
     # as an empty list.
     playwright_tool_server_desired: >-
-      {{ (playwright_tool_server_current.stdout | trim | default('', true) or '[]' | from_json)
+      {{ ((playwright_tool_server_current.stdout | trim | default('', true) or '[]')
+         | from_json
          | selectattr('info.id', 'defined')
          | rejectattr('info.id', 'equalto', 'playwright_cluster')
          | list
-         | union(playwright_connection) }}
+         | union(playwright_connection)
+         | sort(attribute='info.id')) }}
   no_log: true
 
 - name: Update persisted Playwright MCP configuration
@@ -89,8 +91,10 @@
   # key order and spacing that never matches to_json byte-for-byte, which
   # would recreate the services on every run.
   changed_when: >-
-    ((playwright_tool_server_current.stdout | trim | default('', true) or '[]') | from_json | sort(attribute='info.id'))
-    != (playwright_tool_server_desired | sort(attribute='info.id'))
+    ((playwright_tool_server_current.stdout | trim | default('', true) or '[]') | from_json | map(attribute='info.id') | list | sort)
+    != (playwright_tool_server_desired | map(attribute='info.id') | list | sort)
+    or ((playwright_tool_server_current.stdout | trim | default('', true) or '[]') | from_json | map('to_json') | list | sort)
+    != (playwright_tool_server_desired | map('to_json') | list | sort)
   no_log: true
 
 - name: Recreate Playwright-enabled services

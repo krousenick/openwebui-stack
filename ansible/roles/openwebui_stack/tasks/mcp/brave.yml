@@ -61,11 +61,12 @@
     # as an empty list. The Brave task runs first; the Playwright task
     # merges the same row and must not drop Brave (and vice versa).
     brave_tool_server_desired: >-
-      {{ ((brave_current_config.stdout | trim | from_json).connection | from_json
+      {{ (((brave_current_config.stdout | trim | from_json).connection | from_json
           | selectattr('info.id', 'defined')
           | rejectattr('info.id', 'equalto', 'brave_search')
           | list
-          | union(brave_connection_entry)) }}
+          | union(brave_connection_entry))
+          | sort(attribute='info.id')) }}
   no_log: true
 
 - name: Update persisted Brave Search configuration
@@ -96,8 +97,10 @@
   changed_when: >-
     (brave_current_config.stdout | trim | from_json).enabled != 'true'
     or (brave_current_config.stdout | trim | from_json).engine != '"brave"'
-    or ((brave_current_config.stdout | trim | from_json).connection | from_json | sort(attribute='info.id'))
-    != (brave_tool_server_desired | sort(attribute='info.id'))
+    or (((brave_current_config.stdout | trim | from_json).connection | from_json) | map(attribute='info.id') | list | sort)
+    != (brave_tool_server_desired | map(attribute='info.id') | list | sort)
+    or (((brave_current_config.stdout | trim | from_json).connection | from_json) | map('to_json') | list | sort)
+    != (brave_tool_server_desired | map('to_json') | list | sort)
   no_log: true
 
 - name: Recreate Brave-enabled services

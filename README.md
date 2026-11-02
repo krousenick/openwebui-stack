@@ -128,11 +128,12 @@ graph TB
 
    - **`.env`** — rendered from `templates/env.j2` with every secret
    - **`docker-compose.yml`** — rendered from `templates/docker-compose.yml.j2`; the `chatterbox_enabled` toggle drops the Chatterbox services entirely
+   - **`litellm/config.yaml`** — rendered from `templates/config.yaml.j2` (the Playwright MCP `Host` header needs the deployed domain spelled out; LiteLLM does not expand `${VAR}` in config values)
    - **TLS certificates** — `ssl_cert_type: existing | selfsigned | traefik`; self-signed pairs are generated with `community.crypto` and wired into Traefik via `traefik/dynamic/certs.yml` (replaces `scripts/generate-certs.sh`)
    - **`/etc/hosts`** — service hostnames added on the deployment host for non-localhost domains
-   - **Secrets** — resolved in order: vault entry (`vault_<name>` in `ansible/group_vars/all/vault.yml`) → environment variable → deployed `.env` value → generated once and persisted back into the vault file. Existing deployments keep their secrets; nothing regenerates on re-run.
+   - **Secrets** — explicit values in `ansible/group_vars/all/vault.yml` (tracked template with `CHANGE_ME` placeholders) and `ansible/group_vars/all/vault.local.yml` (real values, gitignored, mode 0600). Nothing reads environment variables or the deployed `.env`. A playbook run fails fast, naming exactly which secrets are still placeholders.
 
-   Edit `ansible/group_vars/all/vars.yml` before the first run to set `domain`, `ssl_cert_type`, `docker_compose_profiles`, and `chatterbox_device`/`chatterbox_enabled`. Encrypt `ansible/group_vars/all/vault.yml` with `ansible-vault` for production and commit only the encrypted file.
+   Edit `ansible/group_vars/all/vars.yml` before the first run to set `domain`, `ssl_cert_type`, `docker_compose_profiles`, and `chatterbox_device`/`chatterbox_enabled`. Copy `vault.yml` to `vault.local.yml`, replace every `CHANGE_ME`, and keep `vault.local.yml` out of git (encrypt it with `ansible-vault` instead for team use).
 
 In `docker-compose.yml` change `ENABLE_SIGNUP` to `true` if you want to register the first admin user via Open WebUI. You can disable it again after the first user is created.
 
@@ -184,7 +185,7 @@ Access the Keycloak Admin Console to manage users and applications:
    ansible-galaxy collection install -r requirements.yaml
    ansible-playbook playbooks/site.yml
    ```
-   This creates the `platform` realm, the `keycloak-provisioner` service account, confidential clients for Grafana, Open WebUI, and LiteLLM, client roles that match `docker-compose.yml`, group-to-role mappings, and one login user per group. It also turns on passkeys for that realm: Keycloak shows **Sign in with Passkey** on the username form, and users can register a passwordless credential from the account console. Set `keycloak_passkeys_enabled: false` in `ansible/group_vars/all/vars.yml` to leave password login unchanged. It also syncs `otel/`, `grafana/`, `traefik/`, and `json-exporter/` to `project_root` as mode `0644`. The collector image runs as uid `10001`, and a `0640` root-owned `otel/config.yaml` makes it crash-loop. Client secrets are the `*_OIDC_CLIENT_SECRET` values the role writes to `.env`. Every Keycloak secret (admin password, provisioner client secret, OIDC client secrets, and the `keycloak_user_*` passwords) resolves through the documented tiering; on a first run with nothing set, the playbook generates each missing secret once and persists it as a `vault_<name>` entry in `ansible/group_vars/all/vault.yml`.
+    This creates the `platform` realm, the `keycloak-provisioner` service account, confidential clients for Grafana, Open WebUI, and LiteLLM, client roles that match `docker-compose.yml`, group-to-role mappings, and one login user per group. It also turns on passkeys for that realm: Keycloak shows **Sign in with Passkey** on the username form, and users can register a passwordless credential from the account console. Set `keycloak_passkeys_enabled: false` in `ansible/group_vars/all/vars.yml` to leave password login unchanged. It also syncs `otel/`, `grafana/`, `traefik/`, `json-exporter/`, and `litellm/` (minus the rendered `config.yaml`) to `project_root` as mode `0644`. The collector image runs as uid `10001`, and a `0640` root-owned `otel/config.yaml` makes it crash-loop. Client secrets are the `*_OIDC_CLIENT_SECRET` values the role writes to `.env`; every Keycloak secret (admin password, provisioner client secret, OIDC client secrets, and the `keycloak_user_*` passwords) comes from `vault.local.yml`.
 
 2. Only Grafana, Open WebUI, and LiteLLM use Keycloak. Traefik, Keycloak admin, and the exporters keep their own credentials. `./scripts/setup.sh` runs the playbook for you after installing collections.
 
@@ -192,8 +193,10 @@ Access the Keycloak Admin Console to manage users and applications:
 
    | Variable | Task file | What it configures |
    |----------|-----------|---------------------|
-   | `brave_search_enabled` + `BRAVE_SEARCH_API_KEY` | `mcp/brave.yml` | Open WebUI web search and the `brave_search` tool server connection |
-   | `playwright_mcp_enabled` | `mcp/playwright.yml` | The `playwright_cluster` tool server connection (no secret; containers run from docker-compose.yml) |
+   | `brave_search_enabled` + `brave_search_api_key` (vault) | `mcp/brave.yml` | Open WebUI web search and the `brave_search` tool server connection |
+   | `playwright_mcp_enabled` (role default `true`) | `mcp/playwright.yml` | The `playwright_cluster` tool server connection (no secret; containers run from docker-compose.yml) |
+
+   Both MCP tasks **merge** into the same `tool_server.connections` row (matched by `info.id`, sorted canonically), so each preserves the other's entry, and consecutive playbook runs are idempotent: the litellm and open-webui containers are recreated only when the row actually changes.
 
    Add a future MCP server by dropping `<name>.yml` in `tasks/mcp/`, guarding it in `tasks/mcp/main.yml` with `mcp_<name>_enabled`, and adding that variable to `group_vars/all/vars.yml` and the role defaults.
 
