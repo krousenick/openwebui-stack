@@ -7,8 +7,8 @@
 #             vllm serve). Production uses vllm/vllm-openai:latest.
 # vllm_model: a local path; the stub ignores it but a real image would try to
 #             download from Hugging Face, which the rig avoids.
-vllm_image: "{{ lookup('ansible.builtin.env', 'VLLM_IMAGE_OVERRIDE', default='vllm/vllm-openai:test-stub') }}"
-vllm_model: "{{ lookup('ansible.builtin.env', 'VLLM_MODEL_OVERRIDE', default='/opt/models/test-model') }}"
+vllm_image: vllm/vllm-openai:test-stub
+vllm_model: /opt/models/test-model
 
 # Standalone mode: every node serves the model and LiteLLM load balances.
 # This avoids depending on real Ray cluster formation in the rig. Ray mode

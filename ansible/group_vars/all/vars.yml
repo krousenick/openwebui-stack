@@ -1,39 +1,49 @@
 ---
 # ---------------------------------------------------------------------------
-# Deployment
+# Deployment configuration. Every value is explicit; nothing reads from the
+# environment or from the deployed .env. Secrets live in vault.yml.
 # ---------------------------------------------------------------------------
 
 project_root: /mnt/data1/openwebui-stack
 compose_project_name: openwebui-stack
 
-# Domain tiering: DOMAIN environment variable first (fresh installs), then
-# the value in the deployed .env (upgrades keep the deployed domain), then
-# localhost. With ansible_connection: local the controller is the
-# deployment host, so the lookup reads the same .env the stack uses.
-domain: "{{ lookup('ansible.builtin.env', 'DOMAIN', default=None) or lookup('ansible.builtin.ini', 'DOMAIN', file=deployed_env_file, type='properties', errors='ignore') | default('localhost', true) }}"
+domain: krouse.io
 
 timezone: UTC
+
+# ---------------------------------------------------------------------------
+# PostgreSQL databases (shared postgres instance; per-service roles and
+# databases provisioned by init-db/01-init-databases.sh)
+# ---------------------------------------------------------------------------
+
+postgres_db: postgres
+postgres_user: postgres
+
+openwebui_db_name: openwebui
+openwebui_db_user: openwebui
+
+litellm_db_name: litellm
+litellm_db_user: litellm
+
+keycloak_db_name: keycloak
+keycloak_db_user: keycloak
 
 # ---------------------------------------------------------------------------
 # Keycloak
 # ---------------------------------------------------------------------------
 
-keycloak_realm: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_REALM', default=None) or lookup('ansible.builtin.ini', 'KEYCLOAK_REALM', file=deployed_env_file, type='properties', errors='ignore') | default('platform', true) }}"
+keycloak_realm: platform
 keycloak_url: "https://auth.{{ domain }}"
 
 # TLS verification for the controller-side Keycloak API calls. The
 # deployment serves a Cloudflare Origin certificate on auth.<domain>; the
 # Origin CA is not in the host trust store, so verification is off here.
 # Set true when auth.<domain> serves a publicly trusted certificate.
-keycloak_validate_certs: "{{ (lookup('ansible.builtin.env', 'KEYCLOAK_VALIDATE_CERTS', default=None) or 'false') | bool }}"
+keycloak_validate_certs: false
 
-# The provisioning credentials resolve through the secret tiering in
-# group_vars/all/vault.yml (vault entry -> environment -> deployed .env ->
-# generated once). The *_password / *_secret variables themselves are
-# defined there; only the non-secret IDs live in this file.
 keycloak_provisioner_client_id: keycloak-provisioner
 keycloak_realm_management_client_id: master-realm
-keycloak_admin_user: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_USER') | default('admin', true) }}"
+keycloak_admin_user: admin
 
 # Keycloak 26 enables passkeys on the default browser flow. Users register
 # a passwordless credential, then sign in from the username form.
@@ -61,29 +71,38 @@ docker_compose_profiles:
 # gpu -> Dockerfile (CUDA). cpu -> Dockerfile.cpu. Selects the chatterbox profile.
 chatterbox_device: gpu
 
-# Optional. Supply BRAVE_SEARCH_API_KEY through the environment or vault.
-# Normalized (trimmed, quote characters stripped) so raw CI exports or vault
-# entries cannot reach .env or the Open WebUI config DB with stray quotes.
-brave_search_enabled: false
-brave_search_api_key: >-
-  {{ lookup('ansible.builtin.env', 'BRAVE_SEARCH_API_KEY')
-     | trim | replace('"', '') | replace("'", '') }}
+# Include the chatterbox services in the rendered compose file at all.
+chatterbox_enabled: true
 
-# Optional. Enables the Open WebUI tool server connection to the Playwright
-# MCP cluster (docker-compose.yml service playwright-mcp). No secret needed;
-# the cluster authenticates to LiteLLM with the LiteLLM master key.
-playwright_mcp_enabled: false
+# Write /etc/hosts entries on the deployment host for non-localhost
+# domains. Set false when name resolution is handled by DNS.
+manage_hosts_file: true
+
+# oauth2-proxy performs OIDC discovery against https://auth.<domain> and
+# verifies TLS like any Go client. With a Cloudflare Origin certificate
+# the Origin CA is not in the container trust store, so discovery fails
+# with x509 until this is true. Set false when auth.<domain> serves a
+# publicly trusted certificate.
+oauth2_proxy_ssl_insecure_skip_verify: true
 
 docker_compose_pull: true
 
 # ---------------------------------------------------------------------------
-# opencode (terminal AI coding agent)
+# Optional integrations
 # ---------------------------------------------------------------------------
 
-# Host users who get an opencode install pointed at the LiteLLM proxy.
-# Per-user LiteLLM virtual keys are minted with metadata.user=<username>,
-# so LiteLLM SpendLogs and the LiteLLM UI attribute token usage per user.
-# Empty list disables the role (nothing is installed or configured).
+# Brave Search MCP. Set the API key in vault.yml. When enabled and the key
+# is present, the playbook wires the gateway search path, Open WebUI
+# search, and the Brave MCP connection.
+brave_search_enabled: true
+
+# Playwright MCP cluster. When true, the playbook adds the Open WebUI tool
+# server connection for the playwright_cluster LiteLLM MCP server. The
+# containers and Traefik wiring live in docker-compose.yml.
+playwright_mcp_enabled: false
+
+# opencode (terminal AI coding agent). Host users who get an opencode
+# install pointed at the LiteLLM proxy. Empty list disables the role.
 opencode_users: []
 
 # ---------------------------------------------------------------------------
@@ -203,7 +222,7 @@ keycloak_group_role_mappings:
 
 # ---------------------------------------------------------------------------
 # Keycloak users
-# Passwords come from Ansible Vault (group_vars/all/vault.yml).
+# Passwords come from group_vars/all/vault.yml.
 # group_memberships is a list of {name: <group>} for keycloak_user.
 # ---------------------------------------------------------------------------
 

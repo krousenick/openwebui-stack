@@ -1,45 +1,19 @@
 ---
-project_root: /mnt/data1/openwebui-stack
+# Role mechanics only. Deployment configuration (domain, TLS mode, compose
+# profiles, chatterbox_device) lives in group_vars/all/vars.yml; secrets in
+# group_vars/all/vault.yml + vault.local.yml. Nothing here reads the
+# environment. These defaults exist so the role fails fast when a required
+# group_vars value is missing instead of silently falling back.
 
 compose_file: "{{ project_root }}/docker-compose.yml"
 
 env_file: "{{ project_root }}/.env"
 
-# Path of the deployed .env read by the secret tiering in vault.yml.
-deployed_env_file: "{{ project_root }}/.env"
-
-# Path of the controller-side vault file the secrets task persists to.
-# Defaults to the group_vars copy next to the playbook.
-vault_vars_file: "{{ playbook_dir }}/../group_vars/all/vault.yml"
-
-keycloak_validate_certs: true
-
-docker_compose_pull: true
-
 docker_compose_wait_timeout: 180
 
-docker_compose_profiles:
-  - monitoring
-
-# gpu -> Dockerfile (CUDA). cpu -> Dockerfile.cpu. Consumed by the chatterbox role.
-chatterbox_device: gpu
-
-# Include the chatterbox services in the rendered compose file at all.
-chatterbox_enabled: true
-
-# Write /etc/hosts entries on the deployment host for non-localhost
-# domains. Set false when name resolution is handled by DNS.
-manage_hosts_file: true
-
-# Traefik dashboard basic-auth. The apr1 hash is computed at run time; the
-# password itself resolves through the tiering in vault.yml.
+# Traefik dashboard basic-auth user. The apr1 hash is computed at run time
+# from traefik_dashboard_password (vault).
 traefik_dashboard_user: admin
-
-# TLS mode: existing | selfsigned | traefik (see tasks/certs.yml).
-ssl_cert_type: existing
-
-ssl_cert_file: "wildcard.crt"
-ssl_key_file: "wildcard.key"
 
 selfsigned_key_size: 4096
 selfsigned_valid_days: 365
@@ -57,9 +31,9 @@ selfsigned_san:
   - "IP:127.0.0.1"
   - "IP:::1"
 
-# Stack secrets resolved by the tiering in group_vars/all/vault.yml and
-# generated once by tasks/secrets.yml when no tier yields a value.
-stack_secret_charset: "ascii_letters,digits"
+# Every stack secret the .env render needs. The assert in tasks/secrets.yml
+# fails the run listing exactly which ones are missing or left as the
+# CHANGE_ME placeholder.
 stack_secret_names:
   - postgres_password
   - openwebui_db_password
@@ -78,13 +52,13 @@ stack_secret_names:
   - voice_oidc_client_secret
   - oauth2_proxy_cookie_secret
   - keycloak_provisioner_client_secret
+  - traefik_dashboard_password
   - keycloak_user_platform_admin_password
   - keycloak_user_grafana_editor_password
   - keycloak_user_grafana_viewer_password
   - keycloak_user_openwebui_user_password
   - keycloak_user_litellm_user_password
   - keycloak_user_litellm_viewer_password
-  - traefik_dashboard_password
 
 docker_gid: "999"
 
@@ -93,29 +67,3 @@ backup_retention_days: 7
 # Keycloak admin console IP allowlist (commented Traefik ipwhitelist in the
 # compose file consumes it).
 keycloak_admin_ip_range: "0.0.0.0/0"
-
-grafana_discord_webhook_url: "{{ lookup('ansible.builtin.env', 'GRAFANA_DISCORD_WEBHOOK_URL', default='') }}"
-
-gemini_api_key: "{{ lookup('ansible.builtin.env', 'GEMINI_API_KEY', default='') | trim }}"
-
-aws_access_key_id: "{{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID', default='') | trim }}"
-aws_secret_access_key: "{{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY', default='') | trim }}"
-aws_region: "{{ lookup('ansible.builtin.env', 'AWS_REGION', default('us-east-1')) | trim }}"
-
-hf_token: "{{ lookup('ansible.builtin.env', 'HF_TOKEN', default='') | trim }}"
-
-# Brave Search is optional. Set the key in Ansible Vault or the deployment
-# environment. When both are present, the playbook enables the gateway search
-# path, Open WebUI search, and the Brave MCP connection.
-# The key is normalized once: trimmed, quote characters stripped, so raw
-# values from CI exports or vault entries cannot reach the .env file or the
-# Open WebUI config database with stray quotes.
-brave_search_enabled: false
-brave_search_api_key: >-
-  {{ lookup('ansible.builtin.env', 'BRAVE_SEARCH_API_KEY')
-     | trim | replace('"', '') | replace("'", '') }}
-
-# Playwright MCP cluster is optional. When true, the playbook adds the
-# Open WebUI tool server connection for the playwright_cluster LiteLLM MCP
-# server. The containers and Traefik wiring live in docker-compose.yml.
-playwright_mcp_enabled: false

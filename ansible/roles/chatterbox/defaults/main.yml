@@ -23,6 +23,17 @@ chatterbox_api_wait_retries: 30
 
 chatterbox_default_voice_id: Emily.wav
 
+# Open WebUI TTS wiring rendered into .env (env.j2 reads these).
+# CHATTERBOX_TTS_MODEL: the Open WebUI model name (kept tts-1 for the
+# OpenAI-compatible endpoint). CHATTERBOX_TTS_VOICE: voice library name;
+# empty uses the built-in sample.
+chatterbox_tts_model: tts-1
+chatterbox_tts_voice: ""
+
+# Maximum reference-clip duration (seconds) accepted by the voice-clone
+# upload endpoint. Longer clips are rejected by validation and deleted.
+chatterbox_max_reference_duration_sec: 60
+
 # Engine repo id: chatterbox-turbo, chatterbox-multilingual, or the original
 # English chatterbox model (chatterbox).
 chatterbox_tts_engine: chatterbox-turbo

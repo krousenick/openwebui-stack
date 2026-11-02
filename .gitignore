@@ -6,6 +6,7 @@
 .env
 *.env.local
 *.env.*.local
+ansible/group_vars/all/vault.local.yml
 
 # SSL Certificates (generated locally)
 certs/

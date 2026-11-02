@@ -57,7 +57,7 @@ vllm_hf_cache_dir: /mnt/data1/huggingface
 # API key the nodes require. Supply via the environment on the controller
 # (VLLM_API_KEY) or override here. Empty disables authentication - the
 # firewall zone must then be the only protection.
-vllm_api_key: "{{ lookup('ansible.builtin.env', 'VLLM_API_KEY') | default('local-vllm-key', true) }}"
+vllm_api_key: local-vllm-key
 
 # ---------------------------------------------------------------------------
 # Flux image-generation servers. Independent of the topology above: each

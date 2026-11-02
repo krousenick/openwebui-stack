@@ -51,6 +51,12 @@
   tags:
     - compose
 
+- name: Assert Open WebUI connection config
+  ansible.builtin.import_tasks:
+    file: openwebui_config.yml
+  tags:
+    - openwebui-config
+
 - name: Configure optional MCP servers
   ansible.builtin.import_tasks:
     file: mcp/main.yml

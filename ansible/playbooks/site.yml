@@ -3,13 +3,12 @@
   hosts: openwebui
   become: true
   # group_vars/all is loaded explicitly: with the playbook under playbooks/
-  # Ansible does not auto-load ../group_vars, and the pre-task env lookups
-  # this playbook used to rely on are gone (secrets now resolve through the
-  # tiering in vault.yml: vault entry -> environment -> deployed .env ->
-  # generated once).
+  # Ansible does not auto-load ../group_vars. vault.yml is the tracked
+  # template; vault.local.yml holds the real values and is gitignored.
   vars_files:
     - ../group_vars/all/vars.yml
     - ../group_vars/all/vault.yml
+    - ../group_vars/all/vault.local.yml
   roles:
     # Global host checks (Docker, compose, base packages) run on every host
     # before any role touches docker compose.

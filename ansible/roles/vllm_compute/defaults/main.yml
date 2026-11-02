@@ -71,15 +71,15 @@ vllm_port: 8000
 vllm_max_model_len: 32768
 vllm_gpu_memory_utilization: 0.90
 vllm_extra_args: []
-vllm_api_key: "{{ lookup('ansible.builtin.env', 'VLLM_API_KEY') | default('', true) }}"
+vllm_api_key: ""
 
 # Hugging Face cache directory shared by all vllm containers. Put it on the
 # node's large data volume; the same weights are read by the primary model
 # server and every flux server.
 vllm_hf_cache_dir: /mnt/data1/huggingface
 
-# Hugging Face token for gated models, read from the controller environment.
-vllm_hf_token: "{{ lookup('ansible.builtin.env', 'HF_TOKEN') | default('', true) }}"
+# Hugging Face token for gated models. Set explicitly in group_vars.
+vllm_hf_token: ""
 
 # Ray cluster ports. Every node pins these so the firewalld rules and the
 # ray start command line stay deterministic; they are the ports opened in
@@ -171,4 +171,4 @@ vllm_flux_image: "{{ vllm_image }}"
 
 # Optional API key for the flux endpoints. Empty leaves them unauthenticated;
 # they are only reachable on the node's host port.
-vllm_flux_api_key: "{{ lookup('ansible.builtin.env', 'VLLM_FLUX_API_KEY') | default('', true) }}"
+vllm_flux_api_key: ""
