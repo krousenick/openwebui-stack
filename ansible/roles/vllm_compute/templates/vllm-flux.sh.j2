@@ -14,9 +14,9 @@ readonly NAME="{{ vllm_container_name }}-flux-{{ flux_item.name }}"
 readonly HF_TOKEN="{{ vllm_hf_token }}"
 {% endif %}
 
-docker pull --quiet "$IMAGE" >/dev/null 2>&1 || true
+{{ vllm_container_cli }} pull --quiet "$IMAGE" >/dev/null 2>&1 || true
 
-exec docker run \
+exec {{ vllm_container_cli }} run \
   --rm \
   --name "$NAME" \
   --network host \

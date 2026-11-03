@@ -9,6 +9,32 @@
 #              replica each); no ray units.
 # ===========================================================================
 
+- name: Point rootful podman storage at the data volume
+  # Only meaningful for podman nodes: the rootful graphroot defaults to
+  # /var/lib/containers/storage, which is often on a small root filesystem.
+  # vllm_podman_storage_root moves image + container storage onto the node's
+  # large data volume. Skipped for docker and when the value already matches.
+  when: vllm_container_cli == 'podman'
+  block:
+    - name: Read the current rootful graphroot
+      ansible.builtin.slurp:
+        src: /usr/share/containers/storage.conf
+      register: vllm_podman_storage_conf
+      failed_when: false
+
+    - name: Set the rootful graphroot in /etc/containers/storage.conf
+      # Copy the shipped storage.conf, replace the commented-out graphroot
+      # line, and drop it in /etc/containers (podman's override path). The
+      # image pull afterwards populates the new location.
+      ansible.builtin.copy:
+        dest: /etc/containers/storage.conf
+        mode: "0644"
+        content: "{{ (vllm_podman_storage_conf.content | b64decode)
+          | regex_replace('^#?\\s*graphroot\\s*=.*$', 'graphroot = \"' ~ vllm_podman_storage_root ~ '\"', multiline=True) }}"
+      when: >-
+        vllm_podman_storage_conf.content | default('') | b64decode
+        is not search('graphroot\s*=\s*' ~ (vllm_podman_storage_root | ansible.builtin.regex_escape))
+
 - name: Create vLLM install directory
   ansible.builtin.file:
     path: "{{ vllm_install_dir }}"
@@ -94,7 +120,7 @@
       # vllm_compute inventory size. 30 x 10s covers slow worker starts.
       ansible.builtin.command:
         argv:
-          - docker
+          - "{{ vllm_container_cli }}"
           - exec
           - "{{ vllm_container_name }}-ray"
           - python
@@ -120,7 +146,8 @@
   when: vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'
 
 - name: Wait for the vLLM API to accept requests
-  # Model load can take minutes (weights + CUDA graphs); 60 x 10s retries.
+  # Model load can take minutes (weights + CUDA graphs); on a first run it
+  # also includes the HF download, so the retries are configurable.
   ansible.builtin.command:
     argv:
       - curl
@@ -130,7 +157,7 @@
       - http://127.0.0.1:{{ vllm_port }}/health
   register: vllm_health
   until: vllm_health.rc == 0
-  retries: 60
+  retries: "{{ vllm_health_wait_retries }}"
   delay: 10
   changed_when: false
   when: vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'

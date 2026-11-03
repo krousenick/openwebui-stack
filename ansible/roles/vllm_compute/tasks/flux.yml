@@ -186,7 +186,7 @@
 
 - name: Wait for the flux APIs to accept requests
   # vllm serve /health reports ok once the model is loaded; a real FLUX.1
-  # model takes minutes on first download, so 60 x 10s retries.
+  # model takes minutes on first download, so the retries are configurable.
   ansible.builtin.command:
     argv:
       - curl
@@ -196,7 +196,7 @@
       - http://127.0.0.1:{{ flux_item.port }}/health
   register: vllm_flux_health
   until: vllm_flux_health.rc == 0
-  retries: 60
+  retries: "{{ vllm_flux_health_wait_retries | default(vllm_health_wait_retries) }}"
   delay: 10
   changed_when: false
   loop: "{{ vllm_flux_effective_models | default([]) }}"

@@ -51,6 +51,16 @@
       register: vllm_zone_source
       changed_when: true
 
+    - name: List zone services
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - --zone=vllm-cluster
+          - --list-services
+      register: vllm_zone_services
+      changed_when: false
+
     - name: List zone ports
       ansible.builtin.command:
         argv:
@@ -60,6 +70,21 @@
           - --list-ports
       register: vllm_zone_ports
       changed_when: false
+
+    # Binding a source routes ALL traffic from that subnet into the zone,
+    # not just the listed ports. The zone therefore has to admit SSH
+    # explicitly, or the management host(s) in the source subnet lose shell
+    # access to the node the moment the zone reloads.
+    - name: Admit SSH in the vllm-cluster zone
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - --zone=vllm-cluster
+          - --add-service=ssh
+      when: "'ssh' not in vllm_zone_services.stdout.split()"
+      register: vllm_zone_ssh
+      changed_when: true
 
     - name: Open vLLM API and Ray cluster ports
       ansible.builtin.command:
@@ -86,5 +111,5 @@
         cmd: firewall-cmd --reload
       when: >-
         vllm_zone_create is changed or vllm_zone_source is changed
-        or vllm_fw_ports is changed
+        or vllm_zone_ssh is changed or vllm_fw_ports is changed
       changed_when: true

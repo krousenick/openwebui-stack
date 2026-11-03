@@ -1,0 +1,20 @@
+---
+# Remote-node inventory for testing the vllm_compute role against the real
+# GPU node node-user@GPU_NODE_IP (Fedora 44, RTX 4090), reached through the
+# photon bastion. Ansible runs ON photon (STACK_HOST_IP, the stack host),
+# which has direct SSH to the node; nothing else can reach it.
+#
+# Connection: photon's root key authenticates node-user on the node (the
+# node's authorized_keys already carries the bastion's key). The node user
+# has passwordless sudo, so become: true needs no become password.
+#
+# See group_vars/vllm_compute/vars.yml for the test configuration and
+# run.sh for the controller-side workflow.
+all:
+  children:
+    vllm_compute:
+      hosts:
+        vllm-node-01:
+          ansible_host: GPU_NODE_IP
+          ansible_user: node-user
+          vllm_ray_head: true

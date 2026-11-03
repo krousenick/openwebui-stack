@@ -38,11 +38,23 @@
 
 vllm_deployment_mode: ray
 
+# Container CLI the launch scripts and systemd units drive. 'docker' keeps
+# the original behavior; 'podman' swaps the binary, drops the docker.service
+# requirement (podman is daemonless), and the docker-exec-based Ray health
+# check for podman-exec. The target node must have the chosen CLI installed
+# (the prerequisites role installs it when prerequisites_install_missing).
+vllm_container_cli: docker
+
+# Rootful podman storage graphroot when vllm_container_cli is podman. The
+# remote node keeps all data under /home (its /var is small); set this per
+# group_vars. Only applied when it differs from the current value.
+vllm_podman_storage_root: /var/lib/containers/storage
+
 vllm_image: "vllm/vllm-openai:latest"
 vllm_container_name: vllm
 
 # Model to serve. An HF repo id or an absolute path present on every node.
-vllm_model: "meta-llama/Llama-3.1-8B-Instruct"
+vllm_model: "Qwen/Qwen3.8-Flash-Next-FP8"
 
 # Model id LiteLLM exposes. Defaults to the repo id's basename.
 vllm_served_model_name: "{{ vllm_model.split('/')[-1] }}"
@@ -97,9 +109,17 @@ vllm_ray_max_worker_port: 15000
 vllm_ray_head_address: ""
 
 # Networking. Ray traffic is unauthenticated and can execute arbitrary
-# code, so the firewalld zone only admits the compute segment.
+# code, so the firewalld zone only admits the compute segment. Binding the
+# source routes ALL of that subnet's traffic into the zone, so the zone
+# also admits the ssh service (see tasks/firewall.yml) to keep management
+# access from the subnet working.
 vllm_manage_firewall: true
 vllm_firewall_zone_source: "STACK_HOST_CIDR"
+
+# /health wait budget. The role waits this many 10s attempts for the API;
+# a first run includes the HF model download, so raise it per group_vars
+# (e.g. 180 for a ~15GB model on a slow uplink).
+vllm_health_wait_retries: 60
 
 # Systemd unit names for the primary-model services.
 vllm_ray_service_name: vllm-ray
@@ -113,9 +133,10 @@ vllm_install_dir: /opt/vllm
 # 16g matches the default the vllm docs recommend for distributed serving.
 vllm_shm_size: "16g"
 
-# docker run GPU flag. --gpus all needs the NVIDIA container toolkit with a
-# real driver (CDI device discovery). Hosts without real GPUs (the test rig
-# stub runtime) can override with --runtime=nvidia.
+# Container CLI GPU injection. With docker, --gpus all needs the NVIDIA
+# container toolkit configured for the docker daemon. With podman, prefer
+# CDI (--device nvidia.com/gpu=all) - override in group_vars when the node
+# registers a compatible nvidia runtime instead.
 vllm_container_gpu_flag: "--gpus all"
 
 # Number of GPUs per node. Autodetected from nvidia-smi when 0; the role

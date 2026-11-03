@@ -105,10 +105,12 @@
       else (vllm_pipeline_parallel_size | int) }}"
 
 - name: Collect vLLM endpoint hosts
+  # extract() yields None for hosts whose vllm_host_ip fact has not been set
+  # yet; map('string') stringifies and select('string') keeps the values,
+  # dropping the unset ones.
   ansible.builtin.set_fact:
     vllm_endpoints: "{{ groups['vllm_compute'] | default([])
       | map('extract', hostvars, 'vllm_host_ip')
-      | map('ansible.builtin.string')
       | select('string')
       | list }}"
   when: vllm_deployment_mode == 'standalone'

@@ -1,25 +1,29 @@
 [Unit]
 Description=vLLM OpenAI-compatible inference server
 {% if vllm_deployment_mode == 'ray' %}
-After=network-online.target docker.service {{ vllm_ray_service_name }}.service
+After=network-online.target{% if vllm_container_cli == 'docker' %} docker.service{% endif %} {{ vllm_ray_service_name }}.service
 Wants=network-online.target
-Requires=docker.service {{ vllm_ray_service_name }}.service
+Requires={% if vllm_container_cli == 'docker' %}docker.service {% endif %}{{ vllm_ray_service_name }}.service
 {% else %}
-After=network-online.target docker.service
+After=network-online.target{% if vllm_container_cli == 'docker' %} docker.service{% endif %}
 Wants=network-online.target
+{% if vllm_container_cli == 'docker' %}
 Requires=docker.service
+{% endif %}
 {% endif %}
 
 [Service]
 Type=simple
 User=root
 Group=root
+{% if vllm_container_cli == 'docker' %}
 ExecStartPre=/bin/bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
+{% endif %}
 ExecStart={{ vllm_install_dir }}/vllm-serve.sh
-# --rm does not fire when systemd SIGTERMs the docker client; remove the
+# --rm does not fire when systemd SIGTERMs the {{ vllm_container_cli }} client; remove the
 # container explicitly so a restarted unit reuses the name cleanly.
-ExecStop=/bin/bash -c 'docker rm -f {{ vllm_container_name }}-serve || true'
-ExecStopPost=/bin/bash -c 'docker rm -f {{ vllm_container_name }}-serve || true'
+ExecStop=/bin/bash -c '{{ vllm_container_cli }} rm -f {{ vllm_container_name }}-serve || true'
+ExecStopPost=/bin/bash -c '{{ vllm_container_cli }} rm -f {{ vllm_container_name }}-serve || true'
 Restart=always
 RestartSec=15
 TimeoutStartSec=0

@@ -1,19 +1,23 @@
 [Unit]
 Description=vLLM Flux image-generation server ({{ flux_item.name }})
-After=network-online.target docker.service
+After=network-online.target{% if vllm_container_cli == 'docker' %} docker.service{% endif %}
 Wants=network-online.target
+{% if vllm_container_cli == 'docker' %}
 Requires=docker.service
+{% endif %}
 
 [Service]
 Type=simple
 User=root
 Group=root
+{% if vllm_container_cli == 'docker' %}
 ExecStartPre=/bin/bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
+{% endif %}
 ExecStart={{ vllm_install_dir }}/{{ flux_item.name }}/vllm-flux.sh
-# --rm does not fire when systemd SIGTERMs the docker client; remove the
+# --rm does not fire when systemd SIGTERMs the {{ vllm_container_cli }} client; remove the
 # container explicitly so a restarted unit reuses the name cleanly.
-ExecStop=/bin/bash -c 'docker rm -f {{ vllm_container_name }}-flux-{{ flux_item.name }} || true'
-ExecStopPost=/bin/bash -c 'docker rm -f {{ vllm_container_name }}-flux-{{ flux_item.name }} || true'
+ExecStop=/bin/bash -c '{{ vllm_container_cli }} rm -f {{ vllm_container_name }}-flux-{{ flux_item.name }} || true'
+ExecStopPost=/bin/bash -c '{{ vllm_container_cli }} rm -f {{ vllm_container_name }}-flux-{{ flux_item.name }} || true'
 Restart=always
 RestartSec=15
 TimeoutStartSec=0

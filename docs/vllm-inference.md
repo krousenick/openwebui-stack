@@ -22,7 +22,7 @@ Both render into `litellm/vllm-models.yaml` (see [Register with LiteLLM](#regist
 | `dnf` package management | `prerequisites` role base-package task; install guidance in fail messages |
 | **`firewalld`** (`firewall-cmd`) | `vllm_compute` firewall tasks (`tasks/firewall.yml`) |
 | `systemd` | the `vllm-ray`, `vllm-serve`, `vllm-flux-*` units |
-| Docker Engine + compose plugin, NVIDIA driver + container toolkit | container runtime; checked by `prerequisites`, installed per-node (see [Setup](#setup)) |
+| Docker Engine + compose plugin **or podman**, NVIDIA driver + container toolkit | container runtime; checked by `prerequisites` (installed per-node by hand, or by the role with `prerequisites_install_missing: true`) |
 
 | OS | Status | Notes |
 |---|---|---|
@@ -64,7 +64,7 @@ The [Setup](#setup) steps and every install command in the role's fail messages 
 
 Key points:
 
-- **The compute nodes are separate hosts from the Open WebUI stack.** Containers run under **systemd** (`vllm-ray`, `vllm-serve`, `vllm-flux-<name>`), not docker compose. Each unit runs a generated launch script from `vllm_install_dir` (default `/opt/vllm`) that does `docker run` with the rendered flags.
+- **The compute nodes are separate hosts from the Open WebUI stack.** Containers run under **systemd** (`vllm-ray`, `vllm-serve`, `vllm-flux-<name>`), not docker compose. Each unit runs a generated launch script from `vllm_install_dir` (default `/opt/vllm`) that does `{{ vllm_container_cli }} run` with the rendered flags — Docker or podman per node group; podman nodes drop the `docker.service` requirement (podman is daemonless).
 - **All servers share one Hugging Face cache** (`vllm_hf_cache_dir`, default `/mnt/data1/huggingface`), so each node downloads a model once even when the primary model and several flux servers need weights.
 - **The unit files handle container lifecycle**: `--rm` does not fire when systemd stops the `docker run` client, so every unit has `ExecStop`/`ExecStopPost` that removes the container explicitly, plus `KillMode=control-group`. This makes `systemctl restart` clean (no leftover container holding the name).
 - **Requests come through LiteLLM**, which authenticates with `VLLM_API_KEY`. Ray traffic itself is unauthenticated and can execute arbitrary code — the `vllm-cluster` firewalld zone restricts it to the compute CIDR (`vllm_firewall_zone_source`).
@@ -77,7 +77,7 @@ Key points:
 | `tasks/main.yml` | Task flow: validate config → detect GPUs → resolve topology → firewall → services → flux → LiteLLM render (in that order). |
 | `tasks/services.yml` | Primary-model scripts, units, startup, health waits. |
 | `tasks/flux.yml` | Flux list merge/validation, per-model scripts and units, cleanup of removed models, health waits. |
-| `tasks/firewall.yml` | Creates the `vllm-cluster` firewalld zone, restricts to `vllm_firewall_zone_source`, opens the pinned Ray + API + flux ports. |
+| `tasks/firewall.yml` | Creates the `vllm-cluster` firewalld zone, restricts to `vllm_firewall_zone_source`, admits the `ssh` service (source binding routes ALL subnet traffic into the zone — without it management SSH is cut off), opens the pinned Ray + API + flux ports. |
 | `tasks/litellm_registration.yml` | Renders `litellm/vllm-models.yaml` in the repo (delegated to localhost). |
 | `templates/vllm-serve.sh.j2` | `vllm serve` launch script with the rendered parallelism flags. |
 | `templates/ray-start.sh.j2` | Ray daemon launch script (head/worker). |
@@ -154,7 +154,9 @@ Per-entry keys (all optional except `model`; unset keys take the `vllm_flux_defa
 
 ### 1. Prepare each node (one-time, outside the role)
 
-Per Fedora node — the role checks these but deliberately does not install them (see the fail messages in `roles/prerequisites/tasks/main.yml`):
+Per Fedora node — with the default `prerequisites_install_missing: false` the role checks these and fails fast with guidance; set `prerequisites_install_missing: true` in the node group's group_vars and the `prerequisites` role installs the container CLI, the NVIDIA container toolkit, and generates the CDI spec instead:
+
+**Docker nodes:**
 
 ```bash
 dnf install docker docker-compose nvidia-container-toolkit akmod-nvidia xorg-x11-drv-nvidia-cuda
@@ -162,10 +164,18 @@ systemctl enable --now docker
 nvidia-ctk runtime configure --runtime=docker && systemctl restart docker
 ```
 
+**Podman nodes** (daemonless; GPU injection uses CDI, so only the toolkit + a generated spec are needed):
+
+```bash
+dnf install podman nvidia-container-toolkit akmod-nvidia xorg-x11-drv-nvidia-cuda
+nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml
+```
+
 - `docker-compose` is the compose plugin package on Fedora (Photon: `tdnf install docker docker-compose`).
 - The NVIDIA driver (`akmod-nvidia` builds the kmod on next boot; `xorg-x11-drv-nvidia-cuda` adds CUDA).
-- `nvidia-ctk runtime configure` registers the `nvidia` runtime Docker uses for `--gpus all`.
-- Put a large data volume at `/mnt/data1` — the HF cache (`vllm_hf_cache_dir`) lives there. Pre-download big models with `huggingface-cli download <repo>` so first serve does not download on every node.
+- Docker nodes run `nvidia-ctk runtime configure` to register the `nvidia` runtime `--gpus all` needs; podman nodes use `--device nvidia.com/gpu=all` (set `vllm_container_gpu_flag` accordingly), which resolves through the CDI spec.
+- Rootful podman defaults its image store to `/var/lib/containers/storage`; when `/var` is small, set `vllm_podman_storage_root` (the role rewrites `/etc/containers/storage.conf`).
+- Put a large data volume where `vllm_hf_cache_dir` points — pre-download big models with `huggingface-cli download <repo>` so first serve does not download on every node.
 
 ### 2. Inventory
 
@@ -233,6 +243,8 @@ The models then appear in Open WebUI's model dropdown.
 ### Security notes
 
 - Ray traffic is unauthenticated and can execute arbitrary code: keep `vllm_firewall_zone_source` limited to the compute segment and always set `VLLM_API_KEY`.
+- The zone source binding is greedy: firewalld routes every packet from that subnet into `vllm-cluster`, so the role admits `ssh` there. If you remove that task or swap the zone's source, management hosts in the subnet lose SSH to the node on the next reload — recover from the node's console.
+- A first run pulls the model from Hugging Face before `/health` passes; the wait is `vllm_health_wait_retries` × 10s (default 60). Raise it in group_vars for slow links or large models, or pre-download with `huggingface-cli download`.
 - Model weights must exist at the same path or HF id on every node; pin the same vLLM image version cluster-wide.
 
 ---
@@ -248,3 +260,12 @@ bash tests/vllm-rig/run.sh check     # rerun; must report zero changes
 ```
 
 The rig exercises: prerequisites fail-fast, Ray cluster formation, `/health` waits, firewall zone idempotency, multi-model flux deploy, model-removal cleanup, and idempotency.
+
+`ansible/tests/vllm-remote/` runs the role against a **real remote GPU node** (`node-user@GPU_NODE_IP`, Fedora 44, RTX 4090, podman), reached only from the photon bastion, so **ansible runs on photon**. It exercises the podman path end to end: `prerequisites_install_missing: true` installs the NVIDIA container toolkit and generates the CDI spec, rootful podman storage moves under `/home/node-user` (`vllm_podman_storage_root`), and the node serves `Qwen/Qwen2.5-7B-Instruct` standalone on port 8000. From the repo root (on the Mac):
+
+```bash
+bash ansible/tests/vllm-remote/run.sh inference  # sync to photon, run the playbook there
+bash ansible/tests/vllm-remote/run.sh check     # rerun; must report zero changes
+```
+
+The script itself runs on the Mac and shells into photon via the OrbStack fedora VM (which holds the bastion key); photon then SSHes to the node as `node-user` with passwordless sudo.

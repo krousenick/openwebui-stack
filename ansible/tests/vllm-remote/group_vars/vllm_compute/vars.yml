@@ -1,0 +1,51 @@
+---
+# Test configuration for the remote GPU node (tests/vllm-remote). Overrides
+# the production values in group_vars/vllm_compute/vars.yml, which stay
+# untouched for the real cluster.
+#
+# Node: node-user@GPU_NODE_IP, Fedora 44, single RTX 4090 (24GB), podman
+# 5.8.9, firewalld running, SELinux permissive. All data lives under
+# /home/node-user: the node has no /mnt/data1 and its /var is small.
+
+# Ansible (running on photon) installs missing pieces on this node: podman
+# is present but the NVIDIA container toolkit / CDI spec is not.
+prerequisites_install_missing: true
+prerequisites_check_nvidia: true
+prerequisites_container_cli: podman
+
+# Podman, not docker. GPU injection via CDI (--device nvidia.com/gpu=all
+# consumes the spec nvidia-ctk generates in the prerequisites role).
+vllm_container_cli: podman
+vllm_container_gpu_flag: "--device nvidia.com/gpu=all"
+
+# All node data under /home/node-user (396G free there; /var has 13G).
+# Rootful podman storage moved off the small /var onto the home volume.
+vllm_podman_storage_root: /home/node-user/vllm/podman-storage
+vllm_hf_cache_dir: /home/node-user/vllm/huggingface
+
+# Single node: standalone replica (ray pipeline sharding needs a multi-node
+# cluster). TP=1 matches the single GPU; LiteLLM gets one endpoint.
+vllm_deployment_mode: standalone
+vllm_tensor_parallel_size: 1
+vllm_pipeline_parallel_size: 1
+
+# Ungated 7B model that fits the 24GB card; no HF_TOKEN needed.
+vllm_model: Qwen/Qwen2.5-7B-Instruct
+vllm_max_model_len: 32768
+vllm_gpu_memory_utilization: 0.90
+
+# The compute segment photon reaches the node on. The API port opens in the
+# vllm-cluster zone for LiteLLM; Ray ports stay open for later ray-mode runs.
+vllm_firewall_zone_source: "STACK_HOST_CIDR"
+vllm_manage_firewall: true
+
+# One 4090 cannot co-run the primary model and a flux server; the single-GPU
+# flux cleanup path is covered by the rig tests instead.
+vllm_flux_enabled: false
+
+# First run pulls the ~10GB vLLM image and the ~15GB model weights before
+# /health can pass; 10 minutes was not enough. 180 x 10s = 30 minutes.
+vllm_health_wait_retries: 180
+
+# Supply via the controller environment (VLLM_API_KEY) or override here.
+vllm_api_key: local-vllm-key
