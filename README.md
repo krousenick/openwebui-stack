@@ -678,6 +678,8 @@ Ray traffic is unauthenticated and can execute arbitrary code; keep `vllm_firewa
 
 The role deploys Prometheus exporters on every compute node (`vllm_monitoring_enabled`, default on): **node-exporter** (host metrics, port 9100) and the **flavor-correct GPU exporter** — dcgm-exporter (9400) for datacenter GPUs, the nvidia-smi exporter (9835) for GeForce cards, auto-detected via `nvidia-smi`. Ports already served by host rpms are reused, not double-deployed. Podman nodes run them as systemd quadlets, docker nodes via `docker_container` restart policy. The role injects inventory-templated scrape jobs into `otel/config.yaml` (GPU job, `remote-node`, `remote-vllm`), and templates a `vLLM Remote Nodes` Grafana dashboard into `grafana/provisioning/dashboards/json/` whose GPU panels query both DCGM and nvidia_smi metric families. The run also registers the served model with LiteLLM directly (`POST /model/new`, needs `LITELLM_MASTER_KEY` on the controller) — no litellm restart needed. After a run, `docker compose --profile monitoring restart otel-collector lgtm` picks up new scrape jobs and the dashboard. Hardware firewall: allow management → node TCP 9100, 9400 (or 9835 for GeForce nodes), 8000.
 
+**vLLM log shipping** (`vllm_log_shipping_enabled`, default on): the `vllm-serve` systemd unit runs podman without detached logs, so vLLM output lands in journald. Each node runs a `vllm-log-shipper.service` unit (Grafana Alloy container, `/opt/vllm/vllm-log-shipper.alloy`) that reads `vllm-serve.service` journal entries (`loki.source.journal`) and pushes them to the controller's Loki push API (`vllm_loki_push_url`, built from `vllm_controller_host` + `vllm_loki_push_port`; the controller host resolves from the `openwebui` inventory group's `ansible_host`, with an explicit override for inventories that define only `vllm_compute`). The controller publishes the lgtm service's port 3100 on `STACK_HOST_IP` (`.env`, rendered from `ansible_default_ipv4`) — Docker's DNAT routes inbound traffic past the host's INPUT-chain firewall, the same mechanism Traefik's 443 uses. In Grafana the logs carry `service_name`/`container_name` = `vllm-serve` plus a per-node `node` label; the `vLLM Remote Nodes` dashboard has a **vLLM Serve Logs** panel with a `log_filter` textbox variable. Node clocks must be NTP-synced: Loki rejects entries stamped outside its acceptance window ("timestamp too new" / "entry too far behind").
+
 ### Sync Ollama models
 
 There is no `sync-llama-models` script. `./scripts/sync-ollama-models.sh` registers models that are already installed in Ollama with the LiteLLM proxy. It does not pull models, start Ollama, edit `litellm/config.yaml`, or restart containers. LiteLLM has `store_model_in_db` enabled, so each new model is stored through `POST /model/new` and is available without a restart. Open WebUI then lists it under the registered name.
@@ -763,11 +765,11 @@ The stack includes several pre-configured dashboards:
    - Service dependencies
    - Error tracking
 
-7. **nvidia-dcgm-dashboard.json** - GPU metrics (if GPU profile enabled)
-   - GPU memory usage
-   - Compute utilization
-   - Temperature monitoring
-   - Power consumption
+7. **nvidia-dcgm-dashboard.json** - Local GPU metrics (Tesla P4 on the Photon host)
+   - Requires the `gpu` profile (`docker compose --profile gpu up -d nvidia-gpu-exporter`), which runs `nvidia/dcgm-exporter` with the NVIDIA runtime, and the `nvidia-gpu` scrape job in `otel/config.yaml` (enabled)
+   - GPU memory usage, compute utilization, temperature, power, energy, SM clocks, tensor-core utilization
+   - Panels filter on the lowercase `hostname` label that dcgm-exporter emits; the `host` and `gpu` variables resolve from `DCGM_FI_DEV_GPU_TEMP`
+   - Remote compute nodes have their own GPU panels in `vllm-nodes-dashboard.json` (flavor-correct: DCGM or nvidia_smi)
 
 8. **tokenization-dashboard.json** - Token counts and throughput
    - LiteLLM input, output, and total tokens per requested model, spend per second, and proxy request/latency percentiles from the prometheus callback

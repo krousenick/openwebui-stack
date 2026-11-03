@@ -549,6 +549,13 @@ services:
       # interpolate environment variables; the Discord webhook URL comes from
       # the deployed .env (rendered by the ansible playbook).
       GRAFANA_DISCORD_WEBHOOK_URL: "${GRAFANA_DISCORD_WEBHOOK_URL:-}"
+    ports:
+      # Loki push API for the remote compute nodes. Docker-published ports
+      # DNAT past the host firewall INPUT chain (same as Traefik's 443), so
+      # nodes on the LAN can push logs here. Binds to this host's primary
+      # IPv4, rendered into STACK_HOST_IP by the playbook (env.j2) and
+      # interpolated here, so no literal IP lives in the file.
+      - "${STACK_HOST_IP:?error}:3100:3100"
     volumes:
       - lgtm_data:/data
       - ./grafana/provisioning:/otel-lgtm/grafana/conf/provisioning:ro

@@ -40,3 +40,12 @@
     daemon_reload: true
   loop: "{{ vllm_monitoring_deploy | default([]) }}"
   when: vllm_container_cli == 'podman'
+
+- name: Restart vllm log shipper
+  ansible.builtin.systemd:
+    name: vllm-log-shipper
+    state: restarted
+    daemon_reload: true
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_log_shipping_enabled | bool

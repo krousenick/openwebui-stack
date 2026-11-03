@@ -1,0 +1,23 @@
+// Managed by Ansible (role: vllm_compute). Ships vllm-serve journald logs
+// to the controller's Loki push API.
+//
+// The vllm-serve unit logs through journald (podman run inherits the unit's
+// journal), so loki.source.journal with a _SYSTEMD_UNIT match is the only
+// reader needed - no docker socket or file tailing.
+
+loki.source.journal "vllm" {
+  matches = "_SYSTEMD_UNIT=vllm-serve.service"
+  max_age = "12h"
+  labels = {
+    "service_name"    = "vllm-serve",
+    "container_name" = "vllm-serve",
+    "node"           = "{{ vllm_host_ip }}",
+  }
+  forward_to = [loki.write.controller.receiver]
+}
+
+loki.write "controller" {
+  endpoint {
+    url = "{{ vllm_loki_push_url }}"
+  }
+}

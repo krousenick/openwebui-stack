@@ -317,3 +317,25 @@ vllm_monitoring_exporters: "{{ [{'name': 'vllm-node-exporter', 'image': vllm_nod
 # Deployment: podman nodes get a systemd quadlet per exporter (systemd owns
 # the lifecycle; units are <name>-container.service); docker nodes use
 # community.docker.docker_container with restart_policy.
+
+# ===========================================================================
+# Log shipping: vllm-serve logs land in journald (the systemd unit runs the
+# podman container). A Grafana Alloy container (vllm-log-shipper.service)
+# tails the journal for vllm-serve.service entries and pushes them to the
+# controller's Loki push API, published on the controller's management IP
+# (docker-compose lgtm service, host port 3100). Deployed when
+# vllm_monitoring_enabled is true; vllm-serve logs then appear in Grafana
+# with service_name/container_name = vllm-serve.
+# ===========================================================================
+vllm_log_shipping_enabled: true
+vllm_alloy_image: "docker.io/grafana/alloy:latest"
+
+# Controller (stack host) address for the Loki push API. Resolved from the
+# openwebui group in the inventory; the fallback covers inventories that
+# define only vllm_compute (e.g. tests/vllm-remote), where group_vars must
+# set vllm_controller_host explicitly.
+vllm_controller_host: "{{ hostvars[groups['openwebui'] | first]['ansible_host']
+  if (groups['openwebui'] | default([]) | length > 0) else '127.0.0.1' }}"
+vllm_loki_push_port: 3100
+vllm_loki_push_url: "http://{{ vllm_controller_host }}:{{ vllm_loki_push_port }}/loki/api/v1/push"
+

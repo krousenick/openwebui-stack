@@ -1,0 +1,17 @@
+[Unit]
+# Managed by Ansible (role: vllm_compute). Ships vllm-serve journald logs
+# to the controller's Loki (Grafana) push API.
+Description=vLLM log shipper (Grafana Alloy)
+Wants=network-online.target
+After=network-online.target vllm-serve.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/podman pull --quiet {{ vllm_alloy_image }}
+ExecStart=/bin/bash -c '/usr/bin/podman run --rm --name vllm-log-shipper --network host -v /var/log/journal:/var/log/journal:ro -v /etc/machine-id:/etc/machine-id:ro -v /opt/vllm/vllm-log-shipper.alloy:/etc/alloy/config.alloy:ro {{ vllm_alloy_image }} run --server.http.listen-addr=0.0.0.0:12345 /etc/alloy/config.alloy'
+ExecStop=/bin/bash -c 'podman rm -f vllm-log-shipper || true'
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

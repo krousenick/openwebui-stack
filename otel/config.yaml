@@ -16,15 +16,16 @@ receivers:
               labels:
                 job: "node"
 
-        # NVIDIA GPU Exporter (local node). The Photon host has no NVIDIA GPU;
-        # GPU metrics come from the remote-* jobs injected by the vllm_compute
-        # role. Uncomment if a local GPU exporter is ever deployed.
-        # - job_name: "nvidia-gpu"
-        #   scrape_interval: 15s
-        #   static_configs:
-        #     - targets: ["nvidia-gpu-exporter:9400"]
-        #       labels:
-        #         job: "nvidia-gpu"
+        # NVIDIA GPU Exporter (local Tesla P4; the `gpu` profile runs the
+        # nvidia/dcgm-exporter container with the NVIDIA runtime). GPU
+        # metrics for the remote compute nodes come from the remote-* jobs
+        # injected by the vllm_compute role.
+        - job_name: "nvidia-gpu"
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["nvidia-gpu-exporter:9400"]
+              labels:
+                job: "nvidia-gpu"
 
         # LiteLLM token counts, spend, and request latency.
         # /metrics requires the proxy master key.

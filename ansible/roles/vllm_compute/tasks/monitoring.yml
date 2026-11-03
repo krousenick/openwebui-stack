@@ -250,6 +250,47 @@
   become: false
   when: vllm_monitoring_enabled | bool
 
+- name: Render the vLLM log shipper Alloy config
+  # vllm-serve logs live in journald; loki.source.journal reads them and
+  # loki.write pushes to the controller's published Loki endpoint.
+  ansible.builtin.template:
+    src: vllm-log-shipper.alloy.j2
+    dest: /opt/vllm/vllm-log-shipper.alloy
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_log_shipping_enabled | bool
+  notify: Restart vllm log shipper
+
+- name: Deploy the vLLM log shipper service
+  # One systemd unit per node running an Alloy container bound to the host
+  # network (journal + machine-id mounts). Podman and docker nodes both use
+  # this unit; the image reference honors vllm_alloy_image.
+  ansible.builtin.template:
+    src: vllm-log-shipper.service.j2
+    dest: /etc/systemd/system/vllm-log-shipper.service
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_log_shipping_enabled | bool
+  notify:
+    - Reload systemd
+    - Restart vllm log shipper
+
+- name: Enable the vLLM log shipper service
+  ansible.builtin.systemd:
+    name: vllm-log-shipper
+    enabled: true
+    state: started
+    daemon_reload: true
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_log_shipping_enabled | bool
+
 - name: Point the operator at the dashboard and collector restart
   ansible.builtin.debug:
     msg:

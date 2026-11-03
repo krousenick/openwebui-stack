@@ -103,7 +103,8 @@
 - name: Open the aux API port in the cluster firewall
   # Same vllm-cluster zone the primary model uses; the firewalld module is
   # idempotent, so reruns with unchanged ports report no change. Only the
-  # ports of entries placed on this node open here.
+  # ports of entries placed on this node open here. Skipped when firewalld
+  # is not running (the primary firewall block has the same gate).
   ansible.posix.firewalld:
     zone: vllm-cluster
     port: "{{ aux_item.port }}/tcp"
@@ -113,6 +114,7 @@
   when:
     - vllm_aux_enabled | bool
     - vllm_manage_firewall | bool
+    - vllm_firewalld_state.stdout | default('') | trim == 'running'
   loop: "{{ vllm_aux_local_models | default([]) }}"
   loop_control:
     loop_var: aux_item

@@ -34,28 +34,31 @@ vllm_deployment_mode: standalone
 vllm_tensor_parallel_size: 1
 vllm_pipeline_parallel_size: 1
 
-# 27B dense hybrid-attention model on a single 24GB RTX 4090, full native
-# 262144 context. Memory plan (verified against the model card + vLLM
-# recipe page recipes.vllm.ai/Qwen/Qwen3.8-27B):
-#   - RedHatAI W4A16 GPTQ-Int4 checkpoint: 19.5GB weights (NVFP4 variants
-#     need Blackwell; this one runs on Ada).
-#   - Hybrid attention: only 16 of 64 layers are full attention (fp8 KV for
-#     the whole 262K window = 8.6GB), but the other 48 linear-attention
-#     layers allocate a per-sequence mamba state pool whose size scales
-#     with --max-num-seqs. Default 256 seqs blew past 24GB (OOM at KV
-#     allocation, observed live: 12.25GiB alloc vs 5.08GiB free).
-#   - --cpu-offload-gb 12 moves 12GB of weights into system RAM (28GB
-#     available), leaving ~7GB weights on GPU + 8.6GB attention KV +
-#     mamba pool for 16 seqs + compile buffers inside the 23.6GB budget.
-#   - --max-num-seqs 16 caps the mamba pool; one 262K-token request still
-#     has the full window (max_model_len is independent of concurrency).
+# 27B dense hybrid-attention model on a single 24GB RTX 4090. Live-tuned
+# against vllm/vllm-openai v0.33.0 on this node (observed, not projected):
+#   - RedHatAI/Qwen3.8-27B-INT4 resolves to Qwen3_5ForConditionalGeneration
+#     (multimodal: a ViT tower loads alongside the LLM).
+#   - --cpu-offload-gb 12 requests 12GB of weights in RAM, but the UVA
+#     offloader only moves ~0.86 units ("Total CPU offloaded parameters:
+#     0.86"); ~19.8GiB of weights stay on the GPU. The full-262K plan
+#     (8.33GiB fp8 KV) therefore OOMs at KV allocation: available KV was
+#     1.81GiB, estimated max context 48608. The crash loop from that run
+#     was ValueError at engine init, not a driver OOM.
+#   - KV cost is 8.33GiB / 262144 tokens = ~33KiB/token (fp8 KV). At
+#     gpu_memory_utilization 0.85 the available KV is 0.85x24.56 - 19.8
+#     = ~1.09GiB, so max_model_len 16384 (0.52GiB KV, 0.57GiB slack for
+#     the mamba pool + prefix cache) fits with margin.
+#   - --max-num-seqs 16 caps the per-sequence mamba state pool (hybrid
+#     attention); 256 default seqs OOMs during profiling (observed live).
 #   - Parsers per the official recipe: qwen3_coder tool-call, qwen3
 #     reasoning. Open WebUI sends tool_choice: "auto", which needs
 #     --enable-auto-tool-choice.
+#   - 0.85 + 0.09 (gatekeeper aux below) = 0.94 of the GPU: vLLM budgets
+#     each server against total memory, so both slices coexist.
 vllm_model: RedHatAI/Qwen3.8-27B-INT4
 vllm_served_model_name: Qwen3.8-27B-INT4
-vllm_max_model_len: 262144
-vllm_gpu_memory_utilization: 0.88
+vllm_max_model_len: 16384
+vllm_gpu_memory_utilization: 0.85
 vllm_extra_args:
   - "--kv-cache-dtype"
   - "fp8"
@@ -80,9 +83,8 @@ vllm_manage_firewall: true
 vllm_flux_enabled: false
 
 # Aux models exercise the hardware-aware placement layer on real hardware:
-# the 27B primary claims 0.88 of the 4090 (21.6GiB) and cpu-offloads 12GB,
-# so the gatekeeper aux must fit in the remaining ~2.9GiB - Qwen3-0.6B at
-# gpu_memory_utilization 0.09 (~2.2GiB), FP16 weights ~1.2GB + small KV.
+# the 27B primary claims 0.85 of the 4090, so the gatekeeper aux gets the
+# remaining 0.09 - Qwen3-0.6B at ~2.2GiB (FP16 weights ~1.2GB + small KV).
 # This is the frigate-gatekeeper pattern: a tiny true/false sub-classifier
 # next to a large analyst model, on one GPU. Explicit port; 0.6B needs no
 # tool-call or reasoning parsers. host is implicit (all = every node).
@@ -112,3 +114,8 @@ vllm_api_key: local-vllm-key
 # FIPS mask (the node boots fips=1; see vllm_mask_fips_flag in defaults).
 vllm_image: "vllm/vllm-openai:latest"
 vllm_mask_fips_flag: true
+
+# Controller (photon stack host) address for the Loki push API. The role
+# default resolves it from the openwebui group, which this test inventory
+# does not define, so set it explicitly here.
+vllm_controller_host: STACK_HOST_IP
