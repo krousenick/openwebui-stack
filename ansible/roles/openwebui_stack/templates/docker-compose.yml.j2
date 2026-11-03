@@ -582,8 +582,12 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_node-exporter
     restart: unless-stopped
     logging: *default-logging
+    # --pid=host so the processes collector sees the host PID namespace.
+    pid: "host"
     volumes:
       - "/:/host:ro"
+      # systemd collector talks to the host D-Bus system bus.
+      - "/var/run/dbus:/var/run/dbus:ro"
     command:
       - --path.rootfs=/host
       - --collector.disable-defaults
@@ -596,6 +600,26 @@ services:
       - --collector.loadavg
       - --collector.filesystem
       - --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
+      # Extra collectors verified working on the Photon VM (the node-exporter
+      # dashboard rows for processes, vmstat, timex, netstat, sockstat, TCP
+      # states, softirqs, systemd and misc depend on them). Not supported by
+      # this VMware guest: hwmon (no /sys/class/hwmon), pressure/PSI (no
+      # /proc/pressure), thermal_zone (no thermal zones).
+      - --collector.processes
+      - --collector.schedstat
+      - --collector.vmstat
+      - --collector.timex
+      - --collector.time
+      - --collector.softnet
+      - --collector.softirqs
+      - --collector.filefd
+      - --collector.entropy
+      - --collector.netstat
+      - --collector.sockstat
+      - --collector.tcpstat
+      - --collector.arp
+      - --collector.dmi
+      - --collector.systemd
     networks:
       - backend
     profiles:

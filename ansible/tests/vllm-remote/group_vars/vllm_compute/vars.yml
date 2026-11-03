@@ -34,64 +34,57 @@ vllm_deployment_mode: standalone
 vllm_tensor_parallel_size: 1
 vllm_pipeline_parallel_size: 1
 
-# 27B dense hybrid-attention model on a single 24GB RTX 4090. Live-tuned
-# against vllm/vllm-openai v0.33.0 on this node (observed, not projected):
-#   - RedHatAI/Qwen3.8-27B-INT4 resolves to Qwen3_5ForConditionalGeneration
-#     (multimodal: a ViT tower loads alongside the LLM).
-#   - --cpu-offload-gb 12 requests 12GB of weights in RAM, but the UVA
-#     offloader only moves ~0.86 units ("Total CPU offloaded parameters:
-#     0.86"); ~19.8GiB of weights stay on the GPU. The full-262K plan
-#     (8.33GiB fp8 KV) therefore OOMs at KV allocation: available KV was
-#     1.81GiB, estimated max context 48608. The crash loop from that run
-#     was ValueError at engine init, not a driver OOM.
-#   - KV cost is 8.33GiB / 262144 tokens = ~33KiB/token (fp8 KV). vLLM
-#     itself reported 1.81GiB available KV at 0.88 (est. max context
-#     48608); at 0.90 that scales to ~2.28GiB -> ~61K tokens possible.
-#     32768 is the setting: Open WebUI's first real chat (system prompt +
-#     tool schemas + history) sent 16385 input tokens and the 16K window
-#     rejected it, so 32K doubles the observed floor with 1.2GiB KV slack.
-#   - Co-running the gatekeeper aux is NOT possible with 32K: the aux's
-#     real footprint measured 3.86GiB (0.12 budget + CUDA context),
-#     leaving 19.74GiB free; the primary's startup check then caps its
-#     utilization at 0.836 -> <1GiB KV. The aux is therefore disabled on
-#     this node and belongs on a compute node with a second GPU (hosts
-#     key).
-#   - --max-num-seqs 16 caps the per-sequence mamba state pool (hybrid
-#     attention); 256 default seqs OOMs during profiling (observed live).
-#   - KV cache offloading to system RAM (this vLLM v0.33 build's native
-#     path: --kv-offloading-size activates it, --kv-offloading-backend
-#     native is the default backend; verified against the installed
-#     image's vllm/config/cache.py). 12GiB CPU KV tier in the ~21GiB free
-#     RAM: the GPU tier still holds the hot 32K window (1.07GiB fp8 KV)
-#     plus spill, so prefill for long prompts stays fast while the total
-#     addressable KV grows well past the GPU budget. The mamba/linear
-#     state pool is NOT offloaded (token-level KV only), so the GPU tier
-#     must still cover --max-num-seqs 16 states.
-#   - Parsers per the official recipe: qwen3_coder tool-call, qwen3
-#     reasoning. Open WebUI sends tool_choice: "auto", which needs
-#     --enable-auto-tool-choice.
-#   - Primary alone at 0.90; no co-running aux (see above).
-vllm_model: RedHatAI/Qwen3.8-27B-INT4
-vllm_served_model_name: Qwen3.8-27B-INT4
-vllm_max_model_len: 32768
+# A/B candidate on a single 24GB RTX 4090: Gemma 4 26B-A4B MoE (25.2B
+# total, 3.8B active, 128 experts/8 routed per token) - the newest
+# generation that fits this card, Apache 2.0 (Google moved Gemma 4 off
+# the old Gemma Terms), image input included (covers the vision-analyst
+# use case on the coding box). Live-tuned against vllm/vllm-openai
+# v0.33.0 on this node; model id, ungated status, and 17.2GB weight
+# total verified by listing the repo's safetensors via the HF API.
+# Third-party AWQ (cyankiwi, 965K downloads, compressed-tensors W4A16):
+# Google publishes no W4A16 vLLM build for the 26B-A4B (only QAT Q4_0
+# GGUF for llama.cpp, per the official recipe which suggests
+# --quantization int8_per_channel_weight_only for vLLM on the raw
+# weights); this AWQ is the community's most-used vLLM-ready 4-bit.
+# Evidence this is a real contender vs Qwen3-Coder-30B (research
+# 2026-11-03, sources recorded in the repo docs):
+#   - Local multi-seed coding bench (3 seeds, real Go test execution):
+#     Gemma 4 26B is the most consistent quantized coder (14/15 on all
+#     seeds, 4.0/10 hard-exam ceiling, quant-insensitive); Qwen3-Coder
+#     30B matches on easy (14/15) at 3.7/10 hard.
+#   - Independent indexes put Qwen3-Coder ahead on raw capability
+#     (SWE-bench ~51.6% class vs Gemma trailing on Codeforces 1718);
+#     Gemma wins on consistency under quantization, vision, and KV cost.
+# Memory plan, all on-GPU, no offloads, ample headroom everywhere:
+#   - AWQ 4-bit weights ~17.2GiB of the 23.6GiB card; 0.90 util reserves
+#     21.2GiB, leaving ~4.0GiB for KV + activations.
+#   - Gemma 4 26B uses sliding-window attention (25 of 30 layers at a
+#     1024-token window; 5 global layers, 2 KV heads @ dim 512):
+#     ~20KiB/token fp16, so vLLM's hybrid KV manager should fit far
+#     more tokens than the Qwen MoE did (~140K+ est vs 114K measured).
+#     fp8 KV halves that again - MEASURE the real line from the logs
+#     before trusting the estimate (every number on this node has been
+#     measured, not projected).
+#   - 64K window kept from the Qwen config: same real-prompt floor
+#     (16385-token Open WebUI prompts), full-repo dumps in one request.
+#   - --max-num-seqs 16 as before; no aux, no flux, no CPU offloads.
+#   - gemma4 tool-call + reasoning parsers (verified present in the
+#     installed vLLM image); Open WebUI sends tool_choice: "auto".
+vllm_model: cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit
+vllm_served_model_name: gemma-4-26b-a4b
+vllm_max_model_len: 65536
 vllm_gpu_memory_utilization: 0.90
 vllm_extra_args:
   - "--kv-cache-dtype"
   - "fp8"
-  - "--cpu-offload-gb"
-  - "12"
   - "--max-num-seqs"
   - "16"
-  - "--kv-offloading-size"
-  - "12"
-  - "--kv-offloading-backend"
-  - "native"
   - "--enforce-eager"
   - "--enable-auto-tool-choice"
   - "--tool-call-parser"
-  - "qwen3_coder"
+  - "gemma4"
   - "--reasoning-parser"
-  - "qwen3"
+  - "gemma4"
 
 # The compute segment photon reaches the node on. The API port opens in the
 # vllm-cluster zone for LiteLLM; Ray ports stay open for later ray-mode runs.
@@ -103,17 +96,17 @@ vllm_manage_firewall: true
 vllm_flux_enabled: false
 
 # Aux models exercise the hardware-aware placement layer on real hardware,
-# but NOT on this node: the 27B primary at 0.90 with a 32K window leaves
-# nothing for a second server (see the memory math above - the measured
-# aux footprint was 3.86GiB and the primary's startup check then refuses
-# 0.88). Disabled here; the rig test (tests/vllm-rig) covers the aux
-# deploy/cleanup paths, and the gatekeeper belongs on a node with a spare
-# GPU via its hosts key when one exists.
+# but NOT on this node: the 30B primary at 0.90 leaves nothing for a second
+# server, and the 31G-RAM box has no headroom for co-running CPU tiers
+# (the lockup lesson). Disabled here; the rig test (tests/vllm-rig) covers
+# the aux deploy/cleanup paths, and the gatekeeper belongs on a node with a
+# spare GPU via its hosts key when one exists.
 vllm_aux_enabled: false
 vllm_aux_models: []
 
-# First run pulls the ~10GB vLLM image and the ~15GB model weights before
-# /health can pass; 10 minutes was not enough. 180 x 10s = 30 minutes.
+# First run pulls the ~18GB GPTQ-Int4 weights before /health can pass
+# (the ~10GB vLLM image is already cached on the node); 180 x 10s = 30
+# minutes covers a slow link.
 vllm_health_wait_retries: 180
 
 # Supply via the controller environment (VLLM_API_KEY) or override here.

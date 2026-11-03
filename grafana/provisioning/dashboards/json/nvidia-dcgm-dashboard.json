@@ -262,7 +262,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum(increase(DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION{hostname=~\"$host\", gpu=~\"$gpu\"}[1h]) / 3600000)",
+          "expr": "sum(increase(DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION_total{hostname=~\"$host\", gpu=~\"$gpu\"}[1h]) / 3600000)",
           "instant": false,
           "interval": "",
           "legendFormat": "Last 1h",
@@ -275,7 +275,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "sum(increase(DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION{hostname=~\"$host\", gpu=~\"$gpu\"}[24h]) / 3600000)",
+          "expr": "sum(increase(DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION_total{hostname=~\"$host\", gpu=~\"$gpu\"}[24h]) / 3600000)",
           "hide": false,
           "instant": false,
           "legendFormat": "Last 24h",
@@ -812,15 +812,16 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE{hostname=~\"$host\", gpu=~\"$gpu\"}",
+          "expr": "DCGM_FI_DEV_DEC_UTIL{hostname=~\"$host\", gpu=~\"$gpu\"}",
           "interval": "",
           "legendFormat": "{{hostname}} - GPU {{gpu}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Tensor Core Utilization",
-      "type": "timeseries"
+      "title": "Decoder Utilization",
+      "type": "timeseries",
+      "description": "DCGM_FI_DEV_DEC_UTIL: decoder utilization. This exporter build does not expose DCGM_FI_PROF_PIPE_TENSOR_ACTIVE."
     },
     {
       "datasource": {
@@ -1115,5 +1116,5 @@
   "timezone": "",
   "title": "NVIDIA DCGM",
   "uid": "stack-nvidia-dcgm",
-  "version": 2
+  "version": 3
 }

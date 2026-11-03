@@ -35,36 +35,20 @@
   when: wsl_command_check.stdout == ""
   register: wsl_install_result
 
-- name: Create .wslconfig for bridged networking
-  ansible.windows.win_file:
-    path: '{{ ansible_user_profile }}\.wslconfig'
-    state: touch
-  when: wsl2_bridged_mode | bool
-
 - name: Configure .wslconfig for bridged networking
-  ansible.windows.win_lineinfile:
-    path: '{{ ansible_user_profile }}\.wslconfig'
-    line: '{{ item }}'
-    create: true
-  when: wsl2_bridged_mode | bool
-  loop:
-    - "[wsl2]"
-    - "networkingMode={{ wsl2_networking_mode }}"
+  # win_copy with explicit content replaces the removed win_lineinfile
+  # (dropped from ansible.windows; the repo previously referenced it). A
+  # single content push is also idempotent, unlike line-append loops.
+  vars:
+    wsl2_config_lines: "{{ ['[wsl2]']
+      + (['networkingMode=' ~ wsl2_networking_mode] if wsl2_bridged_mode | bool else [])
+      + (['memory=' ~ wsl2_memory ~ 'GB'] if wsl2_memory | int > 0 else [])
+      + (['processors=' ~ wsl2_processors] if wsl2_processors | int > 0 else []) }}"
+  ansible.windows.win_copy:
+    dest: '{{ ansible_user_profile }}\.wslconfig'
+    content: "{{ wsl2_config_lines | join('\n') }}"
   register: wslconfig_update
-
-- name: Configure WSL2 memory limit in .wslconfig
-  ansible.windows.win_lineinfile:
-    path: '{{ ansible_user_profile }}\.wslconfig'
-    line: "memory={{ wsl2_memory }}GB"
-    create: true
-  when: wsl2_memory | int > 0
-
-- name: Configure WSL2 processors in .wslconfig
-  ansible.windows.win_lineinfile:
-    path: '{{ ansible_user_profile }}\.wslconfig'
-    line: "processors={{ wsl2_processors }}"
-    create: true
-  when: wsl2_processors | int > 0
+  notify: WSL2 config changed
 
 - name: Check NVIDIA driver version on Windows
   ansible.windows.win_shell: |
