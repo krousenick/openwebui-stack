@@ -224,6 +224,18 @@
                       - "{{ vllm_host_ip }}:{{ vllm_node_exporter_port }}"
                     labels:
                       job: "remote-node"
+      {% if vllm_aux_enabled | default(false) | bool and (vllm_aux_local_models | default([]) | length > 0) %}
+      {% for aux_item in vllm_aux_local_models %}
+              - job_name: "remote-aux-{{ aux_item.name }}"
+                scrape_interval: 15s
+                static_configs:
+                  - targets:
+                      - "{{ vllm_host_ip }}:{{ aux_item.port }}"
+                    labels:
+                      job: "remote-aux-{{ aux_item.name }}"
+                      aux_model: "{{ aux_item.model }}"
+      {% endfor %}
+      {% endif %}
               - job_name: "remote-vllm"
                 scrape_interval: 15s
                 static_configs:

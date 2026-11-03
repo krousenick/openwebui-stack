@@ -269,8 +269,11 @@ model_list:
           quality: 0.7
           cost: 0.3
 
+  {% if litellm_bedrock_models_enabled | default(false) | bool %}
   # AWS Bedrock OSS models. IDs are bedrock-runtime model IDs.
   # Kimi K3 has no in-region ID; us-east-1 uses the US geo profile.
+  # Skipped unless litellm_bedrock_models_enabled is true (they need
+  # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY).
   - model_name: minimax-m2.5
     litellm_params:
       model: bedrock/minimax.minimax-m2.5
@@ -306,6 +309,7 @@ model_list:
       aws_region_name: os.environ/AWS_REGION
     model_info:
       description: "Kimi K3 via AWS Bedrock US geo inference"
+  {% endif %}
 
   # Local llama.cpp Edge Nodes (configured via setup script)
   # Models are dynamically added based on LLAMA_CPP_EDGE_NODES env var

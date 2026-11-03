@@ -73,3 +73,9 @@ keycloak_admin_ip_range: "0.0.0.0/0"
 # containers and Traefik wiring live in docker-compose.yml. Set false in
 # group_vars to skip the wiring.
 playwright_mcp_enabled: true
+
+# AWS Bedrock models in the LiteLLM model_list. Off by default: they need
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (see .env.example) and provision
+# nothing useful without credentials. Set true in group_vars once the AWS
+# keys exist.
+litellm_bedrock_models_enabled: false

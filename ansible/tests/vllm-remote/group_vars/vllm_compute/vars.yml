@@ -45,20 +45,26 @@ vllm_pipeline_parallel_size: 1
 #     1.81GiB, estimated max context 48608. The crash loop from that run
 #     was ValueError at engine init, not a driver OOM.
 #   - KV cost is 8.33GiB / 262144 tokens = ~33KiB/token (fp8 KV). At
-#     gpu_memory_utilization 0.85 the available KV is 0.85x24.56 - 19.8
-#     = ~1.09GiB, so max_model_len 16384 (0.52GiB KV, 0.57GiB slack for
-#     the mamba pool + prefix cache) fits with margin.
+#     gpu_memory_utilization 0.88 the available KV is 0.88x24.56 - 19.8
+#     = ~1.81GiB (the crash run measured exactly this), so max_model_len
+#     32768 (1.07GiB KV) fits with 0.7GiB slack for the mamba pool and
+#     prefix cache. 16384 worked for engine init but Open WebUI's real
+#     prompts (system + history + tool schemas) hit 16385 input tokens
+#     immediately - ContextWindowExceededError on the first chat - so
+#     32768 is the minimum that serves real sessions.
 #   - --max-num-seqs 16 caps the per-sequence mamba state pool (hybrid
 #     attention); 256 default seqs OOMs during profiling (observed live).
 #   - Parsers per the official recipe: qwen3_coder tool-call, qwen3
 #     reasoning. Open WebUI sends tool_choice: "auto", which needs
 #     --enable-auto-tool-choice.
-#   - 0.85 + 0.09 (gatekeeper aux below) = 0.94 of the GPU: vLLM budgets
-#     each server against total memory, so both slices coexist.
+#   - 0.88 (primary) + 0.12 (gatekeeper aux below) = 1.00 of the GPU:
+#     vLLM budgets each server against total memory, so both slices
+#     coexist; the aux starts after the primary and the ordering is
+#     stable because both are systemd units started by the playbook.
 vllm_model: RedHatAI/Qwen3.8-27B-INT4
 vllm_served_model_name: Qwen3.8-27B-INT4
-vllm_max_model_len: 16384
-vllm_gpu_memory_utilization: 0.85
+vllm_max_model_len: 32768
+vllm_gpu_memory_utilization: 0.88
 vllm_extra_args:
   - "--kv-cache-dtype"
   - "fp8"
@@ -83,18 +89,23 @@ vllm_manage_firewall: true
 vllm_flux_enabled: false
 
 # Aux models exercise the hardware-aware placement layer on real hardware:
-# the 27B primary claims 0.85 of the 4090, so the gatekeeper aux gets the
-# remaining 0.09 - Qwen3-0.6B at ~2.2GiB (FP16 weights ~1.2GB + small KV).
-# This is the frigate-gatekeeper pattern: a tiny true/false sub-classifier
-# next to a large analyst model, on one GPU. Explicit port; 0.6B needs no
-# tool-call or reasoning parsers. host is implicit (all = every node).
+# the 27B primary claims 0.85 of the 4090 (~19.5GiB observed), leaving
+# ~4.5GiB. The gatekeeper aux takes 0.12 (~2.9GiB): Qwen3-0.6B needs
+# ~1.4GiB bf16 weights + ~0.4GiB activations + KV; at 4096 context the
+# fp16 KV is ~448MiB, so ~2.2GiB total fits with margin (0.09/8192 failed
+# live: "No available memory for the cache blocks"). --max-num-seqs 64
+# caps activation buffers inside the tiny budget. This is the
+# frigate-gatekeeper pattern: a tiny true/false sub-classifier next to a
+# large analyst model, on one GPU. 0.85+0.12 = 0.97 leaves restart
+# ordering room (vLLM budgets each server against total GPU memory).
 vllm_aux_enabled: true
 vllm_aux_models:
   - name: gatekeeper
     model: Qwen/Qwen3-0.6B
     port: 8010
-    gpu_memory_utilization: 0.09
-    max_model_len: 8192
+    gpu_memory_utilization: 0.12
+    max_model_len: 4096
+    extra_args: ["--max-num-seqs", "64"]
 
 # First run pulls the ~10GB vLLM image and the ~15GB model weights before
 # /health can pass; 10 minutes was not enough. 180 x 10s = 30 minutes.

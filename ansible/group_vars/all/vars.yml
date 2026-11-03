@@ -96,6 +96,11 @@ docker_compose_pull: true
 # search, and the Brave MCP connection.
 brave_search_enabled: true
 
+# AWS Bedrock models in the LiteLLM model_list (MiniMax, Qwen, Kimi). Off
+# unless AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are set in the vault:
+# without credentials the models provision but cannot serve.
+litellm_bedrock_models_enabled: false
+
 # opencode (terminal AI coding agent). Host users who get an opencode
 # install pointed at the LiteLLM proxy. Empty list disables the role.
 opencode_users: []

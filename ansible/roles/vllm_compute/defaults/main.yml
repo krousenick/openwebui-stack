@@ -329,6 +329,10 @@ vllm_monitoring_exporters: "{{ [{'name': 'vllm-node-exporter', 'image': vllm_nod
 # ===========================================================================
 vllm_log_shipping_enabled: true
 vllm_alloy_image: "docker.io/grafana/alloy:latest"
+# How far back each journal reader goes on (re)start. Entries older than
+# Loki's rejection window are dropped anyway; 30m keeps restart backfill
+# cheap while surviving short shipper outages.
+vllm_log_ship_max_age: "30m"
 
 # Controller (stack host) address for the Loki push API. Resolved from the
 # openwebui group in the inventory; the fallback covers inventories that

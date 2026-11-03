@@ -271,6 +271,8 @@ The run renders `litellm/vllm-models.yaml` in the repo: one `model_list` entry f
 
 With `store_model_in_db` enabled on the proxy (the default in this stack), the role **also registers the model directly**: it resolves the litellm container's API from the controller, diffs against `GET /v1/models`, and POSTs each missing endpoint to `/model/new` — no restart needed. Requires `LITELLM_MASTER_KEY` exported on the controller (the same secret in `.env`). Missing key, or litellm not running → registration is skipped with the file snippet as fallback.
 
+The same run **prunes stale vLLM models** from the gateway's model db: any registered model whose `api_base` points at a `vllm_compute` node (`http://<ip>:<port>/v1`) but which this run no longer serves — a retired `vllm_model`, a removed aux entry — is deleted via `POST /model/delete`. Without the prune, removed models linger in every client's model list forever (that is how `Qwen2.5-7B-Instruct` stuck around after the primary was switched). Scope is strict: only db models with a vLLM `api_base` are touched; config-declared models (gemini, bedrock, `auto`/`adaptive`, `voice-assistant`) have no `api_base` and are never deleted.
+
 Merge the snippet into `model_list` in `litellm/config.yaml` on the stack host for file-based deployments and reload:
 
 ```bash

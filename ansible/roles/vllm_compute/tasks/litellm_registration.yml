@@ -145,6 +145,69 @@
     - aux_pair.0.served_model_name not in (vllm_litellm_models.json.data | default([])
       | map(attribute='id') | list)
 
+- name: Fetch the full model info for stale vLLM cleanup
+  # /v1/models lists ids only; /model/info carries litellm_params with the
+  # api_base, which is how db models registered by this role are told apart
+  # from config-declared ones (gemini, bedrock, routers have no api_base).
+  ansible.builtin.uri:
+    url: "{{ vllm_litellm_endpoint.stdout }}/model/info"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') }}"
+    status_code: [200]
+    return_content: true
+  register: vllm_litellm_model_info
+  delegate_to: localhost
+  run_once: true
+  become: false
+  no_log: true
+  when:
+    - vllm_litellm_endpoint.stdout != 'LITELLM_NOT_RUNNING'
+    - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
+
+- name: Prune vLLM models this deployment no longer serves
+  # The model db is the source of truth for what the gateway serves, so
+  # models removed from vllm_model/vllm_aux_models (or registered from a
+  # different node) must be pruned or they stay in every client's list
+  # forever - e.g. Qwen2.5-7B-Instruct lingered after the primary was
+  # switched to Qwen3.8-27B-INT4. Scope: db entries whose api_base points
+  # at a vllm_compute node (http(s)://<host>:port/v1) and whose model_name
+  # is not one this run registers. Config-declared models (gemini,
+  # bedrock, routers, voice-assistant) have no api_base and are never
+  # touched. /model/delete needs the db model id (model_name is not an
+  # accepted key); deleting an already-gone id answers 400, hence the
+  # status_code list. Idempotent: nothing to prune -> no request.
+  ansible.builtin.uri:
+    url: "{{ vllm_litellm_endpoint.stdout }}/model/delete"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      id: "{{ stale_vllm_item.model_info.id }}"
+    status_code: [200]
+  register: vllm_litellm_prune
+  changed_when: vllm_litellm_prune.status == 200
+  vars:
+    vllm_registered_names: >-
+      {{ ([vllm_served_model_name]
+        + (vllm_aux_endpoint_pairs | default([]) | map(attribute='0.served_model_name') | list)) }}
+  loop: "{{ vllm_litellm_model_info.json.data | default([])
+    | selectattr('litellm_params.api_base', 'defined')
+    | selectattr('litellm_params.api_base', 'match', '^https?://[0-9.]+:[0-9]+/v1$')
+    | rejectattr('model_name', 'in', vllm_registered_names)
+    | list }}"
+  loop_control:
+    loop_var: stale_vllm_item
+  delegate_to: localhost
+  run_once: true
+  become: false
+  no_log: true
+  when:
+    - vllm_litellm_endpoint.stdout != 'LITELLM_NOT_RUNNING'
+    - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
+
 - name: Registration result
   ansible.builtin.debug:
     msg: >-
@@ -161,6 +224,19 @@
   delegate_to: localhost
   run_once: true
   become: false
+
+- name: Prune result
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Pruned stale vLLM model(s) from LiteLLM: '
+        ~ (vllm_litellm_prune.results | default([])
+          | selectattr('changed')
+          | map(attribute='stale_vllm_item.model_name') | join(', ')
+          | default('', true)) }}
+  delegate_to: localhost
+  run_once: true
+  become: false
+  when: (vllm_litellm_prune.results | default([]) | selectattr('changed') | list | length) > 0
 
 - name: Point the operator to the generated snippet
   ansible.builtin.debug:
