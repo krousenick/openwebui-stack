@@ -90,6 +90,11 @@
     group: root
     mode: "0644"
 
+# Inject the oauth2-proxy user chip + logout into the vendored UI after the
+# checkout (the checkout can revert the patch on later runs).
+- name: Patch the Chatterbox UI with oauth2-proxy user info and logout
+  ansible.builtin.include_tasks: ui_auth.yml
+
 - name: Enable the Chatterbox compose profile
   ansible.builtin.set_fact:
     docker_compose_profiles: "{{ (docker_compose_profiles | default([])) + ['chatterbox-' + chatterbox_device] }}"

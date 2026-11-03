@@ -1,0 +1,213 @@
+---
+# ===========================================================================
+# WSL2 Windows host provisioning tasks
+# ===========================================================================
+# This role runs on Windows hosts to set up WSL2 with Fedora, bridged
+# networking, and Docker for remote inference node consumption.
+# ===========================================================================
+
+- name: Verify running on Windows
+  ansible.builtin.fail:
+    msg: "This role must be run on a Windows host with ansible_connection=winrm or ansible_connection=ssh"
+  when: ansible_facts.os_family != "Windows"
+
+- name: Check WSL version capability
+  ansible.builtin.set_fact:
+    wsl2_version_check: true
+
+- name: Check if WSL is installed
+  ansible.windows.win_shell: |
+    Get-Command wsl -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+  register: wsl_command_check
+  changed_when: false
+  failed_when: false
+
+- name: Check if specific WSL distro exists
+  ansible.windows.win_shell: |
+    wsl --list --verbose 2>$null | Select-String -Pattern "{{ wsl2_distribution }}"
+  register: wsl_distro_check
+  changed_when: false
+  failed_when: false
+
+- name: Install WSL if missing
+  ansible.windows.win_shell: |
+    wsl --install --no-distribution
+  when: wsl_command_check.stdout == ""
+  register: wsl_install_result
+
+- name: Create .wslconfig for bridged networking
+  ansible.windows.win_file:
+    path: '{{ ansible_user_profile }}\.wslconfig'
+    state: touch
+  when: wsl2_bridged_mode | bool
+
+- name: Configure .wslconfig for bridged networking
+  ansible.windows.win_lineinfile:
+    path: '{{ ansible_user_profile }}\.wslconfig'
+    line: '{{ item }}'
+    create: true
+  when: wsl2_bridged_mode | bool
+  loop:
+    - "[wsl2]"
+    - "networkingMode={{ wsl2_networking_mode }}"
+  register: wslconfig_update
+
+- name: Configure WSL2 memory limit in .wslconfig
+  ansible.windows.win_lineinfile:
+    path: '{{ ansible_user_profile }}\.wslconfig'
+    line: "memory={{ wsl2_memory }}GB"
+    create: true
+  when: wsl2_memory | int > 0
+
+- name: Configure WSL2 processors in .wslconfig
+  ansible.windows.win_lineinfile:
+    path: '{{ ansible_user_profile }}\.wslconfig'
+    line: "processors={{ wsl2_processors }}"
+    create: true
+  when: wsl2_processors | int > 0
+
+- name: Check NVIDIA driver version on Windows
+  ansible.windows.win_shell: |
+    nvidia-smi --query-gpu=driver_version --format=csv,noheader
+  register: nvidia_driver_check
+  changed_when: false
+  failed_when: false
+
+- name: Warn if NVIDIA driver version is too old
+  ansible.builtin.debug:
+    msg: >
+      WARNING: NVIDIA driver {{ nvidia_driver_check.stdout }} may not support
+      WSL2 GPU passthrough. Minimum recommended: {{ wsl2_nvidia_driver_min_version }}
+  when:
+    - wsl2_enable_nvidia | bool
+    - nvidia_driver_check.rc == 0
+    - nvidia_driver_check.stdout is version(wsl2_nvidia_driver_min_version, '<')
+
+- name: Install Fedora WSL distribution
+  ansible.windows.win_shell: |
+    wsl --install --distribution {{ wsl2_distribution }}
+  when: wsl_distro_check.stdout == "" or wsl2_force_reinstall | bool
+  register: wsl_fedora_install
+  retries: 3
+  delay: 10
+
+- name: Set WSL2 as default version
+  ansible.windows.win_shell: |
+    wsl --set-default-version 2
+  changed_when: false
+
+- name: Shut down WSL to apply configuration
+  ansible.windows.win_shell: |
+    wsl --shutdown
+  changed_when: false
+
+- name: Start WSL Fedora and verify it's running
+  ansible.windows.win_shell: |
+    wsl -d {{ wsl2_distribution }} -- ls /etc/os-release 2>&1 | Select-Object -First 5
+  register: wsl_start_check
+  changed_when: false
+  failed_when: false
+  retries: 5
+  delay: 10
+
+- name: Display WSL2 status
+  ansible.builtin.debug:
+    msg: "WSL2 Fedora is {{ 'running' if wsl_start_check.rc == 0 else 'not running' }}"
+
+- name: Get WSL2 IP address
+  ansible.windows.win_shell: |
+    wsl -d {{ wsl2_distribution }} -- hostname -I | Select-Object -ExpandPropertyTrimmed
+  register: wsl_ip_result
+  changed_when: false
+  failed_when: false
+  
+- name: Set fact with WSL2 IP
+  ansible.builtin.set_fact:
+    wsl2_ip: "{{ wsl_ip_result.stdout | trim }}"
+  when: wsl_ip_result.stdout is defined and wsl_ip_result.stdout | trim | length > 0
+
+- name: Display WSL2 IP for inventory
+  ansible.builtin.debug:
+    msg: "WSL2 IP: {{ wsl2_ip | default('unavailable') }}"
+
+- name: Update WSL2 /etc/resolv.conf with DNS servers
+  ansible.windows.win_shell: |
+    wsl -d {{ wsl2_distribution }} -- bash -c "echo 'nameserver {{ item }}' | sudo tee -a /etc/resolv.conf"
+  loop: "{{ wsl2_nameservers }}"
+  when: wsl2_nameservers | length > 0
+  changed_when: true
+  
+- name: Check if Docker is installed in WSL2
+  ansible.windows.win_shell: |
+    wsl -d {{ wsl2_distribution }} -- docker --version 2>&1
+  register: wsl_docker_check
+  changed_when: false
+  failed_when: false
+
+- name: Install Docker in WSL2 if missing
+  ansible.windows.win_shell: |
+    wsl -d {{ wsl2_distribution }} -- bash -c "
+      sudo dnf install -y {{ wsl2_docker_package }}
+      sudo systemctl enable --now docker
+      sudo usermod -aG docker $USER
+    "
+  when:
+    - wsl2_install_docker | bool
+    - wsl_docker_check.rc != 0
+  register: wsl_docker_install
+  changed_when: true
+
+- name: Check NVIDIA device in WSL2
+  ansible.windows.win_shell: |
+    wsl -d {{ wsl2_distribution }} -- nvidia-smi --query-gpu=name --format=csv,noheader 2>&1
+  register: wsl_nvidia_check
+  changed_when: false
+  failed_when: false
+  when: wsl2_enable_nvidia | bool
+
+- name: Display NVIDIA GPU passthrough status
+  ansible.builtin.debug:
+    msg: "NVIDIA GPU in WSL2: {{ wsl_nvidia_check.stdout | default('not detected') }}"
+  when: wsl2_enable_nvidia | bool
+
+- name: Install NVIDIA container toolkit in WSL2
+  ansible.windows.win_shell: |
+    wsl -d {{ wsl2_distribution }} -- bash -c "
+      distribution=$(. /etc/os-release; echo \$ID)
+      sudo dnf config-manager --add-repo https://nvidia.github.io/libnvidia-container/rpm/nvidia-container-toolkit.repo
+      sudo dnf install -y nvidia-container-toolkit
+      sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+      sudo systemctl restart docker
+    "
+  when:
+    - wsl2_enable_nvidia | bool
+    - wsl_nvidia_check.rc == 0
+  register: wsl_nvidia_toolkit_install
+  changed_when: true
+  failed_when: false
+
+- name: Configure Windows firewall for WSL2 network
+  ansible.windows.win_shell: |
+    $wslIP = wsl -d {{ wsl2_distribution }} -- hostname -I | Select-Object -ExpandPropertyTrimmed
+    if ($wslIP) {
+      netsh advfirewall firewall add rule name="WSL2 Inbound" dir=in action=allow remoteip="$wslIP/32" protocol=TCP 2>&1 | Out-Null
+      netsh advfirewall firewall add rule name="WSL2 Inbound UDP" dir=in action=allow remoteip="$wslIP/32" protocol=UDP 2>&1 | Out-Null
+    }
+  when: wsl2_manage_firewall | bool
+  register: wsl_firewall_config
+  changed_when: true
+  failed_when: false
+
+- name: Display WSL2 provisioning summary
+  ansible.builtin.debug:
+    msg:
+      - "WSL2 Fedora provisioning complete"
+      - "IP Address: {{ wsl2_ip | default('check manually') }}"
+      - "Docker: {{ 'installed' if wsl_docker_check.rc == 0 or wsl2_install_docker | bool else 'not installed' }}"
+      - "NVIDIA GPU: {{ 'available' if wsl_nvidia_check.rc == 0 else 'not available' }}"
+      - ""
+      - "Add the following to ansible/inventory/hosts.yml:"
+      - "  hosts:"
+      - "    wsl2-fedora:"
+      - "      ansible_host: {{ wsl2_ip | default('<WSL2-IP>') }}"
+      - "      ansible_user: {{ wsl2_user }}"

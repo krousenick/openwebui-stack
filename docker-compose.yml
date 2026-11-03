@@ -835,7 +835,10 @@ services:
       OAUTH2_PROXY_SCOPE: "openid email profile"
       OAUTH2_PROXY_PASS_USER_HEADERS: "true"
       OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER: "true"
-      OAUTH2_PROXY_WHITELIST_DOMAINS: "voice.${DOMAIN:-localhost}"
+      # auth.<domain> is whitelisted so /oauth2/sign_out?rd= can bounce to the
+      # Keycloak end_session_endpoint for single logout (SLO), not just a
+      # local cookie clear.
+      OAUTH2_PROXY_WHITELIST_DOMAINS: "voice.${DOMAIN:-localhost} auth.${DOMAIN:-localhost}"
     networks:
       - frontend
       - backend

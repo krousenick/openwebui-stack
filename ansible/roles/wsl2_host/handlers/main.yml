@@ -1,0 +1,20 @@
+---
+# ===========================================================================
+# WSL2 Windows host role handlers
+# ===========================================================================
+
+- name: Restart WSL
+  ansible.windows.win_shell: wsl --shutdown
+  changed_when: true
+
+- name: Restart WSL distribution
+  ansible.windows.win_shell: wsl -t {{ wsl2_distribution }}
+  changed_when: true
+
+- name: Restart Docker in WSL2
+  ansible.windows.win_shell: wsl -d {{ wsl2_distribution }} -- systemctl restart docker
+  changed_when: true
+
+- name: Reload Windows firewall
+  ansible.windows.win_shell: netsh advfirewall firewall show rule name=WSL2
+  changed_when: false

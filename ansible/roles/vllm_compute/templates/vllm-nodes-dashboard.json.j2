@@ -4,7 +4,21 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": null,
-  "links": [],
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Inference Deployments",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/vllm-inference-deployments/inference-deployments"
+    }
+  ],
+  "liveNow": false,
   "preload": false,
   "refresh": "30s",
   "schemaVersion": 41,
@@ -16,11 +30,22 @@
         "label": "vLLM Node",
         "type": "query",
         "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "query": { "query": "label_values(up{job=~\"remote-node|remote-nvidia-gpu|remote-nvidia-smi|remote-vllm\"}, instance)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "query": { "query": "label_values(up{job=~\"remote-node|remote-nvidia-gpu|remote-nvidia-smi|remote-vllm|remote-aux-.*\"}, instance)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
         "refresh": 2,
         "includeAll": true,
         "multi": true,
         "current": { "selected": true, "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "deployment",
+        "label": "Inference Deployment",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_names(vllm:num_requests_running{job=~\"remote-vllm|remote-aux-.*\"})", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": false,
+        "current": { "selected": false, "text": "All", "value": "$__all" }
       },
       {
         "name": "log_filter",
@@ -28,6 +53,17 @@
         "type": "textbox",
         "query": "",
         "current": { "text": "", "value": "" }
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "loki" },
+        "query": { "query": "label_values(service_name)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "selected": false, "text": "All", "value": "$__all" }
       }
     ]
   },
@@ -36,14 +72,14 @@
   "timezone": "browser",
   "title": "vLLM Remote Nodes",
   "uid": "vllm-remote-nodes",
-  "version": 1,
+  "version": 2,
   "panels": [
     {
       "id": 1,
       "type": "stat",
       "title": "Node Up",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
       "fieldConfig": { "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": 0 }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
       "targets": [ { "expr": "up{job=\"remote-node\", instance=~\"$node\"}", "legendFormat": "{{ "{{ instance }}" }}", "refId": "A" } ],
       "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "textMode": "auto" }
@@ -51,21 +87,21 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "GPU Exporter Up",
+      "title": "vLLM API Up",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
       "fieldConfig": { "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": 0 }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
-      "targets": [ { "expr": "up{job=~\"remote-nvidia-gpu|remote-nvidia-smi\", instance=~\"$node\"}", "legendFormat": "{{ "{{ instance }}" }}", "refId": "A" } ],
+      "targets": [ { "expr": "up{job=~\"remote-vllm|remote-aux-.*\", instance=~\"$node\"}", "legendFormat": "{{ "{{ instance }}" }}", "refId": "A" } ],
       "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "textMode": "auto" }
     },
     {
       "id": 3,
       "type": "stat",
-      "title": "vLLM API Up",
+      "title": "GPU Exporter Up",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
       "fieldConfig": { "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": 0 }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
-      "targets": [ { "expr": "up{job=\"remote-vllm\", instance=~\"$node\"}", "legendFormat": "{{ "{{ instance }}" }}", "refId": "A" } ],
+      "targets": [ { "expr": "up{job=~\"remote-nvidia-gpu|remote-nvidia-smi\", instance=~\"$node\"}", "legendFormat": "{{ "{{ instance }}" }}", "refId": "A" } ],
       "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "textMode": "auto" }
     },
     {
@@ -73,10 +109,32 @@
       "type": "stat",
       "title": "GPU Count",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
       "fieldConfig": { "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] } }, "overrides": [] },
       "targets": [ { "expr": "count(count(DCGM_FI_DEV_GPU_UTIL{instance=~\"$node\"}) by (instance, gpu)) or count(count(nvidia_smi_utilization_gpu_ratio{instance=~\"$node\"}) by (instance, uuid))", "legendFormat": "GPUs", "refId": "A" } ],
       "options": { "colorMode": "none", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "textMode": "auto" }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Total Prompt Tokens",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "fieldConfig": { "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": 0 } ] }, "unit": "short" }, "overrides": [] },
+      "targets": [ { "expr": "sum(vllm:prompt_tokens_total{job=~\"remote-vllm|remote-aux-.*\", instance=~\"$node\"})", "legendFormat": "prompt", "refId": "A" } ],
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "textMode": "auto" },
+      "description": "Cumulative prompt tokens from all vLLM deployments"
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Total Completion Tokens",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "fieldConfig": { "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "purple", "value": 0 } ] }, "unit": "short" }, "overrides": [] },
+      "targets": [ { "expr": "sum(vllm:completion_tokens_total{job=~\"remote-vllm|remote-aux-.*\", instance=~\"$node\"})", "legendFormat": "completion", "refId": "A" } ],
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "textMode": "auto" },
+      "description": "Cumulative completion tokens from all vLLM deployments"
     },
     {
       "id": 10,
@@ -121,73 +179,85 @@
     {
       "id": 20,
       "type": "timeseries",
-      "title": "CPU Usage",
+      "title": "Token Rate (per deployment)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
-      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 }, { "color": "orange", "value": 70 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
-      "targets": [ { "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\", job=\"remote-node\", instance=~\"$node\"}[$__rate_interval])) * 100)", "legendFormat": "{{ "{{ instance }}" }}", "refId": "A" } ],
-      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } }
+      "fieldConfig": { "defaults": { "unit": "ops", "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "sum by (instance) (rate(vllm:prompt_tokens_total{job=~\"remote-vllm|remote-aux-.*\", instance=~\"$node\"}[$__rate_interval]))", "legendFormat": "{{ "{{ instance }}" }} prompt", "refId": "A" }, { "expr": "sum by (instance) (rate(vllm:completion_tokens_total{job=~\"remote-vllm|remote-aux-.*\", instance=~\"$node\"}[$__rate_interval]))", "legendFormat": "{{ "{{ instance }}" }} completion", "refId": "B" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } },
+      "description": "Token throughput per second by instance (prompt vs completion)"
     },
     {
       "id": 21,
       "type": "timeseries",
-      "title": "Memory Usage",
+      "title": "vLLM Requests per Instance",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
-      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 }, { "color": "orange", "value": 75 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
-      "targets": [ { "expr": "100 * (1 - (node_memory_MemAvailable_bytes{job=\"remote-node\", instance=~\"$node\"} / node_memory_MemTotal_bytes{job=\"remote-node\", instance=~\"$node\"}))", "legendFormat": "{{ "{{ instance }}" }}", "refId": "A" } ],
-      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } }
-    },
-    {
-      "id": 22,
-      "type": "timeseries",
-      "title": "Disk Usage",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
-      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 }, { "color": "orange", "value": 75 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
-      "targets": [ { "expr": "100 - ((node_filesystem_avail_bytes{job=\"remote-node\", instance=~\"$node\", fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{job=\"remote-node\", instance=~\"$node\", fstype!~\"tmpfs|overlay\"}) * 100)", "legendFormat": "{{ "{{ instance }} {{ mountpoint }}" }}", "refId": "A" } ],
-      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } }
-    },
-    {
-      "id": 23,
-      "type": "timeseries",
-      "title": "Network Throughput",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
-      "fieldConfig": { "defaults": { "unit": "Bps", "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] } }, "overrides": [] },
-      "targets": [ { "expr": "rate(node_network_receive_bytes_total{job=\"remote-node\", instance=~\"$node\", device!~\"lo|veth.*|docker.*\"}[$__rate_interval])", "legendFormat": "{{ "RX {{ instance }} {{ device }}" }}", "refId": "A" }, { "expr": "rate(node_network_transmit_bytes_total{job=\"remote-node\", instance=~\"$node\", device!~\"lo|veth.*|docker.*\"}[$__rate_interval])", "legendFormat": "{{ "TX {{ instance }} {{ device }}" }}", "refId": "B" } ],
-      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } }
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "vllm:num_requests_running{job=~\"remote-vllm|remote-aux-.*\", instance=~\"$node\"}", "legendFormat": "{{ "{{ instance }}" }} running", "refId": "A" }, { "expr": "vllm:num_requests_waiting{job=~\"remote-vllm|remote-aux-.*\", instance=~\"$node\"}", "legendFormat": "{{ "{{ instance }}" }} waiting", "refId": "B" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } },
+      "description": "Running vs waiting requests per deployment"
     },
     {
       "id": 30,
       "type": "timeseries",
       "title": "vLLM KV Cache Usage",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
       "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 }, { "color": "orange", "value": 75 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
-      "targets": [ { "expr": "vllm:kv_cache_usage_perc{job=\"remote-vllm\", instance=~\"$node\"}", "legendFormat": "{{ "KV cache {{ instance }}" }}", "refId": "A" } ],
+      "targets": [ { "expr": "vllm:kv_cache_usage_perc{job=~\"remote-vllm|remote-aux-.*\", instance=~\"$node\"}", "legendFormat": "{{ "{{ instance }}" }}", "refId": "A" } ],
       "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } }
     },
     {
       "id": 31,
       "type": "timeseries",
-      "title": "vLLM Requests",
+      "title": "Request Success Rate",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "fieldConfig": { "defaults": { "unit": "ops", "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "sum by (instance) (rate(vllm:request_success_total{job=~\"remote-vllm|remote-aux-.*\", instance=~\"$node\"}[$__rate_interval]))", "legendFormat": "{{ "{{ instance }}" }} success/s", "refId": "A" }, { "expr": "sum by (instance) (rate(vllm:request_failure_total{job=~\"remote-vllm|remote-aux-.*\", instance=~\"$node\"}[$__rate_interval]))", "legendFormat": "{{ "{{ instance }}" }} failure/s", "refId": "B" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } },
+      "description": "Request success vs failure rate per second"
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "CPU Usage",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 }, { "color": "orange", "value": 70 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\", job=\"remote-node\", instance=~\"$node\"}[$__rate_interval])) * 100)", "legendFormat": "{{ "{{ instance }}" }}", "refId": "A" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Memory Usage",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
-      "fieldConfig": { "defaults": { "unit": "ops", "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] } }, "overrides": [] },
-      "targets": [ { "expr": "sum(rate(vllm:request_success_total{job=\"remote-vllm\", instance=~\"$node\"}[$__rate_interval]))", "legendFormat": "successful/s", "refId": "A" }, { "expr": "vllm:num_requests_running{job=\"remote-vllm\", instance=~\"$node\"}", "legendFormat": "{{ "running {{ instance }}" }}", "refId": "B" }, { "expr": "vllm:num_requests_waiting{job=\"remote-vllm\", instance=~\"$node\"}", "legendFormat": "{{ "waiting {{ instance }}" }}", "refId": "C" } ],
-      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } },
-      "description": "Requires the remote-vllm scrape job in otel/config.yaml."
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 }, { "color": "orange", "value": 75 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "100 * (1 - (node_memory_MemAvailable_bytes{job=\"remote-node\", instance=~\"$node\"} / node_memory_MemTotal_bytes{job=\"remote-node\", instance=~\"$node\"}))", "legendFormat": "{{ "{{ instance }}" }}", "refId": "A" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } }
     },
     {
       "id": 40,
       "type": "logs",
       "title": "vLLM Serve Logs",
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 44 },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 44 },
       "targets": [ { "expr": "{service_name=\"vllm-serve\"} |~ \"$log_filter\"", "refId": "A" } ],
       "options": { "dedupStrategy": "none", "enableInfiniteScrolling": true, "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": true, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true },
-      "description": "vllm-serve journald logs shipped from the compute nodes by vllm-log-shipper (Grafana Alloy) into Loki. Filter with the log_filter variable; each node carries a node label."
+      "description": "vllm-serve journald logs from all compute nodes"
+    },
+    {
+      "id": 41,
+      "type": "logs",
+      "title": "Aux/Deployment Logs",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 44 },
+      "targets": [ { "expr": "{service_name=~\"gatekeeper|flux-.*|aux-.*\"} |~ \"$log_filter\"", "refId": "A" } ],
+      "options": { "dedupStrategy": "none", "enableInfiniteScrolling": true, "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": true, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true },
+      "description": "Gatekeeper and other aux deployment logs from all compute nodes"
     }
   ]
 }

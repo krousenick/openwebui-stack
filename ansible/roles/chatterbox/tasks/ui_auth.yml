@@ -1,0 +1,104 @@
+---
+# Inject the oauth2-proxy user chip and logout button into the vendored
+# Chatterbox UI. The checkout above can revert these files on any playbook
+# run, so every change is a marker-delimited block that this task re-applies
+# idempotently after the git checkout task. The UI is static HTML/JS served by
+# the container image build (COPY . .), so a rebuild picks the patch up.
+
+# 1. index.html: user chip + logout button inside .navbar__actions, before
+#    the API Docs link.
+- name: Check whether the user chip is already in the Chatterbox UI
+  ansible.builtin.command:
+    cmd: grep -q id="voice-user-chip" {{ project_root }}/chatterbox/ui/index.html
+  register: chatterbox_ui_chip_check
+  changed_when: false
+  failed_when: false
+
+- name: Inject user chip and logout button into the Chatterbox navbar
+  ansible.builtin.replace:
+    path: "{{ project_root }}/chatterbox/ui/index.html"
+    regexp: '(<div class="navbar__actions">)'
+    replace: |-
+      \1
+                                <span id="voice-user-chip" class="voice-user-chip" title="Signed-in user" hidden></span>
+                                <a id="voice-logout" class="navbar__link" href="/oauth2/sign_out" hidden>Log out</a>
+  when: chatterbox_ui_chip_check.rc != 0
+
+# 2. styles.css: chip styling appended as a marked section.
+- name: Style the user chip in the Chatterbox UI
+  ansible.builtin.blockinfile:
+    path: "{{ project_root }}/chatterbox/ui/styles.css"
+    marker: "/* {mark} voice user chip */"
+    block: |-
+      .voice-user-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: var(--space-2);
+          max-width: 220px;
+          padding: var(--space-1) var(--space-3);
+          border-radius: var(--radius-full);
+          font-size: var(--text-xs);
+          font-weight: var(--font-semibold);
+          background-color: var(--color-border-subtle);
+          color: var(--color-text-secondary);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+      }
+
+      .dark .voice-user-chip {
+          background-color: var(--color-bg-surface-alt);
+      }
+
+      .voice-user-chip svg {
+          flex-shrink: 0;
+          width: 14px;
+          height: 14px;
+          color: var(--color-primary);
+      }
+
+# 3. script.js: fetch /oauth2/userinfo on load; populate chip; wire logout to
+#    the Keycloak end_session_endpoint with post_logout_redirect_uri back to
+#    voice.<domain>. Kept inside the app's DOMContentLoaded bootstrap by
+#    appending before its closing "});".
+- name: Check whether the user info hook is already in the Chatterbox script
+  ansible.builtin.command:
+    cmd: grep -q id="voice-user-chip" {{ project_root }}/chatterbox/ui/script.js
+  register: chatterbox_ui_script_check
+  changed_when: false
+  failed_when: false
+
+- name: Inject the oauth2-proxy user info and logout hook into the Chatterbox script
+  ansible.builtin.replace:
+    path: "{{ project_root }}/chatterbox/ui/script.js"
+    regexp: '(    // Call fetchInitialData at the end of setup to kick everything off\.\n    // Note: This calls initializeApplication internally\.\n    await fetchInitialData\(\);\n)(\}\);)'
+    replace: |-
+      \1
+      // --- oauth2-proxy identity (added by the openwebui-stack playbook) ---
+      // Served by oauth2-proxy on the same origin as the UI. Anonymous users
+      // never reach this code (Traefik routes them to the login redirect
+      // first), so a failure here only means the proxy changed shape.
+      try {
+          const userInfoResponse = await fetch('/oauth2/userinfo', { credentials: 'same-origin' });
+          if (userInfoResponse.ok) {
+              const userInfo = await userInfoResponse.json();
+              const chip = document.getElementById('voice-user-chip');
+              const logout = document.getElementById('voice-logout');
+              if (chip) {
+                  const label = userInfo.email || userInfo.user || 'Signed in';
+                  chip.textContent = label;
+                  chip.title = label;
+                  chip.hidden = false;
+              }
+              if (logout) {
+                  const endSession = new URL('https://auth.{{ domain }}/realms/{{ keycloak_realm }}/protocol/openid-connect/logout');
+                  endSession.searchParams.set('post_logout_redirect_uri', window.location.origin);
+                  logout.href = '/oauth2/sign_out?rd=' + encodeURIComponent(endSession.toString());
+                  logout.hidden = false;
+              }
+          }
+      } catch (error) {
+          console.warn('Could not load oauth2-proxy user info:', error);
+      }
+      \2
+  when: chatterbox_ui_script_check.rc != 0

@@ -140,6 +140,11 @@ keycloak_apps:
     base_url: "https://voice.{{ domain }}"
     redirect_uris:
       - "https://voice.{{ domain }}/oauth2/callback"
+    # oauth2-proxy sign_out redirects to the Keycloak end_session_endpoint
+    # with post_logout_redirect_uri back to voice.<domain>; the client must
+    # allow that URI or Keycloak rejects the logout redirect.
+    post_logout_redirect_uris:
+      - "https://voice.{{ domain }}"
     roles:
       - voice_user
 

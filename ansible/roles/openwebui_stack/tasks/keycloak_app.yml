@@ -30,6 +30,10 @@
     redirect_uris: "{{ app.redirect_uris }}"
     web_origins:
       - "{{ app.base_url }}"
+    # Optional per-app (vars.yml keycloak_apps). Keycloak stores these as
+    # the post.logout.redirect.uris client attribute. Omitting the key keeps
+    # the module from touching the attribute (None params are skipped).
+    valid_post_logout_redirect_uris: "{{ app.post_logout_redirect_uris | default(omit) }}"
 
     attributes:
       pkce.code.challenge.method: "{{ 'S256' if (app.pkce | default(true) | bool) else '' }}"
