@@ -201,6 +201,19 @@
   become: false
   when: vllm_monitoring_enabled | bool
 
+- name: Render the inference deployments Grafana dashboard
+  # Per-deployment companion to the nodes overview: token throughput,
+  # latency, KV/prefix cache, and request metrics filtered by a
+  # model_name dropdown (vllm-serve primary + each aux server).
+  ansible.builtin.template:
+    src: vllm-inference-deployments-dashboard.json.j2
+    dest: "{{ playbook_dir }}/../../grafana/provisioning/dashboards/json/vllm-inference-deployments-dashboard.json"
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  when: vllm_monitoring_enabled | bool
+
 - name: Build this node's scrape job block
   # Each node renders its own jobs from its own facts (vllm_host_ip is a
   # per-node set_fact), so no cross-host fact visibility is needed. The
@@ -303,10 +316,10 @@
     - vllm_monitoring_enabled | bool
     - vllm_log_shipping_enabled | bool
 
-- name: Point the operator at the dashboard and collector restart
+- name: Point the operator at the dashboards and collector restart
   ansible.builtin.debug:
     msg:
-      - "Grafana dashboard 'vllm-remote-nodes' written to grafana/provisioning/dashboards/json/ on the controller"
+      - "Grafana dashboards 'vllm-remote-nodes' and 'vllm-inference-deployments' written to grafana/provisioning/dashboards/json/ on the controller"
       - "Remote scrape jobs injected into otel/config.yaml from the inventory"
       - "Restart the monitoring stack on the stack host for otel config + dashboard pickup:"
       - "docker compose --profile monitoring restart otel-lgtm otel-collector"

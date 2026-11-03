@@ -235,29 +235,9 @@
             "uid": "prometheus"
           },
           "expr": "chatterbox_engine",
-          "format": "table",
           "instant": true,
           "legendFormat": "{{engine_type}}",
           "refId": "A"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "Value": true,
-              "__name__": true,
-              "instance": true,
-              "job": true,
-              "module": true
-            },
-            "renameByName": {
-              "class_name": "Class",
-              "engine_type": "Engine"
-            }
-          }
         }
       ],
       "title": "Active Engine",
@@ -1458,7 +1438,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{service_name=~\".*chatterbox.*\"} |~ \"(?i)\\\\[ERROR\\\\]|\\\\[WARNING\\\\]|failed validation|exception|oom\"",
+          "expr": "{service_name=~\".*chatterbox.*\"} |~ \"(?i)ERROR|WARNING|failed validation|exception|oom\"",
           "refId": "A"
         }
       ],
@@ -1520,8 +1500,8 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "loki",
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -1598,7 +1578,8 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "sum by (mode) (rate({service_name=~\".*chatterbox.*\"} | regexp \"Received /tts request: mode='(?P<mode>[a-z_]+)'\" [5m]))",
+          "expr": "sum by (mode) (count_over_time({service_name=~\".*chatterbox.*\"} | regexp \"Received /tts request: mode='(?P<mode>[a-z_]+)'\" [$__auto])) or sum by (mode) (rate({service_name=~\".*chatterbox.*\"} | regexp \"Received /tts request: mode='(?P<mode>[a-z_]+)'\" [$__auto])) * 0",
+          "legendFormat": "{{mode}}",
           "refId": "A"
         },
         {
@@ -1606,18 +1587,19 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "sum(rate({service_name=~\".*chatterbox.*\"} |= \"OpenAI speech: processing\" [5m]))",
+          "expr": "sum(count_over_time({service_name=~\".*chatterbox.*\"} |= \"OpenAI speech: processing\" [$__auto])) or vector(0)",
           "legendFormat": "openai-speech",
           "refId": "B"
         }
       ],
+      "description": "Request counts per window; count_over_time is always emitted so idle windows show 0 instead of No data. $__auto adapts the window to the dashboard time range.",
       "title": "TTS Requests / sec (UI /tts + OpenAI speech)",
       "type": "timeseries"
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "loki",
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -1694,25 +1676,19 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "sum(rate({service_name=~\".*chatterbox.*\"} |= \"OpenAI speech: processing\" | regexp \"input of (?P<chars>[0-9]+) chars\" | unwrap chars [5m]))",
+          "expr": "sum(sum_over_time({service_name=~\".*chatterbox.*\"} |= \"Text chunking complete\" | regexp \"Generated (?P<chunks>[0-9]+) chunk\" | unwrap chunks [$__auto])) or vector(0)",
+          "legendFormat": "chunks",
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "expr": "sum(rate({service_name=~\".*chatterbox.*\"} |= \"Text chunking complete\" | regexp \"Generated (?P<chunks>[0-9]+) chunk\" | unwrap chunks [5m]))",
-          "refId": "B"
         }
       ],
+      "description": "Chunks generated per window. The OpenAI speech char-count line (input of N chars) only appears on /v1/audio/speech calls; UI /tts requests are counted via chunking instead. sum_over_time keeps idle windows at 0 rather than No data.",
       "title": "Text Processed (chars/sec)",
       "type": "timeseries"
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "loki",
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -1789,10 +1765,12 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "sum(rate({service_name=~\".*chatterbox.*\"} |= \"Encoded \" | regexp \"Encoded (?P<bytes>[0-9]+) bytes\" | unwrap bytes [5m]))",
+          "expr": "sum(sum_over_time({service_name=~\".*chatterbox.*\"} |= \"Encoded \" | regexp \"Encoded (?P<bytes>[0-9]+) bytes\" | unwrap bytes [$__auto])) or vector(0)",
+          "legendFormat": "bytes",
           "refId": "A"
         }
       ],
+      "description": "Bytes of encoded audio per window; sum_over_time keeps idle windows at 0 rather than No data.",
       "title": "Audio Generated (bytes/sec)",
       "type": "timeseries"
     },
@@ -1886,8 +1864,8 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "loki",
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -1964,7 +1942,8 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "sum(rate({service_name=~\".*chatterbox.*\"} |~ \"(?i)\\\\[ERROR\\\\]\" [5m]))",
+          "expr": "sum(count_over_time({service_name=~\".*chatterbox.*\"} |~ \"(?i)ERROR\" [$__auto])) or vector(0)",
+          "legendFormat": "errors",
           "refId": "A"
         },
         {
@@ -1972,7 +1951,8 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "sum(rate({service_name=~\".*chatterbox.*\"} |= \"failed validation\" [5m]))",
+          "expr": "sum(count_over_time({service_name=~\".*chatterbox.*\"} |= \"WARNING\" [$__auto])) or vector(0)",
+          "legendFormat": "warnings",
           "refId": "B"
         },
         {
@@ -1980,10 +1960,12 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "sum(rate({service_name=~\".*chatterbox.*\"} |= \"completed with \" [5m]))",
+          "expr": "sum(count_over_time({service_name=~\".*chatterbox.*\"} |= \"Successfully generated audio\" [$__auto])) or vector(0)",
+          "legendFormat": "completed",
           "refId": "C"
         }
       ],
+      "description": "Successfully generated audio is this server's completion line (one per /tts request); completed = zero means idle, not no data. [ERROR]/[WARNING] are literal substrings in the JSON; the escaping keeps them from being treated as character classes. count_over_time keeps idle windows at 0 rather than No data.",
       "title": "Chatterbox Log Errors & Warnings / sec",
       "type": "timeseries"
     },
@@ -2078,7 +2060,7 @@
           },
           "expr": "DCGM_FI_DEV_MEM_COPY_UTIL",
           "legendFormat": "GPU {{gpu}} mem-copy %",
-          "refId": "A"
+          "refId": "B"
         },
         {
           "datasource": {
@@ -2087,7 +2069,7 @@
           },
           "expr": "oauth2_proxy_requests_in_flight",
           "legendFormat": "proxy in flight",
-          "refId": "A"
+          "refId": "C"
         }
       ],
       "title": "Capacity: GPU Util vs Requests",
@@ -2176,7 +2158,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(oauth2_proxy_response_duration_seconds_bucket{code=\"200\"}[10m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(oauth2_proxy_response_duration_seconds_bucket[10m])))",
           "legendFormat": "p99",
           "refId": "A"
         },
@@ -2185,18 +2167,18 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(oauth2_proxy_response_duration_seconds_bucket{code=\"200\"}[10m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(oauth2_proxy_response_duration_seconds_bucket[10m])))",
           "legendFormat": "p95",
-          "refId": "A"
+          "refId": "B"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(oauth2_proxy_response_duration_seconds_bucket{code=\"200\"}[10m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(oauth2_proxy_response_duration_seconds_bucket[10m])))",
           "legendFormat": "p50",
-          "refId": "A"
+          "refId": "C"
         }
       ],
       "title": "TTS Generation Latency (p99/p95/p50, via proxy)",
@@ -2221,6 +2203,6 @@
   "timezone": "browser",
   "title": "Chatterbox TTS",
   "uid": "chatterbox-tts",
-  "version": 2,
+  "version": 6,
   "weekStart": ""
 }

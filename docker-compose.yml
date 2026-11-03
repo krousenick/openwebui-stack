@@ -837,8 +837,9 @@ services:
       OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER: "true"
       # auth.<domain> is whitelisted so /oauth2/sign_out?rd= can bounce to the
       # Keycloak end_session_endpoint for single logout (SLO), not just a
-      # local cookie clear.
-      OAUTH2_PROXY_WHITELIST_DOMAINS: "voice.${DOMAIN:-localhost} auth.${DOMAIN:-localhost}"
+      # local cookie clear. Comma-separated: the env list parser is comma-
+      # based (space-separated values parse as one domain entry).
+      OAUTH2_PROXY_WHITELIST_DOMAINS: "voice.${DOMAIN:-localhost},auth.${DOMAIN:-localhost}"
     networks:
       - frontend
       - backend
