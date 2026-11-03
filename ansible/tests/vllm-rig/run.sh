@@ -45,13 +45,19 @@ run_playbook() {
 	if [[ "$skip_sync" != "--no-sync" ]]; then
 		sync_to_controller
 	fi
+	# The local inventory (real rig VM IP / controller IP) overrides the
+	# committed placeholders when present.
+	local inv_args=(-i "$CONTROLLER_DIR/ansible/tests/vllm-rig/inventory.yml")
+	if [[ -f "$RIG_DIR/inventory.local.yml" ]]; then
+		inv_args+=(-i "$CONTROLLER_DIR/ansible/tests/vllm-rig/inventory.local.yml")
+	fi
 	orb -m fedora sudo env \
 		ANSIBLE_CONFIG="$CONTROLLER_DIR/ansible/ansible.cfg" \
 		VLLM_IMAGE_OVERRIDE="$VLLM_IMAGE_OVERRIDE" \
 		VLLM_MODEL_OVERRIDE="$VLLM_MODEL_OVERRIDE" \
 		VLLM_API_KEY=test-rig-key \
 		ansible-playbook \
-		-i "$CONTROLLER_DIR/ansible/tests/vllm-rig/inventory.yml" \
+		"${inv_args[@]}" \
 		"$pb" "$@"
 }
 

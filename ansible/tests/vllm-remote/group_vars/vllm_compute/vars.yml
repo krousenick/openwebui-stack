@@ -3,12 +3,17 @@
 # the production values in group_vars/vllm_compute/vars.yml, which stay
 # untouched for the real cluster.
 #
-# Node: node-user@GPU_NODE_IP, Fedora 44, single RTX 4090 (24GB), podman
-# 5.8.9, firewalld running, SELinux permissive. All data lives under
-# /home/node-user: the node has no /mnt/data1 and its /var is small.
+# Node: Fedora 44, single RTX 4090 (24GB), podman 5.8.9, firewalld running,
+# SELinux permissive. All data lives under the node user's home: the node
+# has no /mnt/data1 and its /var is small.
+#
+# Site-specific values (node paths, firewall CIDR, controller host) live in
+# vars.local.yml (gitignored, same directory) - group_vars files merge in
+# alphabetical order, so the local file overrides this one. See
+# vars.local.yml.example for the keys.
 
-# Ansible (running on photon) installs missing pieces on this node: podman
-# is present but the NVIDIA container toolkit / CDI spec is not.
+# Ansible (running on the controller) installs missing pieces on this node:
+# podman is present but the NVIDIA container toolkit / CDI spec is not.
 prerequisites_install_missing: true
 prerequisites_check_nvidia: true
 prerequisites_container_cli: podman
@@ -23,10 +28,9 @@ vllm_container_gpu_flag: "--device nvidia.com/gpu=all"
 # fips.so, so SSL init dies. Mask the flag; see vllm_mask_fips_flag in role
 # defaults. A Red Hat rhel9 image (FIPS-built) would not need the mask.
 
-# All node data under /home/node-user (396G free there; /var has 13G).
-# Rootful podman storage moved off the small /var onto the home volume.
-vllm_podman_storage_root: /home/node-user/vllm/podman-storage
-vllm_hf_cache_dir: /home/node-user/vllm/huggingface
+# Node data lives under the node user's home; the node's /var is small.
+# Rootful podman storage moves off the small /var onto the home volume.
+# Set vllm_podman_storage_root and vllm_hf_cache_dir in vars.local.yml.
 
 # Single node: standalone replica (ray pipeline sharding needs a multi-node
 # cluster). TP=1 matches the single GPU; LiteLLM gets one endpoint.
@@ -86,9 +90,9 @@ vllm_extra_args:
   - "--reasoning-parser"
   - "gemma4"
 
-# The compute segment photon reaches the node on. The API port opens in the
-# vllm-cluster zone for LiteLLM; Ray ports stay open for later ray-mode runs.
-vllm_firewall_zone_source: "STACK_HOST_CIDR"
+# The compute segment the controller reaches the node on (set in
+# vars.local.yml). The API port opens in the vllm-cluster zone for LiteLLM;
+# Ray ports stay open for later ray-mode runs.
 vllm_manage_firewall: true
 
 # One 4090 cannot co-run the primary model and a flux server; the single-GPU
@@ -124,7 +128,6 @@ vllm_api_key: local-vllm-key
 vllm_image: "vllm/vllm-openai:latest"
 vllm_mask_fips_flag: true
 
-# Controller (photon stack host) address for the Loki push API. The role
-# default resolves it from the openwebui group, which this test inventory
-# does not define, so set it explicitly here.
-vllm_controller_host: STACK_HOST_IP
+# Controller (stack host) address for the Loki push API. The role default
+# resolves it from the openwebui group, which this test inventory does not
+# define, so set it in vars.local.yml.

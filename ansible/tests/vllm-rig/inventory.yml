@@ -10,6 +10,12 @@
 #
 # Ansible connects from the "fedora" OrbStack VM (the controller), which has
 # root SSH to the test VM. See run.sh.
+#
+# The committed file ships placeholders: create inventory.local.yml
+# (gitignored, same structure) with the real VM IP, and pass both
+# inventories:
+#   -i tests/vllm-rig/inventory.yml -i tests/vllm-rig/inventory.local.yml
+# run.sh does this automatically when the local file exists.
 all:
   children:
     openwebui:

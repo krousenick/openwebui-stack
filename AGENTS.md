@@ -7,7 +7,7 @@ This is a Docker Compose stack for Open WebUI with LiteLLM, Keycloak SSO, observ
 
 ## Photon VM
 
-The stack runs on VMware Photon OS, not on the Mac and not in the OrbStack Fedora VM. SSH as `root@STACK_HOST_IP`. The deployed tree is `/mnt/data1/openwebui-stack`. Run `docker compose` checks there. See `.magie-coder/skills/photon-vm/SKILL.md`.
+The stack runs on VMware Photon OS, not on the Mac and not in the OrbStack Fedora VM. The deployed tree is `/mnt/data1/openwebui-stack`. Run `docker compose` checks there. The stack host's address and SSH user live in `ansible/inventory/hosts.local.yml` (gitignored; see `hosts.yml` for the placeholder version). See `.magie-coder/skills/photon-vm/SKILL.md`.
 
 ## Commands
 

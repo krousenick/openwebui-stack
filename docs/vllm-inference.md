@@ -359,11 +359,11 @@ bash tests/vllm-rig/run.sh check     # rerun; must report zero changes
 
 The rig exercises: prerequisites fail-fast, Ray cluster formation, `/health` waits, firewall zone idempotency, multi-model flux deploy, aux placement (list-form and `all` host keys; both rig hosts alias one VM, so the rig only exercises placements that resolve to an identical slice on every host), model-removal cleanup, and idempotency.
 
-`ansible/tests/vllm-remote/` runs the role against a **real remote GPU node** (`node-user@GPU_NODE_IP`, Fedora 44, RTX 4090, podman), reached only from the photon bastion, so **ansible runs on photon**. It exercises the podman path end to end: `prerequisites_install_missing: true` installs the NVIDIA container toolkit and generates the CDI spec, rootful podman storage moves under `/home/node-user` (`vllm_podman_storage_root`), and the node serves `Qwen/Qwen2.5-7B-Instruct` standalone on port 8000. From the repo root (on the Mac):
+`ansible/tests/vllm-remote/` runs the role against a **real remote GPU node** (Fedora 44, RTX 4090, podman), reached only from the photon bastion, so **ansible runs on photon**. It exercises the podman path end to end: `prerequisites_install_missing: true` installs the NVIDIA container toolkit and generates the CDI spec, rootful podman storage moves under the node user's home (`vllm_podman_storage_root`), and the node serves the deployed model standalone on port 8000. The node address, user, node-local paths, firewall CIDR, and controller address are site-specific: they live in `tests/vllm-remote/inventory.local.yml` and `tests/vllm-remote/group_vars/vllm_compute/vars.local.yml` (both gitignored; the committed `inventory.yml` / `vars.yml` ship placeholders and document the keys). From the repo root (on the Mac):
 
 ```bash
 bash ansible/tests/vllm-remote/run.sh inference  # sync to photon, run the playbook there
 bash ansible/tests/vllm-remote/run.sh check     # rerun; must report zero changes
 ```
 
-The script itself runs on the Mac and shells into photon via the OrbStack fedora VM (which holds the bastion key); photon then SSHes to the node as `node-user` with passwordless sudo.
+The script itself runs on the Mac and shells into photon via an OrbStack VM (which holds the bastion key); photon then SSHes to the node user with passwordless sudo. Connection values for the script live in `run.local.env` (gitignored; see `run.local.env.example`).

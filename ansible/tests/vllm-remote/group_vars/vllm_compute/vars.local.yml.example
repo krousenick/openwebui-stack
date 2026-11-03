@@ -1,0 +1,14 @@
+# Copy to vars.local.yml (gitignored) and fill in real values. group_vars
+# files merge in alphabetical order, so vars.local.yml overrides vars.yml.
+
+# Paths on the GPU node (its /var is small; data lives under the node
+# user's home, ~396G free).
+vllm_podman_storage_root: /home/you/vllm/podman-storage
+vllm_hf_cache_dir: /home/you/vllm/huggingface
+
+# The compute segment the controller reaches the node on. The vllm-cluster
+# firewalld zone binds this as its source.
+vllm_firewall_zone_source: "10.0.105.0/24"
+
+# Controller (stack host) address for the Loki push API.
+vllm_controller_host: 192.0.2.10

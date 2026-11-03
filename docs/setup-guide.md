@@ -46,7 +46,7 @@ Ansible toolchain (controller, e.g. your laptop or the Photon VM):
 | ansible.posix collection | >=2.0.0 | 2.2.2 |
 | middleware_automation.keycloak | >=3.1.2,<4.0.0 | 3.1.2 (pinned at latest) |
 
-The deployment target in this repo is a VMware Photon OS VM (`root@STACK_HOST_IP`, tree at `/mnt/data1/openwebui-stack`). Everything below works the same on any Linux host with Docker; Photon notes are called out where they differ (`tdnf` instead of `apt`/`dnf`).
+The deployment target in this repo is a VMware Photon OS VM (tree at `/mnt/data1/openwebui-stack`; its address and SSH user live in `ansible/inventory/hosts.local.yml`, gitignored — see `hosts.yml` for the placeholder version). Everything below works the same on any Linux host with Docker; Photon notes are called out where they differ (`tdnf` instead of `apt`/`dnf`).
 
 ## Prerequisites
 
@@ -125,7 +125,7 @@ For `DOMAIN=localhost`, add to `/etc/hosts` **on the client machine** (the machi
 127.0.0.1 localhost chatbot.localhost grafana.localhost litellm.localhost auth.localhost traefik.localhost voice.localhost
 ```
 
-Replace `127.0.0.1` with the host IP when the stack runs on another machine (e.g. `STACK_HOST_IP`). The certificates are self-signed, so accept the browser warning the first time (see [Troubleshooting](#troubleshooting) to trust the CA instead).
+Replace `127.0.0.1` with the host IP when the stack runs on another machine (the address from `ansible/inventory/hosts.local.yml`). The certificates are self-signed, so accept the browser warning the first time (see [Troubleshooting](#troubleshooting) to trust the CA instead).
 
 ### 4. Verify
 

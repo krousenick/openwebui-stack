@@ -14,6 +14,13 @@ ansible/tests/eval-results/
 # vllm-remote runner local config (real addresses/users/key paths)
 ansible/tests/vllm-remote/run.local.env
 
+# Site-specific inventory/group_vars overrides (real addresses, users,
+# paths, CIDRs). The committed files ship placeholders; these carry the
+# real values and override them when passed as a second -i / by merge order.
+ansible/inventory/*.local.yml
+ansible/tests/*/inventory.local.yml
+ansible/tests/*/group_vars/*/*.local.yml
+
 # SSL Certificates (generated locally)
 certs/
 *.crt

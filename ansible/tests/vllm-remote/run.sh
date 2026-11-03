@@ -69,8 +69,14 @@ run_playbook() {
 	local args=("$@")
 	# Source the deployed .env so the playbook sees LITELLM_MASTER_KEY
 	# (LiteLLM model registration) and REGISTRY_REDHAT_IO_* (Red Hat image
-	# pulls) without exporting secrets on the controller shell.
-	local cmdline="cd '$CONTROLLER_DIR' && set -a && . '$VLLM_RUN_REMOTE_TREE/.env' && set +a && ansible-playbook -i tests/vllm-remote/inventory.yml '$pb'"
+	# pulls) without exporting secrets on the controller shell. The local
+	# inventory (real node IP/user) overrides the committed placeholders
+	# when present.
+	local inv_args="-i tests/vllm-remote/inventory.yml"
+	if [[ -f "$RIG_DIR/inventory.local.yml" ]]; then
+		inv_args+=" -i tests/vllm-remote/inventory.local.yml"
+	fi
+	local cmdline="cd '$CONTROLLER_DIR' && set -a && . '$VLLM_RUN_REMOTE_TREE/.env' && set +a && ansible-playbook $inv_args '$pb'"
 	local i
 	for i in ${args[@]+"${args[@]}"}; do
 		cmdline+=" '$i'"

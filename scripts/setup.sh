@@ -53,6 +53,14 @@ fi
 # Run the playbook (all extra args are forwarded)
 # ---------------------------------------------------------------------------
 
-echo -e "${BLUE}Running: cd ansible && ansible-playbook playbooks/site.yml $*${NC}"
+# Site-specific connection values (real IPs, key paths) live in
+# inventory/hosts.local.yml (gitignored); pass it as a second inventory so
+# it overrides the placeholders in hosts.yml.
+INVENTORY_ARGS=()
+if [ -f "$ANSIBLE_DIR/inventory/hosts.local.yml" ]; then
+	INVENTORY_ARGS+=(-i "$ANSIBLE_DIR/inventory/hosts.local.yml")
+fi
+
+echo -e "${BLUE}Running: cd ansible && ansible-playbook ${INVENTORY_ARGS[*]} playbooks/site.yml $*${NC}"
 cd "$ANSIBLE_DIR"
-exec ansible-playbook playbooks/site.yml "$@"
+exec ansible-playbook "${INVENTORY_ARGS[@]}" playbooks/site.yml "$@"
