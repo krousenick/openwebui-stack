@@ -58,6 +58,15 @@ vllm_pipeline_parallel_size: 1
 #     key).
 #   - --max-num-seqs 16 caps the per-sequence mamba state pool (hybrid
 #     attention); 256 default seqs OOMs during profiling (observed live).
+#   - KV cache offloading to system RAM (this vLLM v0.33 build's native
+#     path: --kv-offloading-size activates it, --kv-offloading-backend
+#     native is the default backend; verified against the installed
+#     image's vllm/config/cache.py). 12GiB CPU KV tier in the ~21GiB free
+#     RAM: the GPU tier still holds the hot 32K window (1.07GiB fp8 KV)
+#     plus spill, so prefill for long prompts stays fast while the total
+#     addressable KV grows well past the GPU budget. The mamba/linear
+#     state pool is NOT offloaded (token-level KV only), so the GPU tier
+#     must still cover --max-num-seqs 16 states.
 #   - Parsers per the official recipe: qwen3_coder tool-call, qwen3
 #     reasoning. Open WebUI sends tool_choice: "auto", which needs
 #     --enable-auto-tool-choice.
@@ -73,6 +82,10 @@ vllm_extra_args:
   - "12"
   - "--max-num-seqs"
   - "16"
+  - "--kv-offloading-size"
+  - "12"
+  - "--kv-offloading-backend"
+  - "native"
   - "--enforce-eager"
   - "--enable-auto-tool-choice"
   - "--tool-call-parser"
