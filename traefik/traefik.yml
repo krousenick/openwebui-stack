@@ -66,13 +66,14 @@ serversTransport:
   maxIdleConnsPerHost: 10
 
 # Logging
+# No filePath: Traefik writes runtime and access logs to stdout, which
+# Grafana Alloy ships to Loki (see alloy/config.alloy). Setting filePath
+# redirects them into the container filesystem where no collector reads them.
 log:
   level: INFO
   format: json
-  filePath: /var/log/traefik/traefik.log
 
 accessLog:
-  filePath: /var/log/traefik/access.log
   format: json
   bufferingSize: 100
   filters:

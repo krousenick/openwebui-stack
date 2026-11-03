@@ -4,12 +4,16 @@
 # ===========================================================================
 # Each node runs the official vllm/vllm-openai container under systemd
 # (docker run, not compose; the compute nodes are separate hosts from the
-# Open WebUI stack). Two layers of inference serving live in this role:
+# Open WebUI stack). Three layers of inference serving live in this role:
 #
 #   1. The primary chat/completion model - one logical model sharded across
 #      the cluster in one of three topologies (see vllm_deployment_mode).
 #   2. Flux image-generation servers - N independent single-model servers
-#      listed in vllm_flux_models (see the Flux section at the bottom).
+#      listed in vllm_flux_models (see the Flux section below).
+#   3. Aux model servers - additional single-model servers (a small
+#      decision model next to a large analyst model, ...) listed in
+#      vllm_aux_models, each placed on a chosen subset of nodes via its
+#      hosts key (see the Aux section below).
 #
 # Topologies for the primary model:
 #
@@ -50,6 +54,12 @@ vllm_container_cli: docker
 # group_vars. Only applied when it differs from the current value.
 vllm_podman_storage_root: /var/lib/containers/storage
 
+# Image reference. Podman nodes need a fully-qualified reference: with
+# short-name-mode=enforcing (the Fedora default) an unqualified name like
+# "vllm/vllm-openai" cannot be resolved non-interactively, so every pull
+# from the systemd unit fails with exit 125. The role derives the FQ form
+# (vllm_image_fq) for podman by prefixing docker.io/ when no registry is
+# present; docker accepts both forms, so vllm_image stays unchanged.
 vllm_image: "vllm/vllm-openai:latest"
 vllm_container_name: vllm
 
@@ -131,6 +141,9 @@ vllm_install_dir: /opt/vllm
 
 # Container shared memory. Cross-node NCCL/Ray needs a large /dev/shm;
 # 16g matches the default the vllm docs recommend for distributed serving.
+# Only passed on docker: the containers run with --ipc host (they share the
+# host's IPC namespace), and podman rejects --shm-size together with
+# --ipc host ("cannot set shmsize when running in the host IPC Namespace").
 vllm_shm_size: "16g"
 
 # Container CLI GPU injection. With docker, --gpus all needs the NVIDIA
@@ -138,6 +151,16 @@ vllm_shm_size: "16g"
 # CDI (--device nvidia.com/gpu=all) - override in group_vars when the node
 # registers a compatible nvidia runtime instead.
 vllm_container_gpu_flag: "--gpus all"
+
+# FIPS workaround for containers whose OpenSSL is not FIPS-enabled. On a
+# host booted with fips=1, /proc/sys/crypto/fips_enabled reads 1 inside
+# every container, and Ubuntu/Debian-based images then auto-activate FIPS
+# mode - which fails hard (ssl.SSLError [CRYPTO] unknown error) because
+# those images do not ship the fips.so provider. Bind-mounting /dev/null
+# over the flag (podman only; docker cannot bind over /proc) hides it so
+# the container OpenSSL runs in normal mode. Set true for podman nodes
+# running on a FIPS host.
+vllm_mask_fips_flag: false
 
 # Number of GPUs per node. Autodetected from nvidia-smi when 0; the role
 # asserts tensor_parallel_size never exceeds it, and flux entries clamp the
@@ -193,3 +216,104 @@ vllm_flux_image: "{{ vllm_image }}"
 # Optional API key for the flux endpoints. Empty leaves them unauthenticated;
 # they are only reachable on the node's host port.
 vllm_flux_api_key: ""
+
+# ===========================================================================
+# Aux model servers
+# ===========================================================================
+# Additional single-model `vllm serve` servers placed on a chosen subset of
+# the vllm_compute nodes - the orchestration layer for "send this model to
+# the node that has the hardware for it". Like flux entries each is one
+# standalone server (no Ray, no cross-node sharding) with its own systemd
+# unit (vllm-aux-<name>) and host port; unlike flux entries the hosts key
+# selects which nodes run it, so a 24GB vision model can land on the A100
+# node while a 0.6B decider shares a 4090 with other work. Omit hosts (or
+# set it to 'all') to run the model on every node, like flux entries do.
+#
+# Aux and flux share a GPU budget on every node: the role asserts each
+# entry's tensor_parallel_size against vllm_gpus_per_node but not the
+# total across servers - plan co-running servers to fit the node's GPUs.
+#
+# Keys per entry (all optional except model):
+#   name                 unit/model id suffix; also the model name LiteLLM
+#                        exposes when served_model_name is unset
+#   model                HF repo id or local path (defaults:
+#                        vllm_aux_default_model)
+#   hosts                inventory hostnames this entry deploys on; 'all'
+#                        or omit = every vllm_compute node
+#   port                 host port; default vllm_aux_base_port + index
+#   tensor_parallel_size GPUs for this server (default 1 = one GPU)
+#   max_model_len        context length (default vllm_aux_default_max_model_len)
+#   gpu_memory_utilization fraction of GPU memory this server may use
+#   extra_args           raw vLLM CLI flags appended to `vllm serve`
+#   api_key              per-entry API key override (default vllm_aux_api_key)
+#
+# Ports must be unique across the flux AND aux lists per node - they all
+# bind host ports in the same space.
+# ===========================================================================
+vllm_aux_enabled: false
+
+vllm_aux_models: []
+
+vllm_aux_default_model: "Qwen/Qwen3-0.6B"
+vllm_aux_default_tensor_parallel_size: 1
+vllm_aux_default_max_model_len: 8192
+vllm_aux_default_gpu_memory_utilization: 0.90
+vllm_aux_default_extra_args: []
+
+# Base host port for aux servers when an entry sets none; entry i binds
+# vllm_aux_base_port + i (8010, 8011, ...). 8010 keeps them clear of the
+# flux range (8005+).
+vllm_aux_base_port: 8010
+
+# Image for aux containers. Defaults to the main vLLM image.
+vllm_aux_image: "{{ vllm_image }}"
+
+# API key the aux servers require. Defaults to the primary model's key so
+# one VLLM_API_KEY on the controller covers every layer; LiteLLM sends
+# that same key. Empty (with vllm_api_key also empty) disables auth.
+vllm_aux_api_key: "{{ vllm_api_key }}"
+
+# ===========================================================================
+# Monitoring: Prometheus exporters on each compute node + remote Grafana
+# dashboard. Deployed when vllm_monitoring_enabled is true; the firewalld
+# tasks admit the exporter ports in the vllm-cluster zone, and the OTel
+# collector on the stack host scrapes them (see otel/config.yaml's
+# remote-node / remote-nvidia-gpu jobs).
+# ===========================================================================
+
+vllm_monitoring_enabled: true
+
+# node-exporter: host CPU/memory/disk metrics, no GPU access needed.
+vllm_node_exporter_image: "prom/node-exporter:latest"
+vllm_node_exporter_port: 9100
+
+# GPU exporter flavor. DCGM only supports datacenter GPUs (Tesla, A/H/L/B
+# series); a GeForce card (RTX 4090 etc.) is NOT DCGM-compatible and the
+# nvidia-gpu-exporter (nvidia-smi based) is the correct exporter instead.
+# 'auto' probes the first GPU name via nvidia-smi: GeForce -> nvidia-smi
+# exporter, anything else -> dcgm. Override per group_vars when the fleet
+# is known.
+vllm_gpu_exporter_flavor: auto
+vllm_dcgm_exporter_image: "nvidia/dcgm-exporter:latest"
+vllm_dcgm_exporter_port: 9400
+vllm_nvidia_smi_exporter_port: 9835
+
+# The nvidia-smi exporter (utkuozdemir/nvidia-gpu-exporter, NVML backend)
+# targets consumer GPUs; the port matches the nvidia-gpu-exporter rpm's
+# default so a node with the rpm already running is detected as a served
+# port and reused. NVIDIA_DRIVER_CAPABILITIES=utility is required for the
+# NVML library to be injected into the container.
+vllm_nvidia_smi_exporter_image: "docker.io/utkuozdemir/nvidia_gpu_exporter:latest-nvml"
+
+# Effective exporter list; computed so tasks/firewall.yml (which runs
+# before tasks/monitoring.yml) can open the right ports. The GPU entry is
+# chosen by tasks/monitoring.yml's flavor detection (dcgm for datacenter
+# GPUs, nvidia-smi for GeForce) and injected into vllm_gpu_exporter.
+vllm_gpu_exporter: {}
+vllm_monitoring_exporters: "{{ [{'name': 'vllm-node-exporter', 'image': vllm_node_exporter_image,
+  'port': vllm_node_exporter_port, 'container_port': 9100, 'extra': ['--path.rootfs=/host']}]
+  + ([vllm_gpu_exporter] if (vllm_gpu_exporter | length) > 0 else []) }}"
+
+# Deployment: podman nodes get a systemd quadlet per exporter (systemd owns
+# the lifecycle; units are <name>-container.service); docker nodes use
+# community.docker.docker_container with restart_policy.

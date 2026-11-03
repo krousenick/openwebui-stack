@@ -10,6 +10,16 @@
 # entries that were removed from the list -> start and wait for /health.
 # ===========================================================================
 
+- name: Resolve the fully-qualified flux image reference
+  # Podman with short-name-mode=enforcing cannot resolve an unqualified
+  # image non-interactively; every pull from the systemd units fails with
+  # exit 125. Docker accepts the FQ form too.
+  ansible.builtin.set_fact:
+    vllm_flux_image_fq: "{{ (vllm_flux_image
+      if ('/' in vllm_flux_image and ('.' in vllm_flux_image.split('/')[0] or ':' in vllm_flux_image.split('/')[0]))
+      else 'docker.io/' ~ vllm_flux_image) }}"
+  when: vllm_flux_enabled | bool
+
 - name: Build the effective flux model list
   # Accumulate one merged dict per entry: explicit keys win, missing keys
   # take the vllm_flux_default_* values, port defaults to base_port + index.
@@ -60,30 +70,19 @@
   when: vllm_flux_enabled | bool
 
 - name: Open the flux API port in the cluster firewall
-  # Same zone the primary model uses (vllm-cluster); the when-clause skips
-  # ports firewall-cmd already lists, keeping reruns idempotent.
-  ansible.builtin.command:
-    argv:
-      - firewall-cmd
-      - --permanent
-      - --zone=vllm-cluster
-      - --add-port={{ flux_item.port }}/tcp
-  when: >-
-    vllm_flux_enabled | bool and vllm_manage_firewall | bool
-    and (flux_item.port ~ '/tcp') not in vllm_zone_ports.stdout.split()
+  # Same vllm-cluster zone the primary model uses; the firewalld module is
+  # idempotent, so reruns with unchanged ports report no change.
+  ansible.posix.firewalld:
+    zone: vllm-cluster
+    port: "{{ flux_item.port }}/tcp"
+    state: enabled
+    permanent: true
+    immediate: true
+  when: vllm_flux_enabled | bool and vllm_manage_firewall | bool
   loop: "{{ vllm_flux_effective_models | default([]) }}"
   loop_control:
     loop_var: flux_item
   register: vllm_flux_fw_ports
-  changed_when: true
-
-- name: Reload firewalld after flux ports
-  ansible.builtin.command:
-    cmd: firewall-cmd --reload
-  when: >-
-    vllm_flux_enabled | bool and vllm_manage_firewall | bool
-    and vllm_flux_fw_ports is changed
-  changed_when: true
 
 - name: Deploy the flux launch scripts and systemd units
   when: vllm_flux_enabled | bool
@@ -187,15 +186,11 @@
 - name: Wait for the flux APIs to accept requests
   # vllm serve /health reports ok once the model is loaded; a real FLUX.1
   # model takes minutes on first download, so the retries are configurable.
-  ansible.builtin.command:
-    argv:
-      - curl
-      - -sf
-      - --max-time
-      - "5"
-      - http://127.0.0.1:{{ flux_item.port }}/health
+  ansible.builtin.uri:
+    url: http://127.0.0.1:{{ flux_item.port }}/health
+    timeout: 5
   register: vllm_flux_health
-  until: vllm_flux_health.rc == 0
+  until: vllm_flux_health.status == 200
   retries: "{{ vllm_flux_health_wait_retries | default(vllm_health_wait_retries) }}"
   delay: 10
   changed_when: false

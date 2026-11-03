@@ -11,7 +11,7 @@
 # across the cluster instead of spawning them locally.
 set -euo pipefail
 
-readonly IMAGE="{{ vllm_image }}"
+readonly IMAGE="{{ vllm_image_fq }}"
 readonly NAME="{{ vllm_container_name }}-serve"
 {% if vllm_hf_token | length > 0 %}
 readonly HF_TOKEN="{{ vllm_hf_token }}"
@@ -23,7 +23,12 @@ exec {{ vllm_container_cli }} run \
   --rm \
   --name "$NAME" \
   --network host \
+{% if vllm_container_cli == 'docker' %}
   --shm-size {{ vllm_shm_size }} \
+{% endif %}
+{% if vllm_mask_fips_flag | bool and vllm_container_cli == 'podman' %}
+  -v /dev/null:/proc/sys/crypto/fips_enabled \
+{% endif %}
   {{ vllm_container_gpu_flag }} \
   --ipc host \
   --entrypoint /bin/bash \
@@ -38,7 +43,7 @@ exec {{ vllm_container_cli }} run \
 {% if vllm_api_key | length > 0 %}
   -e VLLM_API_KEY="{{ vllm_api_key }}" \
 {% endif %}
-  "{{ vllm_image }}" \
+  "{{ vllm_image_fq }}" \
   -lc "vllm serve {{ vllm_model }} \
     --served-model-name {{ vllm_served_model_name }} \
     --host 0.0.0.0 \

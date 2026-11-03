@@ -104,6 +104,20 @@
       if (vllm_deployment_mode != 'ray' or vllm_cross_node_tensor_parallel | bool)
       else (vllm_pipeline_parallel_size | int) }}"
 
+- name: Resolve the fully-qualified image reference
+  # Podman with short-name-mode=enforcing (the Fedora default) cannot
+  # resolve an unqualified image non-interactively; every pull from the
+  # systemd units fails with exit 125. Docker accepts the FQ form too, so
+  # the scripts always use the qualified reference. A reference counts as
+  # qualified when its first path segment looks like a registry host
+  # (contains a dot or a port), e.g. ghcr.io/... or localhost:5000/....
+  vars:
+    vllm_image_first_segment: "{{ vllm_image.split('/')[0] }}"
+  ansible.builtin.set_fact:
+    vllm_image_fq: "{{ vllm_image
+      if ('.' in vllm_image_first_segment or ':' in vllm_image_first_segment)
+      else 'docker.io/' ~ vllm_image }}"
+
 - name: Collect vLLM endpoint hosts
   # extract() yields None for hosts whose vllm_host_ip fact has not been set
   # yet; map('string') stringifies and select('string') keeps the values,
@@ -117,6 +131,13 @@
   run_once: true
   delegate_to: localhost
 
+- name: Resolve the GPU exporter flavor before the firewall tasks
+  # The firewall opens the GPU exporter port, so the flavor (dcgm for
+  # datacenter GPUs, nvidia-smi for GeForce) and vllm_gpu_exporter must be
+  # resolved before firewall.yml imports the exporter list.
+  ansible.builtin.import_tasks:
+    file: gpu_flavor.yml
+
 - name: Configure firewall for the cluster network
   ansible.builtin.import_tasks:
     file: firewall.yml
@@ -129,14 +150,26 @@
     file: services.yml
 
 - name: Deploy Flux image-generation servers
-  # Independent per-model servers; skipped entirely when vllm_flux_enabled
-  # is false. Runs before the LiteLLM render so flux entries land in the
-  # snippet too.
+  # Independent per-model servers. The import is unconditional: the tasks
+  # no-op when the list is empty, and the cleanup block inside is what
+  # tears flux down after vllm_flux_enabled: false. Runs before the
+  # LiteLLM render so flux entries land in the snippet too.
   ansible.builtin.import_tasks:
     file: flux.yml
-  when: vllm_flux_enabled | bool
+
+- name: Deploy aux model servers
+  # Additional per-model servers placed on a chosen subset of nodes via
+  # each entry's hosts key. Same unconditional-import + cleanup pattern
+  # as flux. Also runs before the LiteLLM render.
+  ansible.builtin.import_tasks:
+    file: aux.yml
 
 - name: Render LiteLLM registration snippet
   ansible.builtin.import_tasks:
     file: litellm_registration.yml
   when: vllm_deployment_mode == 'standalone' or (vllm_ray_role | default('') == 'head')
+
+- name: Deploy node monitoring exporters and dashboard
+  ansible.builtin.import_tasks:
+    file: monitoring.yml
+  when: vllm_monitoring_enabled | bool

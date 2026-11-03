@@ -16,13 +16,15 @@ receivers:
               labels:
                 job: "node"
 
-        # NVIDIA GPU Exporter
-        - job_name: "nvidia-gpu"
-          scrape_interval: 15s
-          static_configs:
-            - targets: ["nvidia-gpu-exporter:9400"]
-              labels:
-                job: "nvidia-gpu"
+        # NVIDIA GPU Exporter (local node). The Photon host has no NVIDIA GPU;
+        # GPU metrics come from the remote-* jobs injected by the vllm_compute
+        # role. Uncomment if a local GPU exporter is ever deployed.
+        # - job_name: "nvidia-gpu"
+        #   scrape_interval: 15s
+        #   static_configs:
+        #     - targets: ["nvidia-gpu-exporter:9400"]
+        #       labels:
+        #         job: "nvidia-gpu"
 
         # LiteLLM token counts, spend, and request latency.
         # /metrics requires the proxy master key.
@@ -37,14 +39,17 @@ receivers:
                 job: "litellm"
           metrics_path: "/metrics"
 
-        # llama.cpp prompt and generation throughput.
-        - job_name: "llama-cpp"
-          scrape_interval: 15s
-          static_configs:
-            - targets: ["llama-cpp-test:8080"]
-              labels:
-                job: "llama-cpp"
-          metrics_path: "/metrics"
+        # llama.cpp prompt and generation throughput. No llama.cpp edge node is
+        # deployed in this stack; the job is a placeholder. Uncomment and point
+        # it at a live edge node when one exists (litellm/config.yaml's
+        # LLAMA_CPP_EDGE_NODES template).
+        # - job_name: "llama-cpp"
+        #   scrape_interval: 15s
+        #   static_configs:
+        #     - targets: ["llama-cpp-test:8080"]
+        #       labels:
+        #         job: "llama-cpp"
+        #   metrics_path: "/metrics"
 
         # Traefik metrics
         - job_name: "traefik"
@@ -54,9 +59,14 @@ receivers:
               labels:
                 job: "traefik"
 
-        # Qdrant metrics
+        # Qdrant metrics. /metrics requires the API key (Bearer auth, verified
+        # 401 without / 200 with); QDRANT_API_KEY is exported to the collector
+        # by the compose service.
         - job_name: "qdrant"
           scrape_interval: 15s
+          authorization:
+            type: Bearer
+            credentials: "${QDRANT_API_KEY}"
           static_configs:
             - targets: ["qdrant:6333"]
               labels:
@@ -116,6 +126,11 @@ receivers:
             - targets: ["oauth2-proxy:4181"]
               labels:
                 job: "oauth2-proxy"
+
+        # BEGIN vllm_compute remote scrape jobs (managed)
+        # (rendered by the vllm_compute role from the live inventory -
+        # see tasks/monitoring.yml; do not edit by hand)
+        # END vllm_compute remote scrape jobs (managed)
 
   # Docker engine resource metrics for every running container.
   # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/dockerstatsreceiver
@@ -201,6 +216,12 @@ processors:
     spike_limit_mib: 128
 
   # Resource processor to add metadata
+  #
+  # The prometheus receiver sets job to "<service.namespace>/<job_name>"
+  # (openwebui-stack/keycloak) because of the service.namespace attribute
+  # below. Dashboards and alert rules select the plain job label, so the
+  # namespace is moved to its own stack_namespace label and job is restored
+  # to the scrape job name via from_attribute.
   resource:
     attributes:
       - key: service.namespace
@@ -209,6 +230,11 @@ processors:
       - key: deployment.environment
         value: production
         action: upsert
+      - key: stack_namespace
+        from_attribute: service.namespace
+        action: upsert
+      - key: service.namespace
+        action: delete
 
 exporters:
   # Export to LGTM stack via OTLP

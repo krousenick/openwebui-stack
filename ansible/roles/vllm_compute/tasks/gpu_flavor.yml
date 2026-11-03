@@ -1,0 +1,59 @@
+---
+# GPU exporter flavor resolution. DCGM only supports datacenter GPUs
+# (Tesla, A/H/L/B series); GeForce cards (RTX 4090 etc.) are NOT
+# DCGM-compatible and the nvidia-smi based exporter is the correct choice.
+# Runs before firewall.yml so the exporter list (and its ports) reflect the
+# actual GPU flavor, and before monitoring.yml so the deploy tasks reuse the
+# resolved vllm_gpu_exporter entry.
+
+- name: Detect the GPU exporter flavor
+  # 'auto' probes the first GPU name: GeForce -> nvidia-smi flavor,
+  # otherwise dcgm. An explicit vllm_gpu_exporter_flavor skips the probe.
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_gpu_exporter_flavor == 'auto'
+  block:
+    - name: Query the first GPU name
+      ansible.builtin.command:
+        cmd: nvidia-smi --query-gpu=name --format=csv,noheader
+      register: vllm_gpu_name_check
+      changed_when: false
+      failed_when: false
+
+    - name: Set the GPU exporter from the detected GPU
+      ansible.builtin.set_fact:
+        vllm_gpu_exporter_detected: "{{ 'nvidia-smi'
+          if (vllm_gpu_name_check.stdout | default('') is search('GeForce'))
+          else 'dcgm' }}"
+
+- name: Resolve the GPU exporter flavor
+  ansible.builtin.set_fact:
+    vllm_gpu_flavor: "{{ vllm_gpu_exporter_detected
+      if (vllm_gpu_exporter_flavor == 'auto') else vllm_gpu_exporter_flavor }}"
+  when: vllm_monitoring_enabled | bool
+
+- name: Set the GPU exporter entry
+  # The single GPU exporter entry drives the deploy, the firewall ports,
+  # the otel scrape job name, and the dashboard panel metrics. 'none'
+  # (no GPU, e.g. the stub rig) leaves the entry empty, which drops the
+  # GPU exporter from every downstream loop.
+  ansible.builtin.set_fact:
+    vllm_gpu_exporter: >-
+      {{ {} if vllm_gpu_flavor == 'none' else
+         {'name': 'vllm-dcgm-exporter', 'image': vllm_dcgm_exporter_image,
+          'port': vllm_dcgm_exporter_port, 'container_port': 9400,
+          'extra': [], 'flavor': 'dcgm', 'job': 'remote-nvidia-gpu'}
+         if vllm_gpu_flavor == 'dcgm' else
+         {'name': 'vllm-nvidia-smi-exporter', 'image': vllm_nvidia_smi_exporter_image,
+          'port': vllm_nvidia_smi_exporter_port, 'container_port': 9835,
+          'extra': [], 'flavor': 'nvidia-smi', 'job': 'remote-nvidia-smi'} }}
+  when: vllm_monitoring_enabled | bool
+
+- name: Recompute the monitoring exporter list with the GPU exporter
+  # Rebuilds the defaults' vllm_monitoring_exporters with the concrete GPU
+  # exporter entry so the firewall + deploy + health loops all agree.
+  ansible.builtin.set_fact:
+    vllm_monitoring_exporters: "{{ [{'name': 'vllm-node-exporter', 'image': vllm_node_exporter_image,
+      'port': vllm_node_exporter_port, 'container_port': 9100, 'extra': ['--path.rootfs=/host']}]
+      + ([vllm_gpu_exporter] if (vllm_gpu_exporter | length) > 0 else []) }}"
+  when: vllm_monitoring_enabled | bool

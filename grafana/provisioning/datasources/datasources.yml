@@ -6,6 +6,9 @@
 
 apiVersion: 1
 
+# Remove provisioned datasources that are no longer listed below.
+prune: true
+
 datasources:
   # ===========================================================================
   # Prometheus - Metrics
@@ -66,3 +69,16 @@ datasources:
         enabled: true
       lokiSearch:
         datasourceUid: loki
+
+  # ===========================================================================
+  # Pyroscope - Continuous Profiling
+  # The otel-lgtm image runs Pyroscope on :4040 and ships the
+  # grafana-pyroscope-datasource plugin; without this entry the profiles
+  # signal is invisible in Grafana.
+  # ===========================================================================
+  - name: Pyroscope
+    type: grafana-pyroscope-datasource
+    uid: pyroscope
+    access: proxy
+    url: http://lgtm:4040
+    editable: false

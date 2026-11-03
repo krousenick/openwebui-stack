@@ -1407,6 +1407,39 @@
       ],
       "title": "HTTP Details",
       "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "id": 24,
+      "options": {
+        "dedupStrategy": "none",
+        "enableInfiniteScrolling": true,
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "expr": "{container_name=~\".*traefik.*\"}",
+          "refId": "A"
+        }
+      ],
+      "title": "Traefik logs",
+      "type": "logs",
+      "description": "Traefik access and router logs from Loki."
     }
   ],
   "preload": false,
@@ -1542,5 +1575,5 @@
   "timezone": "",
   "title": "Traefik",
   "uid": "stack-traefik",
-  "version": 1
+  "version": 2
 }

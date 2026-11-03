@@ -1686,6 +1686,39 @@
       ],
       "title": "Block Size",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 73
+      },
+      "id": 23,
+      "options": {
+        "dedupStrategy": "none",
+        "enableInfiniteScrolling": true,
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "expr": "{container_name=~\".*postgres.*\"}",
+          "refId": "A"
+        }
+      ],
+      "title": "PostgreSQL logs",
+      "type": "logs",
+      "description": "postgres and postgres-exporter container logs from Loki."
     }
   ],
   "preload": false,
@@ -1708,5 +1741,5 @@
   "timezone": "browser",
   "title": "PostgreSQL",
   "uid": "stack-postgres",
-  "version": 1
+  "version": 2
 }

@@ -23,6 +23,12 @@ vllm_hf_cache_dir: /opt/vllm-hf-cache
 # --runtime=nvidia selects it without touching device discovery.
 vllm_container_gpu_flag: "--runtime=nvidia"
 
+# No real GPU in the rig: the stub nvidia-smi reports fake "RTX 409D" cards
+# (GeForce), so the flavor detection picks the nvidia-smi exporter - whose
+# container cannot query a nonexistent NVML. Skip the GPU exporter entirely.
+vllm_monitoring_enabled: true
+vllm_gpu_exporter_flavor: none
+
 # Firewalld IS running in the rig; the real zone rules are the point of the
 # test. The OrbStack network is not the production compute segment, so open
 # the zone to the VM's own /24.
@@ -36,3 +42,16 @@ vllm_flux_models:
     model: black-forest-labs/FLUX.1-dev
   - name: flux-schnell
     model: black-forest-labs/FLUX.1-schnell
+
+# Exercise the aux tasks with the stub image. Both rig inventory hosts
+# alias ONE VM, so entries must place on both nodes (identical per-node
+# slices); a hosts-subset entry would race node-02's cleanup against
+# node-01's deploy on the shared VM. Real fleets use subsets freely.
+vllm_aux_enabled: true
+vllm_aux_models:
+  - name: vision-analyst
+    model: Qwen/Qwen3.5-VL-8B
+    hosts: [vllm-node-01, vllm-node-02]
+  - name: gatekeeper
+    model: Qwen/Qwen3-0.6B
+    hosts: all

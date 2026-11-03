@@ -637,7 +637,7 @@ For full HF-precision models larger than a single llama.cpp node can serve, use 
    ansible-galaxy collection install -r requirements.yaml
    ansible-playbook playbooks/inference.yml
    ```
-     The role runs after the global `prerequisites` role, which checks the container CLI (Docker + compose, or podman) and — for this group via `prerequisites_check_nvidia: true` in `ansible/group_vars/vllm_compute/vars.yml` — the NVIDIA driver. Set `prerequisites_install_missing: true` for a node group and the role installs the missing CLI plus the NVIDIA container toolkit and generates the CDI spec podman's `--device nvidia.com/gpu=all` consumes; with the default `false` it fails fast with install guidance instead. The role opens pinned Ray ports (6379, 8265, 13377-13379, 14000-15000) in a dedicated `vllm-cluster` firewalld zone restricted to the compute CIDR, deploys systemd units (`vllm-ray`, `vllm-serve`), waits for Ray workers to join, then waits for `GET /health` on the API.
+     The role runs after the global `prerequisites` role, which checks the container CLI (Docker + compose, or podman) and — for this group via `prerequisites_check_nvidia: true` in `ansible/group_vars/vllm_compute/vars.yml` — the NVIDIA driver. Set `prerequisites_install_missing: true` for a node group and the role installs the missing CLI plus the NVIDIA container toolkit and generates the CDI spec podman's `--device nvidia.com/gpu=all` consumes; with the default `false` it fails fast with install guidance instead. The role opens pinned Ray ports (6379, 8265, 13377-13379, 14000-15000) in a dedicated `vllm-cluster` firewalld zone restricted to the compute CIDR (via the `ansible.posix.firewalld` module, which also admits SSH so the management subnet keeps shell access), deploys systemd units (`vllm-ray`, `vllm-serve`), waits for Ray workers to join, then waits for `GET /health` on the API.
 4. **Register with LiteLLM**: the run renders `litellm/vllm-models.yaml` with the `model_list` snippet (single cluster endpoint in ray mode; one entry per node in standalone mode). Merge it into `litellm/config.yaml` on the photon host and `docker compose restart litellm`.
 
 #### Flux image-generation servers
@@ -656,7 +656,27 @@ vllm_flux_models:
 
 Each entry gets its own `vllm-flux-<name>` systemd unit, launch script, and host port; removing an entry from the list removes its unit and script. Per-entry keys (`name`, `model`, `port`, `tensor_parallel_size`, `max_model_len`, `gpu_memory_utilization`, `extra_args`) override the `vllm_flux_default_*` role defaults, so a bare `- model: <repo-id>` entry runs the fleet defaults. Flux model entries appear in `litellm/vllm-models.yaml` with `mode: image_generation`; merge them into `litellm/config.yaml` and `docker compose restart litellm`. Details: [docs/vllm-inference.md](docs/vllm-inference.md).
 
+#### Aux model servers (per-node placement)
+
+For running additional models on specific compute nodes — e.g. a vision-language model for deep event analysis on the node with the big GPU and a tiny 0.6B true/false decider spread across the fleet — the role places **aux model servers**: `vllm_aux_enabled: true` plus a `vllm_aux_models` list whose entries carry a `hosts` key selecting the nodes:
+
+```yaml
+vllm_aux_models:
+  - name: vision-analyst
+    model: Qwen/Qwen3.5-VL-8B
+    hosts: [vllm-node-01]
+  - name: gatekeeper
+    model: Qwen/Qwen3-0.6B
+    hosts: all
+```
+
+Each entry deploys one standalone `vllm serve` with its own `vllm-aux-<name>` systemd unit and host port (default base 8010) on the selected nodes only. Per-entry keys are the flux keys plus `hosts` (list, comma string, or `all`) and `api_key`; removing an entry or a host cleans up automatically. Each (node, entry) placement renders a `model_list` entry into `litellm/vllm-models.yaml` — a model placed on several nodes appears under the same `model_name` and LiteLLM load balances the replicas. Details: [docs/vllm-inference.md](docs/vllm-inference.md).
+
 Ray traffic is unauthenticated and can execute arbitrary code; keep `vllm_firewall_zone_source` limited to the compute segment and set `VLLM_API_KEY` on the controller so the API requires auth. The zone's source binding routes all traffic from that subnet into the zone, so the role also admits the `ssh` service there — without it, management hosts in the subnet lose SSH to the node when the zone reloads.
+
+#### Remote node monitoring
+
+The role deploys Prometheus exporters on every compute node (`vllm_monitoring_enabled`, default on): **node-exporter** (host metrics, port 9100) and the **flavor-correct GPU exporter** — dcgm-exporter (9400) for datacenter GPUs, the nvidia-smi exporter (9835) for GeForce cards, auto-detected via `nvidia-smi`. Ports already served by host rpms are reused, not double-deployed. Podman nodes run them as systemd quadlets, docker nodes via `docker_container` restart policy. The role injects inventory-templated scrape jobs into `otel/config.yaml` (GPU job, `remote-node`, `remote-vllm`), and templates a `vLLM Remote Nodes` Grafana dashboard into `grafana/provisioning/dashboards/json/` whose GPU panels query both DCGM and nvidia_smi metric families. The run also registers the served model with LiteLLM directly (`POST /model/new`, needs `LITELLM_MASTER_KEY` on the controller) — no litellm restart needed. After a run, `docker compose --profile monitoring restart otel-collector lgtm` picks up new scrape jobs and the dashboard. Hardware firewall: allow management → node TCP 9100, 9400 (or 9835 for GeForce nodes), 8000.
 
 ### Sync Ollama models
 
@@ -750,34 +770,43 @@ The stack includes several pre-configured dashboards:
    - Power consumption
 
 8. **tokenization-dashboard.json** - Token counts and throughput
-   - LiteLLM input, output, cached, and reasoning tokens
-   - Output tokens per second and seconds per output token
-   - Time to first token and request latency
-   - llama.cpp prompt and predicted tokens per second
-   - Requires `callbacks: ["otel", "prometheus"]` and a scrape of `litellm:4000/metrics` with the master key. llama.cpp panels need `--metrics`.
+   - LiteLLM input, output, and total tokens per requested model, spend per second, and proxy request/latency percentiles from the prometheus callback
+   - Requires `callbacks: ["otel", "prometheus"]` (set) and the collector's `litellm` job scraping `litellm:4000/metrics` with the master key. The compose service exports `LITELLM_MASTER_KEY` to the collector for that scrape.
 
- 8. **keycloak-dashboard.json** - Keycloak authentication monitoring
-    - Login success and failure from `keycloak_user_events_total` (`event="login"`, empty `error` is success)
-    - Authentication latency SLO, P50/P95/P99, and server error rate
-    - Password hash validations, database pool, JVM memory, and scrape status
-    - Keycloak container logs and keycloak-backup container logs
-    - Last backup result, success count, failure count, and age of the last success
+  9. **keycloak-dashboard.json** - Keycloak authentication monitoring
+     - Login success and failure from `keycloak_user_events_total` (`event="login"`, empty `error` is success)
+     - Authentication latency SLO, P50/P95/P99, and server error rate
+     - Password hash validations, database pool, JVM memory, and scrape status
+     - GC pauses by cause, GC overhead, process CPU, JVM thread states, and DB connection acquires
+     - Keycloak container logs and keycloak-backup container logs
+     - Last backup result, success count, failure count, and age of the last success
 
-9. **chatterbox-dashboard.json** - Chatterbox TTS (`monitoring` profile)
-   - Health, model load, live progress, success rate, and errors
-   - CPU and CUDA memory, alerts, voices, languages, and generation settings
-   - Chatterbox container CPU, memory, and error logs
+10. **chatterbox-dashboard.json** - Chatterbox TTS (`monitoring` profile)
+    - Health, model load, live progress, success rate, and errors
+    - CPU and CUDA memory, alerts, voices, languages, and generation settings
+    - Chatterbox container CPU, memory, and error logs
 
-10. **stack-logs-dashboard.json** - Logs from every service (`monitoring` profile)
-    - Service, stream, and text filters
-    - Log volume and error lines
+11. **stack-errors-dashboard.json** - Central error view (`monitoring` profile)
+    - Error lines per second per container (`(?i)error|exception|fatal|panic` regex match)
+    - Error counts by container over the selected range
+    - Raw error stream with a search box for narrowing (timeout, refused, 401)
+    - Collapsed warning-rate row
 
-11. **container-resources-dashboard.json** - Per-container Docker stats (`monitoring` profile)
+12. **container-resources-dashboard.json** - Per-container Docker stats (`monitoring` profile)
     - CPU, memory, network, disk, restarts, PIDs, and uptime
+    - Container logs for the selected container
 
-Traefik v3.7 only emits `traefik_entrypoint_*` request metrics when the entrypoint sets `observability.metrics: true`. The `web` and `websecure` entrypoints do. The internal `traefik` entrypoint stays off. Node dashboards default to job `openwebui-stack/node` and instance `node-exporter:9100`. Open WebUI and LiteLLM panels use their OTel HTTP series (`http_server_requests_total`, `http_server_duration_milliseconds_bucket`). Keycloak panels use job `openwebui-stack/keycloak`. HTTP URIs are templates such as `/realms/{realm}/protocol/{protocol}/auth`, so match the braces literally. User events use `keycloak_user_events_total` with lowercase `event` (`login`, not `LOGIN`) and an `error` label that is empty on success. Password checks use `keycloak_credentials_password_hashing_validations_total`. The official troubleshooting and capacity dashboards are retargeted the same way. They no longer filter on Kubernetes `namespace`, `pod`, or `container` labels.
+13. **vllm-nodes-dashboard.json** - Remote compute nodes (templated by the `vllm_compute` role)
 
-Chatterbox does not expose Prometheus. With `--profile monitoring`, `json-exporter` reads `/status`, `/status/statistics`, `/memory`, `/memory/config`, `/health`, `/voices`, `/languages`, and `/config`, and the collector scrapes those series. CUDA series are missing on the CPU profile. The compose logging driver is `local`, so there is no json-file log to tail. Grafana Alloy (`loki.source.docker`) reads every container through the Docker API and pushes to Loki with `service_name` set to the container name. Select Keycloak logs with `{service_name=~".*keycloak"}` and backup logs with `{service_name=~".*keycloak-backup.*"}`. Alloy stores its read positions in the `alloy_data` volume. The collector still reads `/var/run/docker.sock` for Docker engine stats. Both run as root and join group `DOCKER_GID` (default `999`). Set `DOCKER_GID` from `getent group docker` when that group id differs. App logs that already use OTLP (Open WebUI, LiteLLM, Keycloak) are still exported as well. A backup run prints `keycloak_backup_success 1` or `keycloak_backup_success 0`. The Keycloak dashboard counts those lines. The backup container only exists while `docker compose --profile backup up keycloak-backup` is running.
+Each per-service dashboard ends with a logs widget reading its container's stdout/stderr from Loki: LiteLLM, Open WebUI, PostgreSQL, Traefik, and the OTel Collector. Keycloak Authentication has its own Keycloak and keycloak-backup log panels.
+
+Deleted dashboards: `logs_dashboard.json` (dead demo datasource uid), `metrics_dashboard.json` (duplicate of Node Exporter), `stack-logs-dashboard.json` (replaced by the per-dashboard logs widgets), and the community Keycloak capacity-planning and troubleshooting dashboards (built for Kubernetes; their working panels moved into `keycloak-dashboard.json`).
+
+Traefik v3.7 only emits `traefik_entrypoint_*` request metrics when the entrypoint sets `observability.metrics: true`. The `web` and `websecure` entrypoints do. The internal `traefik` entrypoint stays off. Node dashboards default to job `openwebui-stack/node` and instance `node-exporter:9100`. Open WebUI and LiteLLM panels use their OTel HTTP series (`http_server_requests_total`, `http_server_duration_milliseconds_bucket`). Keycloak panels use job `openwebui-stack/keycloak`. HTTP URIs are templates such as `/realms/{realm}/protocol/{protocol}/auth`, so match the braces literally. User events use `keycloak_user_events_total` with lowercase `event` (`login`, not `LOGIN`) and an `error` label that is empty on success. Password checks use `keycloak_credentials_password_hashing_validations_total`.
+
+Job labels: the collector's `resource` processor moves `service.namespace` out of the `job` label (into `stack_namespace`), so scraped series carry plain job names (`keycloak`, `litellm`, `remote-node`) that dashboards and alert rules select directly. LiteLLM's prometheus metrics arrive with OTel-translated names: the `_metric_` infix is dropped (`litellm_proxy_total_requests_metric_total` becomes `litellm_proxy_requests_metric_total`), so use `litellm_proxy_requests_metric_total`, `litellm_tokens_metric_total`, and `litellm_request_total_latency_metric_bucket`. Qdrant's `/metrics` requires the API key; the `qdrant` scrape job sends it as a Bearer token from `QDRANT_API_KEY` (exported to the collector by the compose service).
+
+Chatterbox does not expose Prometheus. With `--profile monitoring`, `json-exporter` reads `/status`, `/status/statistics`, `/memory`, `/memory/config`, `/health`, `/voices`, `/languages`, and `/config`, and the collector scrapes those series. CUDA series are missing on the CPU profile. The compose logging driver is `local`, so there is no json-file log to tail. Grafana Alloy (`loki.source.docker`) reads every container through the Docker API and pushes to Loki with `service_name`, `container_name`, `stream`, and `container` labels set from the container name (and stdout/stderr for `stream`), so log and metric queries filter identically: `{container_name=~".*keycloak.*"}` or `{service_name=~".*keycloak"}` both work. The `stream` label is applied through the source's `relabel_rules` (sharing `discovery.relabel.containers.rules`), because `loki.source.docker` sets `__meta_docker_container_log_stream` per entry after discovery relabeling. Traefik logs reach Loki because `traefik/traefik.yml` sets no `filePath` — Traefik writes runtime and access logs to stdout, which Alloy tails. Alloy stores its read positions in the `alloy_data` volume. The collector still reads `/var/run/docker.sock` for Docker engine stats. Both run as root and join group `DOCKER_GID` (default `999`). Set `DOCKER_GID` from `getent group docker` when that group id differs. App logs that already use OTLP (Open WebUI, LiteLLM, Keycloak) are still exported as well. A backup run prints `keycloak_backup_success 1` or `keycloak_backup_success 0`. The Keycloak dashboard counts those lines. The backup container only exists while `docker compose --profile backup up keycloak-backup` is running.
 
 ### Available Metrics
 
@@ -801,6 +830,35 @@ OpenTelemetry traces are automatically collected and stored in Tempo:
 - Analyze service dependencies
 - Identify performance bottlenecks
 - Track errors through the system
+
+### Profiles in Pyroscope
+
+The `otel-lgtm` image also runs Pyroscope (continuous profiling) on port 4040. The Grafana `pyroscope` datasource is provisioned in `grafana/provisioning/datasources/datasources.yml`; access it via Grafana → Explore → Pyroscope. Profiles only appear for services that send profiling data (the OTel SDK/eBPF auto-instrumentation does not currently forward profiles in this stack).
+
+### Alerting
+
+Alert rules are provisioned from `grafana/provisioning/alerting/` (`comprehensive-alerts.yml`, `keycloak-alerts.yml`, `alert-rules.yml`) into the Alerts folder: service health, Keycloak SLOs, application errors, system metrics, and GPU temperature.
+
+Service-down rules use `max(up{job="..."}) == 0 or absent(up{job="..."})` with `noDataState: OK`: the `or absent()` arm catches a vanished scrape target (including a dead collector), while a healthy service returns an empty result and stays inactive. Open WebUI pushes metrics via OTLP instead of being scraped, so it has no `up` series; its rule watches `absent(container_memory_usage_total_bytes{container_name=~".*open-webui.*"})` from the collector's docker_stats receiver instead.
+
+Discord notifications: `discord-contactpoints.yml` and `notification-policies.yml` provision the contact point and root policy. The webhook URL interpolates from `GRAFANA_DISCORD_WEBHOOK_URL`, which the `lgtm` compose service passes from the deployed `.env` (rendered from `grafana_discord_webhook_url` in the ansible vault). Grafana validates the Discord receiver at startup and exits fatally if the URL is empty, so both files are renamed to `.disabled` until the vault value exists. To enable:
+
+```bash
+# 1. Set the webhook URL (Discord: Server Settings -> Integrations -> Webhooks)
+#    in ansible/group_vars/all/vault.local.yml:
+#    grafana_discord_webhook_url: "https://discord.com/api/webhooks/..."
+
+# 2. Re-render .env (cd ansible && ansible-playbook playbooks/site.yml), or set
+#    GRAFANA_DISCORD_WEBHOOK_URL in the deployed .env directly
+
+# 3. Re-enable provisioning and restart
+mv grafana/provisioning/alerting/discord-contactpoints.yml.disabled grafana/provisioning/alerting/discord-contactpoints.yml
+mv grafana/provisioning/alerting/notification-policies.yml.disabled grafana/provisioning/alerting/notification-policies.yml
+docker compose restart lgtm
+
+# 4. Send a test notification (Grafana UI: Alerting -> Contact points -> Discord
+#    -> Test, or via the API)
+```
 
 ## Additional Resources
 

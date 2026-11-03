@@ -35,6 +35,45 @@
         vllm_podman_storage_conf.content | default('') | b64decode
         is not search('graphroot\s*=\s*' ~ (vllm_podman_storage_root | ansible.builtin.regex_escape))
 
+- name: Log into registry.redhat.io when pulling Red Hat images
+  # Red Hat registry images (registry.redhat.io/...) need Customer Portal
+  # credentials. The launch scripts run `{{ vllm_container_cli }} pull`, which
+  # uses the rootful podman/docker auth store this login writes. Credentials
+  # come from the controller environment (REGISTRY_REDHAT_IO_USER /
+  # REGISTRY_REDHAT_IO_PASS); when they are absent the task is skipped and
+  # an existing login on the node (or a public mirror) must serve the pull.
+  when:
+    - vllm_image is search('^registry\.redhat\.io/')
+    - lookup('ansible.builtin.env', 'REGISTRY_REDHAT_IO_USER') | default('', true) | length > 0
+  block:
+    - name: Check for an existing registry.redhat.io login
+      ansible.builtin.command:
+        argv:
+          - "{{ vllm_container_cli }}"
+          - login
+          - --get-login
+          - registry.redhat.io
+      register: vllm_registry_login_state
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Log into registry.redhat.io
+      ansible.builtin.command:
+        argv:
+          - "{{ vllm_container_cli }}"
+          - login
+          - --username
+          - "{{ lookup('ansible.builtin.env', 'REGISTRY_REDHAT_IO_USER') }}"
+          - --password-stdin
+          - registry.redhat.io
+      args:
+        stdin: "{{ lookup('ansible.builtin.env', 'REGISTRY_REDHAT_IO_PASS') }}"
+      register: vllm_registry_login
+      changed_when: "'Login Succeeded' in vllm_registry_login.stdout"
+      when: vllm_registry_login_state.rc != 0
+      no_log: true
+
 - name: Create vLLM install directory
   ansible.builtin.file:
     path: "{{ vllm_install_dir }}"
@@ -115,14 +154,12 @@
     - vllm_deployment_mode == 'ray'
     - vllm_ray_role == 'head'
   block:
-    - name: Wait for all Ray nodes to register
+    - name: Wait for all Ray nodes to register (docker)
       # Counts Alive nodes inside the head container until it matches the
       # vllm_compute inventory size. 30 x 10s covers slow worker starts.
-      ansible.builtin.command:
+      community.docker.docker_container_exec:
+        container: "{{ vllm_container_name }}-ray"
         argv:
-          - "{{ vllm_container_cli }}"
-          - exec
-          - "{{ vllm_container_name }}-ray"
           - python
           - -c
           - import ray; ray.init(address="auto"); exit(0 if len([n for n in ray.nodes() if n["Alive"]]) >= {{ groups['vllm_compute'] | length }} else 1)
@@ -132,6 +169,22 @@
       delay: 10
       changed_when: false
       failed_when: false
+      when: vllm_container_cli == 'docker'
+
+    - name: Wait for all Ray nodes to register (podman)
+      containers.podman.podman_container_exec:
+        name: "{{ vllm_container_name }}-ray"
+        command:
+          - python
+          - -c
+          - import ray; ray.init(address="auto"); exit(0 if len([n for n in ray.nodes() if n["Alive"]]) >= {{ groups['vllm_compute'] | length }} else 1)
+      register: vllm_ray_status
+      until: vllm_ray_status.rc == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      failed_when: false
+      when: vllm_container_cli == 'podman'
 
     - name: Show Ray cluster status
       ansible.builtin.debug:
@@ -148,15 +201,11 @@
 - name: Wait for the vLLM API to accept requests
   # Model load can take minutes (weights + CUDA graphs); on a first run it
   # also includes the HF download, so the retries are configurable.
-  ansible.builtin.command:
-    argv:
-      - curl
-      - -sf
-      - --max-time
-      - "5"
-      - http://127.0.0.1:{{ vllm_port }}/health
+  ansible.builtin.uri:
+    url: http://127.0.0.1:{{ vllm_port }}/health
+    timeout: 5
   register: vllm_health
-  until: vllm_health.rc == 0
+  until: vllm_health.status == 200
   retries: "{{ vllm_health_wait_retries }}"
   delay: 10
   changed_when: false

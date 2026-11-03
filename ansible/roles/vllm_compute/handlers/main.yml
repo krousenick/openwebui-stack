@@ -23,3 +23,20 @@
   loop: "{{ vllm_flux_effective_models | default([]) }}"
   loop_control:
     loop_var: flux_item
+
+- name: Restart aux services
+  ansible.builtin.systemd:
+    name: "vllm-aux-{{ aux_item.name }}"
+    state: restarted
+    daemon_reload: true
+  loop: "{{ vllm_aux_local_models | default([]) }}"
+  loop_control:
+    loop_var: aux_item
+
+- name: Restart monitoring exporters
+  ansible.builtin.systemd:
+    name: "{{ item.name }}.service"
+    state: restarted
+    daemon_reload: true
+  loop: "{{ vllm_monitoring_deploy | default([]) }}"
+  when: vllm_container_cli == 'podman'

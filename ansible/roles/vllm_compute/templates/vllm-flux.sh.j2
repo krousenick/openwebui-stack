@@ -8,7 +8,7 @@
 # Shares the HF cache dir with the primary model server.
 set -euo pipefail
 
-readonly IMAGE="{{ vllm_flux_image }}"
+readonly IMAGE="{{ vllm_flux_image_fq }}"
 readonly NAME="{{ vllm_container_name }}-flux-{{ flux_item.name }}"
 {% if vllm_hf_token | length > 0 %}
 readonly HF_TOKEN="{{ vllm_hf_token }}"
@@ -20,7 +20,12 @@ exec {{ vllm_container_cli }} run \
   --rm \
   --name "$NAME" \
   --network host \
+{% if vllm_container_cli == 'docker' %}
   --shm-size {{ vllm_shm_size }} \
+{% endif %}
+{% if vllm_mask_fips_flag | bool and vllm_container_cli == 'podman' %}
+  -v /dev/null:/proc/sys/crypto/fips_enabled \
+{% endif %}
   {{ vllm_container_gpu_flag }} \
   --ipc host \
   --entrypoint /bin/bash \

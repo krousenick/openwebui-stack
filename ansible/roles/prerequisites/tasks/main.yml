@@ -53,12 +53,19 @@
   when: ansible_facts.os_family == "Debian"
 
 - name: Install required packages on RedHat-family hosts
+  # python3-firewall + python3-dbus are the runtime deps of the
+  # ansible.posix.firewalld module the vllm_compute role uses;
+  # python3-requests is the runtime dep of community.docker.docker_container
+  # (the vllm_compute monitoring deploy on docker nodes).
   ansible.builtin.dnf:
     name:
       - ca-certificates
       - curl
       - openssl
       - python3
+      - python3-dbus
+      - python3-firewall
+      - python3-requests
       - rsync
     state: present
   when: ansible_facts.os_family == "RedHat"

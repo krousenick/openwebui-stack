@@ -46,3 +46,21 @@
       supports_vision: false
 {% endfor %}
 {% endif %}
+{% if vllm_aux_enabled | default(false) | bool and (vllm_aux_effective_models | default([]) | length > 0) %}
+# Aux model servers. Each vllm_aux_models entry placed on a hosts subset;
+# subelements renders one (entry, host) pair per placement, so a model on
+# two nodes appears twice under the same model_name (LiteLLM load balances
+# replicas). Explicit ports land on the named node; the endpoint list
+# covers every (node, entry) pair.
+{% for aux_pair in vllm_aux_effective_models | default([]) | subelements('hosts') %}
+  - model_name: {{ aux_pair.0.served_model_name }}
+    litellm_params:
+      model: openai/{{ aux_pair.0.served_model_name }}
+      api_base: http://{{ hostvars[aux_pair.1].vllm_host_ip }}:{{ aux_pair.0.port }}/v1
+      api_key: {{ 'os.environ/VLLM_AUX_API_KEY' if aux_pair.0.api_key | length > 0 else 'local' }}
+    model_info:
+      description: "{{ aux_pair.0.served_model_name }} - vLLM aux on {{ aux_pair.1 }} ({{ aux_pair.0.model }})"
+      max_input_tokens: {{ aux_pair.0.max_model_len }}
+      max_tokens: {{ aux_pair.0.max_model_len }}
+{% endfor %}
+{% endif %}

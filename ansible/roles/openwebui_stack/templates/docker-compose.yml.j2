@@ -27,7 +27,6 @@ services:
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./traefik/dynamic:/etc/traefik/dynamic:ro
       - ./certs:/etc/traefik/certs:ro
-      - traefik_logs:/var/log/traefik
     environment:
       TZ: UTC
     networks:
@@ -545,6 +544,11 @@ services:
       GF_AUTH_GENERIC_OAUTH_LOGIN_ATTRIBUTE_PATH: "preferred_username"
       GF_AUTH_GENERIC_OAUTH_NAME_ATTRIBUTE_PATH: "name"
       GF_AUTH_GENERIC_OAUTH_USE_REFRESH_TOKEN: "true"
+
+      # Alerting contact points provisioned from grafana/provisioning/alerting
+      # interpolate environment variables; the Discord webhook URL comes from
+      # the deployed .env (rendered by the ansible playbook).
+      GRAFANA_DISCORD_WEBHOOK_URL: "${GRAFANA_DISCORD_WEBHOOK_URL:-}"
     volumes:
       - lgtm_data:/data
       - ./grafana/provisioning:/otel-lgtm/grafana/conf/provisioning:ro
@@ -937,11 +941,21 @@ services:
     group_add:
       - "${DOCKER_GID:-999}"
     command: [ "--config=/etc/otel/config.yaml" ]
+    environment:
+      # otel/config.yaml interpolates these for authenticated scrapes:
+      # litellm /metrics (Bearer master key), qdrant /metrics (Bearer API key).
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?error}"
+      QDRANT_API_KEY: "${QDRANT_API_KEY:?error}"
     volumes:
       - ./otel/config.yaml:/etc/otel/config.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - backend
+      # The backend network is internal:true, which gives containers no
+      # route to the LAN; the remote-node / remote-nvidia-gpu / remote-vllm
+      # scrape targets (compute nodes on 10.0.108.0/24) need frontend to
+      # reach them.
+      - frontend
     depends_on:
       - lgtm
       - json-exporter
@@ -1000,8 +1014,6 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_qdrant_data
   lgtm_data:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_lgtm_data
-  traefik_logs:
-    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_traefik_logs
   keycloak_data:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak_data
   keycloak_backups:

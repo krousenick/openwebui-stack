@@ -850,6 +850,39 @@
       ],
       "title": "Error Rate (%)",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "id": 11,
+      "options": {
+        "dedupStrategy": "none",
+        "enableInfiniteScrolling": true,
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "expr": "{container_name=~\".*open-webui.*\"}",
+          "refId": "A"
+        }
+      ],
+      "title": "Open WebUI logs",
+      "type": "logs",
+      "description": "Open WebUI container stdout/stderr from Loki."
     }
   ],
   "preload": false,
@@ -873,5 +906,5 @@
   "timezone": "browser",
   "title": "Open WebUI",
   "uid": "stack-openwebui",
-  "version": 1
+  "version": 2
 }

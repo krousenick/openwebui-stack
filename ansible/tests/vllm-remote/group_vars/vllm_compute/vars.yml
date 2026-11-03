@@ -18,6 +18,11 @@ prerequisites_container_cli: podman
 vllm_container_cli: podman
 vllm_container_gpu_flag: "--device nvidia.com/gpu=all"
 
+# The node boots with fips=1. The upstream vllm image (Ubuntu OpenSSL)
+# auto-activates FIPS mode from /proc/sys/crypto/fips_enabled but ships no
+# fips.so, so SSL init dies. Mask the flag; see vllm_mask_fips_flag in role
+# defaults. A Red Hat rhel9 image (FIPS-built) would not need the mask.
+
 # All node data under /home/node-user (396G free there; /var has 13G).
 # Rootful podman storage moved off the small /var onto the home volume.
 vllm_podman_storage_root: /home/node-user/vllm/podman-storage
@@ -29,10 +34,41 @@ vllm_deployment_mode: standalone
 vllm_tensor_parallel_size: 1
 vllm_pipeline_parallel_size: 1
 
-# Ungated 7B model that fits the 24GB card; no HF_TOKEN needed.
-vllm_model: Qwen/Qwen2.5-7B-Instruct
-vllm_max_model_len: 32768
-vllm_gpu_memory_utilization: 0.90
+# 27B dense hybrid-attention model on a single 24GB RTX 4090, full native
+# 262144 context. Memory plan (verified against the model card + vLLM
+# recipe page recipes.vllm.ai/Qwen/Qwen3.8-27B):
+#   - RedHatAI W4A16 GPTQ-Int4 checkpoint: 19.5GB weights (NVFP4 variants
+#     need Blackwell; this one runs on Ada).
+#   - Hybrid attention: only 16 of 64 layers are full attention (fp8 KV for
+#     the whole 262K window = 8.6GB), but the other 48 linear-attention
+#     layers allocate a per-sequence mamba state pool whose size scales
+#     with --max-num-seqs. Default 256 seqs blew past 24GB (OOM at KV
+#     allocation, observed live: 12.25GiB alloc vs 5.08GiB free).
+#   - --cpu-offload-gb 12 moves 12GB of weights into system RAM (28GB
+#     available), leaving ~7GB weights on GPU + 8.6GB attention KV +
+#     mamba pool for 16 seqs + compile buffers inside the 23.6GB budget.
+#   - --max-num-seqs 16 caps the mamba pool; one 262K-token request still
+#     has the full window (max_model_len is independent of concurrency).
+#   - Parsers per the official recipe: qwen3_coder tool-call, qwen3
+#     reasoning. Open WebUI sends tool_choice: "auto", which needs
+#     --enable-auto-tool-choice.
+vllm_model: RedHatAI/Qwen3.8-27B-INT4
+vllm_served_model_name: Qwen3.8-27B-INT4
+vllm_max_model_len: 262144
+vllm_gpu_memory_utilization: 0.88
+vllm_extra_args:
+  - "--kv-cache-dtype"
+  - "fp8"
+  - "--cpu-offload-gb"
+  - "12"
+  - "--max-num-seqs"
+  - "16"
+  - "--enforce-eager"
+  - "--enable-auto-tool-choice"
+  - "--tool-call-parser"
+  - "qwen3_coder"
+  - "--reasoning-parser"
+  - "qwen3"
 
 # The compute segment photon reaches the node on. The API port opens in the
 # vllm-cluster zone for LiteLLM; Ray ports stay open for later ray-mode runs.
@@ -43,9 +79,36 @@ vllm_manage_firewall: true
 # flux cleanup path is covered by the rig tests instead.
 vllm_flux_enabled: false
 
+# Aux models exercise the hardware-aware placement layer on real hardware:
+# the 27B primary claims 0.88 of the 4090 (21.6GiB) and cpu-offloads 12GB,
+# so the gatekeeper aux must fit in the remaining ~2.9GiB - Qwen3-0.6B at
+# gpu_memory_utilization 0.09 (~2.2GiB), FP16 weights ~1.2GB + small KV.
+# This is the frigate-gatekeeper pattern: a tiny true/false sub-classifier
+# next to a large analyst model, on one GPU. Explicit port; 0.6B needs no
+# tool-call or reasoning parsers. host is implicit (all = every node).
+vllm_aux_enabled: true
+vllm_aux_models:
+  - name: gatekeeper
+    model: Qwen/Qwen3-0.6B
+    port: 8010
+    gpu_memory_utilization: 0.09
+    max_model_len: 8192
+
 # First run pulls the ~10GB vLLM image and the ~15GB model weights before
 # /health can pass; 10 minutes was not enough. 180 x 10s = 30 minutes.
 vllm_health_wait_retries: 180
 
 # Supply via the controller environment (VLLM_API_KEY) or override here.
 vllm_api_key: local-vllm-key
+
+# vLLM image. The Red Hat rhel9 images are FIPS-built (no mask needed) but
+# require registry.redhat.io credentials - export REGISTRY_REDHAT_IO_USER /
+# REGISTRY_REDHAT_IO_PASS on the controller (or podman login on the node)
+# and switch to one of:
+#   registry.redhat.io/rhoai/odh-vllm-cuda-rhel9:v2.25.12-1791275271
+#   registry.redhat.io/rhaii-fast/vllm-omni-cuda-rhel9:3.6.0-fast.2-1791209357
+#   registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.2-1790621718a
+# Until credentials exist the run uses the upstream Ubuntu image with the
+# FIPS mask (the node boots fips=1; see vllm_mask_fips_flag in defaults).
+vllm_image: "vllm/vllm-openai:latest"
+vllm_mask_fips_flag: true

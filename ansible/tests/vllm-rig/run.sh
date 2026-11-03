@@ -38,7 +38,13 @@ sync_to_controller() {
 run_playbook() {
 	local pb="$1"
 	shift
-	sync_to_controller
+	local skip_sync="${1:-}"
+	if [[ "$skip_sync" == "--no-sync" ]]; then
+		shift
+	fi
+	if [[ "$skip_sync" != "--no-sync" ]]; then
+		sync_to_controller
+	fi
 	orb -m fedora sudo env \
 		ANSIBLE_CONFIG="$CONTROLLER_DIR/ansible/ansible.cfg" \
 		VLLM_IMAGE_OVERRIDE="$VLLM_IMAGE_OVERRIDE" \
@@ -60,8 +66,15 @@ inference)
 	run_playbook "$CONTROLLER_DIR/ansible/playbooks/inference.yml"
 	;;
 check)
+	# Idempotency = a second run without the sync in between changes
+	# nothing. The sync legitimately resets the controller-side managed
+	# blocks (otel scrape jobs, LiteLLM snippet, dashboard), so the first
+	# synced run always reports changed for those renders; the unsynced
+	# rerun must report zero changes anywhere (same pattern as
+	# tests/vllm-remote/run.sh).
 	local_log=/tmp/vllm-rig-run2.log
-	run_playbook "$CONTROLLER_DIR/ansible/playbooks/inference.yml" | tee "$local_log"
+	run_playbook "$CONTROLLER_DIR/ansible/playbooks/inference.yml" >/dev/null 2>&1
+	run_playbook "$CONTROLLER_DIR/ansible/playbooks/inference.yml" --no-sync | tee "$local_log"
 	if grep -Eq "changed=[1-9]" "$local_log"; then
 		echo "FAIL: role is not idempotent"
 		exit 1

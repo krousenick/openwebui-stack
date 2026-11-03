@@ -3,6 +3,12 @@
 # into litellm/config.yaml on the Open WebUI stack host. The task runs on the
 # compute node and delegates the file operations to the LiteLLM host when it
 # is present in the inventory.
+#
+# With store_model_in_db enabled on the proxy, models can ALSO be
+# registered directly through POST /model/new, which this role does
+# idempotently: it fetches the existing model list, diffs against the
+# snippet's model_names, and registers only the missing ones. Requires
+# LITELLM_MASTER_KEY on the controller (same secret the proxy validates).
 
 - name: Render the LiteLLM model snippet
   ansible.builtin.template:
@@ -15,9 +21,150 @@
   run_once: true
   become: false
 
+- name: Resolve the LiteLLM admin endpoint on the controller
+  # The controller (the stack host) reaches the litellm container on its
+  # docker-network IP; the API is not published to the LAN. docker inspect
+  # resolves it on the fly so the task survives container recreation.
+  ansible.builtin.shell: |
+    set -o pipefail
+    cid=$(docker ps --filter name=_litellm --format '{{ "{{" }}.Names{{ "}}" }}' | head -1)
+    if [ -z "$cid" ]; then
+        echo "LITELLM_NOT_RUNNING"
+        exit 0
+    fi
+    ip=$(docker exec "$cid" hostname -i | awk '{print $1}')
+    if [ -z "$ip" ]; then
+        echo "LITELLM_NOT_RUNNING"
+        exit 0
+    fi
+    echo "http://${ip}:4000"
+  register: vllm_litellm_endpoint
+  changed_when: false
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Fetch the existing LiteLLM model list
+  ansible.builtin.uri:
+    url: "{{ vllm_litellm_endpoint.stdout }}/v1/models"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') }}"
+    status_code: [200]
+    return_content: true
+  register: vllm_litellm_models
+  delegate_to: localhost
+  run_once: true
+  become: false
+  no_log: true
+  when:
+    - vllm_litellm_endpoint.stdout != 'LITELLM_NOT_RUNNING'
+    - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
+
+- name: Register the vLLM model with LiteLLM
+  # One POST per endpoint entry the snippet rendered (standalone renders
+  # one per node under the same model_name; LiteLLM treats identical
+  # model_name entries as load-balanced replicas). The model db is the
+  # source of truth: entries already present are skipped, so re-runs are
+  # idempotent.
+  ansible.builtin.uri:
+    url: "{{ vllm_litellm_endpoint.stdout }}/model/new"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      model_name: "{{ vllm_served_model_name }}"
+      litellm_params:
+        model: "openai/{{ vllm_served_model_name }}"
+        api_base: "http://{{ item }}:{{ vllm_port }}/v1"
+        api_key: "{{ vllm_api_key if vllm_api_key | length > 0 else 'local' }}"
+      model_info:
+        description: "{{ vllm_served_model_name }} - vLLM on {{ item }}"
+        max_input_tokens: "{{ vllm_max_model_len }}"
+        max_tokens: "{{ vllm_max_model_len }}"
+    status_code: [200]
+  register: vllm_litellm_register
+  changed_when: vllm_litellm_register.status == 200
+  delegate_to: localhost
+  run_once: true
+  become: false
+  no_log: true
+  loop: "{{ vllm_endpoints if vllm_deployment_mode == 'standalone' else [vllm_ray_head_address] }}"
+  when:
+    - vllm_litellm_endpoint.stdout != 'LITELLM_NOT_RUNNING'
+    - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
+    - vllm_served_model_name not in (vllm_litellm_models.json.data | default([])
+      | map(attribute='id') | list)
+
+- name: Build the aux (node, entry) pairs for registration
+  # subelements flattens each entry's hosts list into one
+  # [entry, hostname] pair per placement; every pair is one LiteLLM
+  # endpoint. Empty when aux is disabled or no entry lists hosts.
+  ansible.builtin.set_fact:
+    vllm_aux_endpoint_pairs: "{{ vllm_aux_effective_models | default([]) | subelements('hosts') | list }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Register the aux models with LiteLLM
+  # Same idempotent pattern as the primary model: one POST per (node,
+  # entry) pair, skipped when the model_name is already registered.
+  ansible.builtin.uri:
+    url: "{{ vllm_litellm_endpoint.stdout }}/model/new"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      model_name: "{{ aux_pair.0.served_model_name }}"
+      litellm_params:
+        model: "openai/{{ aux_pair.0.served_model_name }}"
+        api_base: "http://{{ hostvars[aux_pair.1].vllm_host_ip }}:{{ aux_pair.0.port }}/v1"
+        api_key: "{{ aux_pair.0.api_key if aux_pair.0.api_key | length > 0 else 'local' }}"
+      model_info:
+        description: "{{ aux_pair.0.served_model_name }} - vLLM aux on {{ aux_pair.1 }} ({{ aux_pair.0.model }})"
+        max_input_tokens: "{{ aux_pair.0.max_model_len }}"
+        max_tokens: "{{ aux_pair.0.max_model_len }}"
+    status_code: [200]
+  register: vllm_aux_litellm_register
+  changed_when: vllm_aux_litellm_register.status == 200
+  delegate_to: localhost
+  run_once: true
+  become: false
+  no_log: true
+  loop: "{{ vllm_aux_endpoint_pairs | default([]) }}"
+  loop_control:
+    loop_var: aux_pair
+  when:
+    - vllm_aux_endpoint_pairs | default([]) | length > 0
+    - vllm_litellm_endpoint.stdout != 'LITELLM_NOT_RUNNING'
+    - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
+    - aux_pair.0.served_model_name not in (vllm_litellm_models.json.data | default([])
+      | map(attribute='id') | list)
+
+- name: Registration result
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Registered ' ~ vllm_served_model_name ~ ' with LiteLLM ('
+        ~ (vllm_litellm_register.results | default([]) | selectattr('changed') | list | length)
+        ~ ' endpoint(s) added)'
+        ~ (', registered '
+          ~ (vllm_aux_litellm_register.results | default([]) | selectattr('changed') | list | length)
+          ~ ' aux endpoint(s)' if (vllm_aux_litellm_register.results | default([]) | selectattr('changed') | list | length) > 0 else '')
+      if (vllm_litellm_register.results | default([]) | selectattr('changed') | list | length) > 0
+        or (vllm_aux_litellm_register.results | default([]) | selectattr('changed') | list | length) > 0
+      else vllm_served_model_name ~ ' already registered with LiteLLM - skipped'
+      }}
+  delegate_to: localhost
+  run_once: true
+  become: false
+
 - name: Point the operator to the generated snippet
   ansible.builtin.debug:
     msg:
       - "LiteLLM model_list snippet written to litellm/vllm-models.yaml in the repository"
-      - "Add the snippet to model_list in litellm/config.yaml on the stack host, then:"
+      - "Merge the snippet into model_list in litellm/config.yaml on the stack host for file-based deployments, then:"
       - "docker compose restart litellm"

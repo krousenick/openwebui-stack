@@ -1,0 +1,259 @@
+---
+# Prometheus exporters for remote node monitoring, deployed when
+# vllm_monitoring_enabled is true:
+#   - node-exporter (host metrics; no GPU access)
+#   - the flavor-correct GPU exporter, resolved by gpu_flavor.yml before
+#     the firewall tasks: dcgm-exporter for datacenter GPUs, the
+#     nvidia-smi exporter for GeForce cards (DCGM does not support them)
+#
+# The stack's OTel collector (otel/config.yaml's injected remote-* jobs)
+# scrapes these ports from the management subnet, so tasks/firewall.yml
+# admits them in the vllm-cluster zone.
+#
+# Deployment: podman nodes get a systemd quadlet per exporter via
+# containers.podman.podman_container state:quadlet (systemd owns the
+# lifecycle; the systemd generator exposes the unit as <name>.service).
+# docker nodes use community.docker.docker_container with restart_policy.
+# Both exporters are Go binaries and need no FIPS mask; the vllm servers do.
+
+- name: Classify each exporter for deployment
+  # One probe per exporter answers the three-way question:
+  #   owned    - the role's own deployment exists (quadlet file on podman,
+  #              container on docker) from a previous run: keep managing it.
+  #   foreign  - the port is served by something else with no role
+  #              deployment (e.g. the prometheus-node-exporter rpm on
+  #              9100): skip; the host keeps its exporter and the scrape
+  #              jobs pick it up.
+  #   free     - no role deployment, no listener: deploy.
+  # systemctl list-unit-files does NOT list generated quadlet units, so
+  # the owned test checks the quadlet file / container itself.
+  ansible.builtin.shell: |-
+    if [ "{{ vllm_container_cli }}" = "podman" ] && [ -f /etc/containers/systemd/{{ item.name }}.container ]; then
+      echo owned
+    elif [ "{{ vllm_container_cli }}" = "docker" ] && {{ vllm_container_cli }} container inspect {{ item.name }} >/dev/null 2>&1; then
+      echo owned
+    elif ss -tlnH "sport = :{{ item.port }}" | grep -q LISTEN; then
+      echo foreign
+    else
+      echo free
+    fi
+  register: vllm_exporter_class
+  changed_when: false
+  loop: "{{ vllm_monitoring_exporters }}"
+  loop_control:
+    loop_var: item
+  when: vllm_monitoring_enabled | bool
+
+- name: Build the deploy list
+  ansible.builtin.set_fact:
+    vllm_monitoring_deploy: "{{ vllm_exporter_class.results
+      | selectattr('stdout', 'search', '^(owned|free)')
+      | map(attribute='item') | list }}"
+
+- name: Skip note for foreign exporters
+  ansible.builtin.debug:
+    msg: >-
+      Port {{ item.port }} on {{ inventory_hostname }} is served by a
+      process the role does not manage; keeping it and skipping the
+      {{ item.name }} deployment.
+  loop: "{{ vllm_exporter_class.results | selectattr('stdout', 'search', '^foreign')
+    | map(attribute='item') | list }}"
+  loop_control:
+    loop_var: item
+  when: vllm_monitoring_enabled | bool
+
+- name: Remove stale quadlets for skipped exporters (podman)
+  # A previous run may have written a quadlet whose port was later taken
+  # over by a host-level exporter; stop and delete it so systemd does not
+  # keep a failing unit around.
+  ansible.builtin.file:
+    path: "/etc/containers/systemd/{{ item.name }}.container"
+    state: absent
+  loop: "{{ vllm_monitoring_exporters | difference(vllm_monitoring_deploy) }}"
+  loop_control:
+    loop_var: item
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_container_cli == 'podman'
+  notify: Reload systemd
+
+- name: Remove stale GPU exporter quadlets from other flavors (podman)
+  # The GPU exporter name depends on the flavor (vllm-dcgm-exporter vs
+  # vllm-nvidia-smi-exporter); when the flavor changes, the previous
+  # flavor's quadlet must go or systemd keeps a second exporter running.
+  # Stop the unit first: the generator keeps the unit alive until a
+  # daemon-reload + stop even after the quadlet file is gone. changed_when
+  # guards idempotency: stopping an already-inactive unit reports changed
+  # otherwise.
+  ansible.builtin.systemd:
+    name: "{{ item }}.service"
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  failed_when: false
+  changed_when: false
+  loop:
+    - vllm-dcgm-exporter
+    - vllm-nvidia-smi-exporter
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_container_cli == 'podman'
+    - item != (vllm_gpu_exporter.name | default(''))
+  notify: Reload systemd
+
+- name: Delete stale GPU exporter quadlet files (podman)
+  ansible.builtin.file:
+    path: "/etc/containers/systemd/{{ item }}.container"
+    state: absent
+  loop:
+    - vllm-dcgm-exporter
+    - vllm-nvidia-smi-exporter
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_container_cli == 'podman'
+    - item != (vllm_gpu_exporter.name | default(''))
+
+- name: Deploy exporter quadlets (podman)
+  containers.podman.podman_container:
+    name: "{{ item.name }}"
+    image: "{{ (item.image if ('.' in item.image.split('/')[0] or ':' in item.image.split('/')[0]) else 'docker.io/' ~ item.image) }}"
+    state: quadlet
+    ports:
+      - "{{ item.port }}:{{ item.container_port }}"
+    command: "{{ item.extra if item.extra else omit }}"
+    volumes: "{{ ['/:/host:ro', '/proc:/host/proc:ro', '/sys:/host/sys:ro']
+      if item.name == 'vllm-node-exporter' else [] }}"
+    device: "{{ ['nvidia.com/gpu=all']
+      if (item.name == 'vllm-dcgm-exporter' or item.flavor | default('') == 'nvidia-smi') else [] }}"
+    env: "{{ {'NVIDIA_DRIVER_CAPABILITIES': 'utility'}
+      if item.flavor | default('') == 'nvidia-smi' else {} }}"
+  loop: "{{ vllm_monitoring_deploy }}"
+  loop_control:
+    loop_var: item
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_container_cli == 'podman'
+  notify: Restart monitoring exporters
+
+- name: Deploy exporters as containers (docker)
+  community.docker.docker_container:
+    name: "{{ item.name }}"
+    image: "{{ (item.image if ('.' in item.image.split('/')[0] or ':' in item.image.split('/')[0]) else 'docker.io/' ~ item.image) }}"
+    state: started
+    restart_policy: unless-stopped
+    ports:
+      - "{{ item.port }}:{{ item.container_port }}"
+    command: "{{ item.extra if item.extra else omit }}"
+    volumes: "{{ ['/:/host:ro', '/proc:/host/proc:ro', '/sys:/host/sys:ro']
+      if item.name == 'vllm-node-exporter' else [] }}"
+    device_requests: "{{ [{'driver': 'nvidia', 'count': 'all'}]
+      if (item.name == 'vllm-dcgm-exporter' or item.flavor | default('') == 'nvidia-smi') else [] }}"
+    env: "{{ {'NVIDIA_DRIVER_CAPABILITIES': 'utility'}
+      if item.flavor | default('') == 'nvidia-smi' else {} }}"
+  loop: "{{ vllm_monitoring_deploy }}"
+  loop_control:
+    loop_var: item
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_container_cli == 'docker'
+  notify: Restart monitoring exporters
+
+- name: Enable and start the exporter quadlet services
+  # state:quadlet writes /etc/containers/systemd/<name>.container; the
+  # systemd generator exposes it as <name>.service.
+  ansible.builtin.systemd:
+    name: "{{ item.name }}.service"
+    state: started
+    enabled: true
+    daemon_reload: true
+  loop: "{{ vllm_monitoring_deploy }}"
+  loop_control:
+    loop_var: item
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_container_cli == 'podman'
+
+- name: Wait for the exporters to accept requests
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ item.port }}/metrics"
+    timeout: 5
+  register: vllm_exporter_health
+  until: vllm_exporter_health.status == 200
+  retries: 12
+  delay: 5
+  changed_when: false
+  loop: "{{ vllm_monitoring_exporters }}"
+  loop_control:
+    loop_var: item
+  when: vllm_monitoring_enabled | bool
+
+- name: Render the remote nodes Grafana dashboard
+  # Lands in the repo's grafana provisioning tree on the controller, the
+  # same pattern litellm_registration.yml uses for the LiteLLM snippet.
+  # The stack's grafana container mounts ./grafana/provisioning read-only
+  # and picks the dashboard up within updateIntervalSeconds (30s).
+  ansible.builtin.template:
+    src: vllm-nodes-dashboard.json.j2
+    dest: "{{ playbook_dir }}/../../grafana/provisioning/dashboards/json/vllm-nodes-dashboard.json"
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  when: vllm_monitoring_enabled | bool
+
+- name: Build this node's scrape job block
+  # Each node renders its own jobs from its own facts (vllm_host_ip is a
+  # per-node set_fact), so no cross-host fact visibility is needed. The
+  # block lands inside the prometheus receiver's scrape_configs list, so
+  # job entries are indented 8 spaces to match the surrounding entries.
+  ansible.builtin.set_fact:
+    vllm_otel_scrape_block: |+
+      {% if vllm_gpu_exporter | default({}) | length > 0 %}
+              - job_name: "{{ vllm_gpu_exporter.job }}"
+                scrape_interval: 15s
+                static_configs:
+                  - targets:
+                      - "{{ vllm_host_ip }}:{{ vllm_gpu_exporter.port }}"
+                    labels:
+                      job: "{{ vllm_gpu_exporter.job }}"
+      {% endif %}
+              - job_name: "remote-node"
+                scrape_interval: 15s
+                static_configs:
+                  - targets:
+                      - "{{ vllm_host_ip }}:{{ vllm_node_exporter_port }}"
+                    labels:
+                      job: "remote-node"
+              - job_name: "remote-vllm"
+                scrape_interval: 15s
+                static_configs:
+                  - targets:
+                      - "{{ vllm_host_ip }}:{{ vllm_port }}"
+                    labels:
+                      job: "remote-vllm"
+  when: vllm_monitoring_enabled | bool
+
+- name: Render the remote scrape jobs into otel/config.yaml
+  # The collector config on the controller is repo-managed; the role
+  # injects one job per node/exporter between the markers. Targets come
+  # from the live inventory (each node's vllm_otel_scrape_block fact,
+  # aggregated here), so adding a node and re-running extends the scrape
+  # set without hand-editing config. The join evaluates in the task host's
+  # context, where hostvars sees every node's block.
+  ansible.builtin.blockinfile:
+    path: "{{ playbook_dir }}/../../otel/config.yaml"
+    marker: "        # {mark} vllm_compute remote scrape jobs (managed)"
+    block: "{{ groups['vllm_compute'] | default([])
+      | map('extract', hostvars, 'vllm_otel_scrape_block') | join('') }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  when: vllm_monitoring_enabled | bool
+
+- name: Point the operator at the dashboard and collector restart
+  ansible.builtin.debug:
+    msg:
+      - "Grafana dashboard 'vllm-remote-nodes' written to grafana/provisioning/dashboards/json/ on the controller"
+      - "Remote scrape jobs injected into otel/config.yaml from the inventory"
+      - "Restart the monitoring stack on the stack host for otel config + dashboard pickup:"
+      - "docker compose --profile monitoring restart otel-lgtm otel-collector"
