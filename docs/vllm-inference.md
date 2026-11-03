@@ -326,6 +326,27 @@ FIPS note: the exporters are Go binaries and run unmasked on a `fips=1` host. Fo
 
 ---
 
+## Model evaluation (the `vllm_eval` role)
+
+`ansible/playbooks/eval.yml` runs the reproducible test suite used for the Qwen3-Coder-30B vs Gemma-4-26B-A4B comparison (2026-11-03), so future models are measured the same way — through the LiteLLM gateway, so the full Open WebUI path is what's tested:
+
+1. **KV probe** — greps the vLLM engine's own startup line (`GPU KV cache size: N tokens, Maximum concurrency ...`) for the *measured* capacity, not the config-math estimate.
+2. **Long prompt** — `vllm_eval_long_prompt_tokens` of filler context plus a question (default 30K; the original production failure was 16,385 tokens against a 16,384 window).
+3. **Coding** — short code-gen prompt, scored on producing a `def` reading JSON.
+4. **Vision** — a generated red/white split PNG, "which color is the left half". Auto-skips (not fails) when the model rejects image content.
+5. **Concurrency** — `vllm_eval_concurrency` parallel requests, verifying the KV capacity line holds in practice.
+
+Results land in `ansible/tests/eval-results/<model>-<timestamp>.json` (gitignored) so runs are comparable across models over time. The play fails if any test fails.
+
+```bash
+# from ansible/tests/vllm-remote/ (deployed node)
+./run.sh eval
+# or target any registered gateway model:
+./run.sh eval -e vllm_eval_model=gemini-3.8-flash
+```
+
+---
+
 ## Testing the role locally
 
 `ansible/tests/vllm-rig/` runs the real role against a disposable OrbStack Fedora VM (no NVIDIA hardware — GPU pieces are stubbed). From `ansible/`:

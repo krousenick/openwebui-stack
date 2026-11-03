@@ -1,0 +1,12 @@
+---
+# Reproducible model evaluation against the LiteLLM gateway. Runs the
+# vllm_eval role (KV probe, long-prompt, coding, vision, concurrency)
+# against one deployed model. Set the target with -e vllm_eval_model=...
+# (defaults to vllm_served_model_name from the vllm_compute group_vars).
+- name: Evaluate the deployed vLLM model
+  hosts: vllm_compute
+  become: true
+  roles:
+    - role: vllm_eval
+      vars:
+        vllm_eval_model: "{{ vllm_served_model_name | default('') }}"

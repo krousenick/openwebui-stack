@@ -8,6 +8,12 @@
 *.env.*.local
 ansible/group_vars/all/vault.local.yml
 
+# Model eval results (vllm_eval role; per-run JSON, kept local)
+ansible/tests/eval-results/
+
+# vllm-remote runner local config (real addresses/users/key paths)
+ansible/tests/vllm-remote/run.local.env
+
 # SSL Certificates (generated locally)
 certs/
 *.crt
