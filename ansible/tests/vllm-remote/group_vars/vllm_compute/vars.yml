@@ -44,27 +44,28 @@ vllm_pipeline_parallel_size: 1
 #     (8.33GiB fp8 KV) therefore OOMs at KV allocation: available KV was
 #     1.81GiB, estimated max context 48608. The crash loop from that run
 #     was ValueError at engine init, not a driver OOM.
-#   - KV cost is 8.33GiB / 262144 tokens = ~33KiB/token (fp8 KV). At
-#     gpu_memory_utilization 0.88 the available KV is 0.88x24.56 - 19.8
-#     = ~1.81GiB (the crash run measured exactly this), so max_model_len
-#     32768 (1.07GiB KV) fits with 0.7GiB slack for the mamba pool and
-#     prefix cache. 16384 worked for engine init but Open WebUI's real
-#     prompts (system + history + tool schemas) hit 16385 input tokens
-#     immediately - ContextWindowExceededError on the first chat - so
-#     32768 is the minimum that serves real sessions.
+#   - KV cost is 8.33GiB / 262144 tokens = ~33KiB/token (fp8 KV). vLLM
+#     itself reported 1.81GiB available KV at 0.88 (est. max context
+#     48608); at 0.90 that scales to ~2.28GiB -> ~61K tokens possible.
+#     32768 is the setting: Open WebUI's first real chat (system prompt +
+#     tool schemas + history) sent 16385 input tokens and the 16K window
+#     rejected it, so 32K doubles the observed floor with 1.2GiB KV slack.
+#   - Co-running the gatekeeper aux is NOT possible with 32K: the aux's
+#     real footprint measured 3.86GiB (0.12 budget + CUDA context),
+#     leaving 19.74GiB free; the primary's startup check then caps its
+#     utilization at 0.836 -> <1GiB KV. The aux is therefore disabled on
+#     this node and belongs on a compute node with a second GPU (hosts
+#     key).
 #   - --max-num-seqs 16 caps the per-sequence mamba state pool (hybrid
 #     attention); 256 default seqs OOMs during profiling (observed live).
 #   - Parsers per the official recipe: qwen3_coder tool-call, qwen3
 #     reasoning. Open WebUI sends tool_choice: "auto", which needs
 #     --enable-auto-tool-choice.
-#   - 0.88 (primary) + 0.12 (gatekeeper aux below) = 1.00 of the GPU:
-#     vLLM budgets each server against total memory, so both slices
-#     coexist; the aux starts after the primary and the ordering is
-#     stable because both are systemd units started by the playbook.
+#   - Primary alone at 0.90; no co-running aux (see above).
 vllm_model: RedHatAI/Qwen3.8-27B-INT4
 vllm_served_model_name: Qwen3.8-27B-INT4
 vllm_max_model_len: 32768
-vllm_gpu_memory_utilization: 0.88
+vllm_gpu_memory_utilization: 0.90
 vllm_extra_args:
   - "--kv-cache-dtype"
   - "fp8"
@@ -88,24 +89,15 @@ vllm_manage_firewall: true
 # flux cleanup path is covered by the rig tests instead.
 vllm_flux_enabled: false
 
-# Aux models exercise the hardware-aware placement layer on real hardware:
-# the 27B primary claims 0.85 of the 4090 (~19.5GiB observed), leaving
-# ~4.5GiB. The gatekeeper aux takes 0.12 (~2.9GiB): Qwen3-0.6B needs
-# ~1.4GiB bf16 weights + ~0.4GiB activations + KV; at 4096 context the
-# fp16 KV is ~448MiB, so ~2.2GiB total fits with margin (0.09/8192 failed
-# live: "No available memory for the cache blocks"). --max-num-seqs 64
-# caps activation buffers inside the tiny budget. This is the
-# frigate-gatekeeper pattern: a tiny true/false sub-classifier next to a
-# large analyst model, on one GPU. 0.85+0.12 = 0.97 leaves restart
-# ordering room (vLLM budgets each server against total GPU memory).
-vllm_aux_enabled: true
-vllm_aux_models:
-  - name: gatekeeper
-    model: Qwen/Qwen3-0.6B
-    port: 8010
-    gpu_memory_utilization: 0.12
-    max_model_len: 4096
-    extra_args: ["--max-num-seqs", "64"]
+# Aux models exercise the hardware-aware placement layer on real hardware,
+# but NOT on this node: the 27B primary at 0.90 with a 32K window leaves
+# nothing for a second server (see the memory math above - the measured
+# aux footprint was 3.86GiB and the primary's startup check then refuses
+# 0.88). Disabled here; the rig test (tests/vllm-rig) covers the aux
+# deploy/cleanup paths, and the gatekeeper belongs on a node with a spare
+# GPU via its hosts key when one exists.
+vllm_aux_enabled: false
+vllm_aux_models: []
 
 # First run pulls the ~10GB vLLM image and the ~15GB model weights before
 # /health can pass; 10 minutes was not enough. 180 x 10s = 30 minutes.
