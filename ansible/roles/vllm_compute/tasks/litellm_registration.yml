@@ -84,9 +84,11 @@
    # per-model expected value). An entry is stale when any of:
    #   1. its model_name is not registered by this run (retired model,
    #      removed aux entry, model moved to another node), or
-   #   2. its stored max_input_tokens no longer matches the context length
-   #      this run would register - the gateway enforces the stored value,
-   #      so a max_model_len change must invalidate the old entry, or
+    #   2. its stored max_input_tokens no longer matches the context length
+    #      this run would register - the gateway enforces the stored value,
+    #      so a max_model_len change must invalidate the old entry - or is
+    #      not a JSON number (a string "262144" equals 262144 after int()
+    #      but clients gating on Number.isFinite reject string limits), or
    #   3. (primary only) its stored adaptive_router_preferences /
    #      input_cost_per_token no longer match vllm_adaptive_model_info -
    #      the gateway serves the stored model_info, so a tier/strengths/
@@ -135,6 +137,7 @@
     - candidate_item.model_name not in vllm_registered_names
       or (candidate_item.model_info.max_input_tokens | default(0) | int)
         != (vllm_expected_max_input[candidate_item.model_name] | default(0) | int)
+      or (candidate_item.model_info.max_input_tokens | default(none) is not number)
       or (candidate_item.model_name == vllm_served_model_name
         and (candidate_item.model_info.adaptive_router_preferences | default('ABSENT', true)
              | to_json(sort_keys=true))
@@ -217,9 +220,14 @@
         model: "openai/{{ vllm_served_model_name }}"
         api_base: "http://{{ item }}:{{ vllm_port }}/v1"
         api_key: "{{ vllm_api_key if vllm_api_key | length > 0 else 'local' }}"
+      # max_input_tokens/max_tokens must serialize as JSON numbers, not
+      # strings: the /model/info response round-trips whatever type was
+      # POSTed, and clients that gate on Number.isFinite (MAGIE's discovery
+      # plugin) never learn a string limit, so they fall back to a default
+      # context window and refuse to send large prompts.
       model_info: "{{ {'description': vllm_served_model_name ~ ' - vLLM on ' ~ item,
-            'max_input_tokens': vllm_max_model_len | string,
-            'max_tokens': vllm_max_model_len | string}
+            'max_input_tokens': vllm_max_model_len | int,
+            'max_tokens': vllm_max_model_len | int}
            | combine(vllm_adaptive_model_info | default({})) }}"
     status_code: [200]
   register: vllm_litellm_register
@@ -253,8 +261,8 @@
         api_key: "{{ aux_pair.0.api_key if aux_pair.0.api_key | length > 0 else 'local' }}"
       model_info:
         description: "{{ aux_pair.0.served_model_name }} - vLLM aux on {{ aux_pair.1 }} ({{ aux_pair.0.model }})"
-        max_input_tokens: "{{ aux_pair.0.max_model_len }}"
-        max_tokens: "{{ aux_pair.0.max_model_len }}"
+        max_input_tokens: "{{ aux_pair.0.max_model_len | int }}"
+        max_tokens: "{{ aux_pair.0.max_model_len | int }}"
     status_code: [200]
   register: vllm_aux_litellm_register
   changed_when: vllm_aux_litellm_register.status == 200

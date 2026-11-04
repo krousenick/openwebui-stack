@@ -1,0 +1,76 @@
+# Override of the built-in prompt_injection_data_exfiltration category.
+#
+# The built-in file is a conditional category: any identifier word
+# ("extract", "collect", "export", "download", "copy", ...) plus any block
+# word in the same sentence blocks at hardcoded high severity. Its block
+# words include ordinary app-domain nouns ("user data", "customer records",
+# "API keys", "source code", "passwords"), so building a login form, an
+# export feature, or a backup script false-blocks.
+#
+# This override keeps the always_block_keywords payload list (explicit
+# exfiltration commands against training data, credentials, model weights,
+# user records) and drops the conditional match. Exceptions are kept.
+#
+# NOTE: avoid regex-special characters like ( ) [ ] in keywords,
+# because the content filter matches keywords via regex internally.
+category_name: "prompt_injection_data_exfiltration"
+description: "Detects attempts to extract training data, internal information, or user data through prompts"
+default_action: "BLOCK"
+
+always_block_keywords:
+  - keyword: "extract training data"
+    severity: "high"
+  - keyword: "leak internal data"
+    severity: "high"
+  - keyword: "dump database"
+    severity: "high"
+  - keyword: "dump all records"
+    severity: "high"
+  - keyword: "show all user data"
+    severity: "high"
+  - keyword: "list all users"
+    severity: "medium"
+  - keyword: "list all passwords"
+    severity: "high"
+  - keyword: "show all API keys"
+    severity: "high"
+  - keyword: "reveal all credentials"
+    severity: "high"
+  - keyword: "expose customer data"
+    severity: "high"
+  - keyword: "steal user information"
+    severity: "high"
+  - keyword: "exfiltrate data"
+    severity: "high"
+  - keyword: "harvest email addresses"
+    severity: "high"
+  - keyword: "scrape personal information"
+    severity: "high"
+  - keyword: "extract model weights"
+    severity: "high"
+  - keyword: "steal source code"
+    severity: "high"
+  - keyword: "copy proprietary code"
+    severity: "high"
+  - keyword: "download private data"
+    severity: "high"
+  - keyword: "access confidential files"
+    severity: "high"
+  - keyword: "retrieve secret keys"
+    severity: "high"
+
+exceptions:
+  - "data extraction pipeline"
+  - "ETL"
+  - "data science"
+  - "data engineering"
+  - "data migration"
+  - "backup and recovery"
+  - "data export feature"
+  - "GDPR data request"
+  - "right to access"
+  - "data portability"
+  - "legitimate data access"
+  - "authorized data retrieval"
+  - "data loss prevention"
+  - "DLP"

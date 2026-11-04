@@ -1,0 +1,116 @@
+# Override of the built-in prompt_injection_sql category.
+#
+# The built-in file (litellm/proxy/guardrails/content_filter_data/categories/
+# prompt_injection_sql.yaml in the litellm image) is a conditional category:
+# any identifier word (SELECT, ALTER, DROP, ...) plus any block word in the
+# same sentence blocks at hardcoded high severity. Its block words include
+# plain DDL fragments ("alter table", "delete from", "drop table", "--", ...),
+# so every legitimate SQL question self-triggers. severity_threshold cannot
+# fix this; conditional combinations ignore it.
+#
+# This override keeps the always_block_keywords payload list (real injection
+# payloads like "'; DROP TABLE" and "' OR '1'='1") and drops identifier_words
+# and additional_block_words, so the category no longer fires on ordinary SQL
+# text. Exceptions are kept for defense-in-depth; they take precedence over
+# always-block keywords too.
+#
+# NOTE: avoid regex-special characters like ( ) [ ] in keywords,
+# because the content filter matches keywords via regex internally.
+category_name: "prompt_injection_sql"
+description: "Detects SQL injection attempts embedded in prompts"
+default_action: "BLOCK"
+
+always_block_keywords:
+  - keyword: "'; DROP TABLE"
+    severity: "high"
+  - keyword: "'; DELETE FROM"
+    severity: "high"
+  - keyword: "' OR '1'='1"
+    severity: "high"
+  - keyword: "' OR 1=1--"
+    severity: "high"
+  - keyword: "' OR 1=1 --"
+    severity: "high"
+  - keyword: "UNION SELECT * FROM"
+    severity: "high"
+  - keyword: "UNION ALL SELECT"
+    severity: "high"
+  - keyword: "'; EXEC xp_cmdshell"
+    severity: "high"
+  - keyword: "1; DROP TABLE"
+    severity: "high"
+  - keyword: "' UNION SELECT NULL"
+    severity: "high"
+  - keyword: "' UNION SELECT"
+    severity: "high"
+  - keyword: "UNION SELECT NULL"
+    severity: "high"
+  - keyword: "SELECT password FROM"
+    severity: "high"
+  - keyword: "DELETE FROM users"
+    severity: "high"
+  - keyword: "DROP DATABASE"
+    severity: "high"
+  - keyword: "DROP TABLE users"
+    severity: "high"
+  - keyword: "' OR ''='"
+    severity: "high"
+  - keyword: "admin'--"
+    severity: "high"
+  - keyword: "1' OR '1'='1"
+    severity: "high"
+  - keyword: "INFORMATION_SCHEMA.TABLES"
+    severity: "high"
+  - keyword: "INFORMATION_SCHEMA.COLUMNS"
+    severity: "high"
+  - keyword: "INTO OUTFILE"
+    severity: "high"
+  - keyword: "INTO DUMPFILE"
+    severity: "high"
+  - keyword: "LOAD_FILE"
+    severity: "high"
+  - keyword: "WAITFOR DELAY"
+    severity: "high"
+  - keyword: "'; SHUTDOWN --"
+    severity: "high"
+  - keyword: "'; EXEC sp_"
+    severity: "high"
+  - keyword: "xp_cmdshell"
+    severity: "high"
+  - keyword: "sp_addlogin"
+    severity: "high"
+  - keyword: "sp_addsrvrolemember"
+    severity: "high"
+  - keyword: "ORDER BY 1--"
+    severity: "high"
+  - keyword: "GROUP BY 1--"
+    severity: "high"
+  - keyword: "HAVING 1=1"
+    severity: "high"
+
+exceptions:
+  - "SQL tutorial"
+  - "learn SQL"
+  - "explain SQL"
+  - "what is SQL injection"
+  - "SQL syntax"
+  - "SQL documentation"
+  - "database design"
+  - "SQL best practices"
+  - "SQL injection prevention"
+  - "protect against SQL injection"
+  - "how to prevent"
+  - "how to protect"
+  - "how to defend"
+  - "parameterized query"
+  - "parameterized queries"
+  - "prepared statement"
+  - "prepared statements"
+  - "SQL training"
+  - "database course"
+  - "how to sanitize"
+  - "how to validate"
+  - "research on"
+  - "security research"
+  - "security audit"
+  - "penetration testing"

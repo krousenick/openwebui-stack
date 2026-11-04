@@ -1,0 +1,92 @@
+# Override of the built-in prompt_injection_jailbreak category.
+#
+# The built-in file is a conditional category: any identifier word ("pretend",
+# "roleplay", "enable", "activate", "become", ...) plus any block word in
+# the same sentence blocks at hardcoded high severity. Its block words
+# include everyday software vocabulary ("debug mode", "test mode",
+# "developer mode", "unlimited", "bypass", "override"), so normal requests
+# that mention toggling a feature flag or a caching layer false-block.
+#
+# This override keeps the always_block_keywords payload list (DAN and known
+# jailbreaks, explicit safety-filter bypass phrasings, encoding-trick
+# smuggling) and drops the conditional match. Exceptions are kept.
+#
+# NOTE: avoid regex-special characters like ( ) [ ] in keywords,
+# because the content filter matches keywords via regex internally.
+category_name: "prompt_injection_jailbreak"
+description: "Detects jailbreak attempts including DAN, roleplay attacks, and safety bypass requests"
+default_action: "BLOCK"
+
+always_block_keywords:
+  # DAN and known jailbreaks
+  - keyword: "DAN mode"
+    severity: "high"
+  - keyword: "Do Anything Now"
+    severity: "high"
+  - keyword: "developer mode enabled"
+    severity: "high"
+  - keyword: "jailbreak"
+    severity: "high"
+  - keyword: "jailbroken"
+    severity: "high"
+  - keyword: "bypass safety"
+    severity: "high"
+  - keyword: "bypass filters"
+    severity: "high"
+  - keyword: "bypass content filter"
+    severity: "high"
+  - keyword: "bypass moderation"
+    severity: "high"
+  - keyword: "ignore safety guidelines"
+    severity: "high"
+  - keyword: "ignore content policy"
+    severity: "high"
+  - keyword: "ignore ethical guidelines"
+    severity: "high"
+  - keyword: "without restrictions"
+    severity: "medium"
+  - keyword: "without safety"
+    severity: "high"
+  - keyword: "without filters"
+    severity: "medium"
+  - keyword: "remove all restrictions"
+    severity: "high"
+  - keyword: "disable safety"
+    severity: "high"
+  - keyword: "disable content filter"
+    severity: "high"
+  - keyword: "disable moderation"
+    severity: "high"
+  - keyword: "turn off safety"
+    severity: "high"
+  - keyword: "turn off filters"
+    severity: "high"
+
+  # Token smuggling / encoding tricks
+  - keyword: "respond in base64"
+    severity: "high"
+  - keyword: "encode your response"
+    severity: "medium"
+  - keyword: "answer in rot13"
+    severity: "high"
+  - keyword: "respond in hex"
+    severity: "high"
+  - keyword: "use pig latin"
+    severity: "medium"
+  - keyword: "respond backwards"
+    severity: "medium"
+  - keyword: "spell it out letter by letter"
+    severity: "medium"
+
+exceptions:
+  - "jailbreak prevention"
+  - "security research"
+  - "red team"
+  - "red teaming"
+  - "AI safety research"
+  - "AI alignment"
+  - "prompt injection defense"
+  - "how to prevent jailbreaks"
+  - "jailbreak detection"
+  - "content moderation research"
+  - "safety evaluation"

@@ -1,0 +1,132 @@
+# Override of the built-in prompt_injection_malicious_code category.
+#
+# The built-in file is a conditional category: any identifier word ("run",
+# "execute", "process", "call", "system", "shell", ...) plus any block word in
+# the same sentence blocks at hardcoded high severity. Its block words include
+# ordinary dev vocabulary ("subprocess", "crontab", "chmod +x", "sudo",
+# "/etc/passwd", "os.system"), so writing or receiving ordinary Python that
+# uses the standard library false-blocks mid-generation (post_call scans the
+# reply).
+#
+# This override keeps the always_block_keywords payload list (destructive
+# one-liners, pipe-to-shell, reverse shells, NOPASSWD sudoers, encoded
+# PowerShell) and narrows the conditional match to unambiguous attack nouns
+# only ("reverse shell", "fork bomb") with action-verb identifiers (run,
+# execute, launch, spawn). Dual-use tool mentions (sudo, crontab, netcat,
+# subprocess, chmod +x) no longer block on their own; their explicitly
+# malicious forms are still in always_block_keywords. Exceptions are kept;
+# they take precedence over always-block keywords too.
+#
+# NOTE: avoid regex-special characters like ( ) [ ] in keywords,
+# because the content filter matches keywords via regex internally.
+category_name: "prompt_injection_malicious_code"
+description: "Detects attempts to inject or execute malicious code via prompts"
+default_action: "BLOCK"
+
+# Narrowed conditional match: action verb + attack noun in the same sentence.
+identifier_words:
+  - "execute"
+  - "run"
+  - "launch"
+  - "spawn"
+
+additional_block_words:
+  - "reverse shell"
+  - "fork bomb"
+
+always_block_keywords:
+  # Destructive shell commands
+  - keyword: "rm -rf /"
+    severity: "high"
+  - keyword: "rm -rf /*"
+    severity: "high"
+  - keyword: "rm -rf ~"
+    severity: "high"
+  - keyword: ":(){ :|:& };:"
+    severity: "high"
+  - keyword: "> /dev/sda"
+    severity: "high"
+  - keyword: "mkfs.ext4 /dev/sda"
+    severity: "high"
+  - keyword: "dd if=/dev/zero of=/dev/sda"
+    severity: "high"
+
+  # Remote code execution
+  - keyword: "curl | sh"
+    severity: "high"
+  - keyword: "curl | bash"
+    severity: "high"
+  - keyword: "wget | sh"
+    severity: "high"
+  - keyword: "wget | bash"
+    severity: "high"
+  - keyword: "eval(base64"
+    severity: "high"
+  - keyword: "eval(atob("
+    severity: "high"
+  - keyword: "python -c 'import os"
+    severity: "high"
+  - keyword: "python3 -c 'import os"
+    severity: "high"
+  - keyword: "bash -i >& /dev/tcp"
+    severity: "high"
+  - keyword: "nc -e /bin/sh"
+    severity: "high"
+  - keyword: "nc -e /bin/bash"
+    severity: "high"
+  # Bind-shell flag forms for any payload program. Trailing space so
+  # "sync -error"-style strings do not substring-match.
+  - keyword: "nc -e "
+    severity: "high"
+  - keyword: "ncat -e "
+    severity: "high"
+  - keyword: "netcat -e "
+    severity: "high"
+  # Attack-tool mentions: netcat/ncat exist for legitimate debugging, but a
+  # bare "ncat"/"netcat" token in a prompt is far more often an attack than a
+  # coding task, and the built-in category blocked these too.
+  - keyword: "ncat"
+    severity: "high"
+  - keyword: "netcat"
+    severity: "high"
+
+  # Privilege escalation
+  - keyword: "sudo chmod 777 /"
+    severity: "high"
+  - keyword: "echo ALL=(ALL) NOPASSWD"
+    severity: "high"
+  - keyword: "cat /etc/shadow"
+    severity: "high"
+
+  # Script injection
+  - keyword: "<script>alert("
+    severity: "medium"
+  - keyword: "<script>document.cookie"
+    severity: "high"
+  - keyword: "javascript:void"
+    severity: "medium"
+
+  # Encoded payloads. "powershell -e " keeps the bare -EncodedCommand
+  # short form; the trailing space prevents matching "-executionpolicy".
+  - keyword: "powershell -encodedcommand"
+    severity: "high"
+  - keyword: "powershell -enc"
+    severity: "high"
+  - keyword: "powershell -e "
+    severity: "high"
+
+exceptions:
+  - "code review"
+  - "security audit"
+  - "security testing"
+  - "explain this command"
+  - "what does this code do"
+  - "vulnerability assessment"
+  - "penetration test"
+  - "CTF challenge"
+  - "security training"
+  - "defensive security"
+  - "how to prevent"
+  - "how to protect"
+  - "secure coding"
+  - "code analysis"

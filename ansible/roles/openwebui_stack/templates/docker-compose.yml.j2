@@ -196,6 +196,11 @@ services:
       - ./litellm/config.yaml:/app/config.yaml:ro
       - ./litellm/brave_mcp_callback.py:/app/brave_mcp_callback.py:ro
       - ./litellm/context_compaction_callback.py:/app/context_compaction_callback.py:ro
+      - ./litellm/guardrail_categories/prompt_injection_sql.yaml:/app/guardrail_categories/prompt_injection_sql.yaml:ro
+      - ./litellm/guardrail_categories/prompt_injection_jailbreak.yaml:/app/guardrail_categories/prompt_injection_jailbreak.yaml:ro
+      - ./litellm/guardrail_categories/prompt_injection_system_prompt.yaml:/app/guardrail_categories/prompt_injection_system_prompt.yaml:ro
+      - ./litellm/guardrail_categories/prompt_injection_malicious_code.yaml:/app/guardrail_categories/prompt_injection_malicious_code.yaml:ro
+      - ./litellm/guardrail_categories/prompt_injection_data_exfiltration.yaml:/app/guardrail_categories/prompt_injection_data_exfiltration.yaml:ro
       - ./certs:/etc/ssl/certs/local:ro
     #   - ./ci_entrypoint.py:/app/ci_entrypoint.py
     # command: ["python", "/app/ci_entrypoint.py"]
@@ -227,6 +232,11 @@ services:
       SSL_CERT_FILE: "/etc/ssl/certs/local/origin_ca_rsa_root.pem"
       GLOBAL_SSL_VERIFY: "false"
       LITELLM_WORKER_STARTUP_HOOKS: "brave_mcp_callback:register_callback,context_compaction_callback:register_callback"
+
+      # Lets the guardrail's prompt_injection_sql category_file point at the
+      # /app/guardrail_categories override, which lives outside the litellm
+      # package's content_filter_data directories.
+      LITELLM_CONTENT_FILTER_ALLOW_EXTERNAL_PATHS: "true"
 
       # -----------------------------------------------------------------------
       # Generic OIDC

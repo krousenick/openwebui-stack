@@ -127,22 +127,48 @@ guardrails:
           enabled: true
           action: BLOCK
           severity_threshold: high
+          # Overrides the built-in conditional match (roleplay/"enable" +
+          # "debug mode" etc. false-blocks normal feature-flag requests).
+          # Keeps the always-block payload list. See
+          # litellm/guardrail_categories/prompt_injection_jailbreak.yaml.
+          category_file: "/app/guardrail_categories/prompt_injection_jailbreak.yaml"
         - category: prompt_injection_system_prompt
           enabled: true
           action: BLOCK
           severity_threshold: high
+          # Overrides the built-in conditional match ("show"/"list" +
+          # "system prompt" false-blocks prompt-engineering discussion).
+          # Keeps the always-block payload list. See
+          # litellm/guardrail_categories/prompt_injection_system_prompt.yaml.
+          category_file: "/app/guardrail_categories/prompt_injection_system_prompt.yaml"
         - category: prompt_injection_sql
           enabled: true
           action: BLOCK
           severity_threshold: medium
+          # Overrides the built-in category: the built-in conditional match
+          # (SQL identifier + block word, e.g. "alter" + "alter table") blocks
+          # every legitimate SQL question. This override keeps only the
+          # always-block injection payloads. See
+          # litellm/guardrail_categories/prompt_injection_sql.yaml.
+          category_file: "/app/guardrail_categories/prompt_injection_sql.yaml"
         - category: prompt_injection_malicious_code
           enabled: true
           action: BLOCK
           severity_threshold: medium
+          # Overrides the built-in conditional match ("run"/"process" +
+          # "subprocess"/"crontab" false-blocks ordinary Python and its
+          # replies). Keeps the always-block payload list. See
+          # litellm/guardrail_categories/prompt_injection_malicious_code.yaml.
+          category_file: "/app/guardrail_categories/prompt_injection_malicious_code.yaml"
         - category: prompt_injection_data_exfiltration
           enabled: true
           action: BLOCK
           severity_threshold: high
+          # Overrides the built-in conditional match ("export"/"collect" +
+          # "user data"/"API keys" false-blocks ordinary app work). Keeps
+          # the always-block payload list. See
+          # litellm/guardrail_categories/prompt_injection_data_exfiltration.yaml.
+          category_file: "/app/guardrail_categories/prompt_injection_data_exfiltration.yaml"
         - category: harmful_self_harm
           enabled: true
           action: BLOCK

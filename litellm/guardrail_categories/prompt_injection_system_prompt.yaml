@@ -1,0 +1,101 @@
+# Override of the built-in prompt_injection_system_prompt category.
+#
+# The built-in file is a conditional category: any identifier word ("show",
+# "print", "output", "list", "copy", "echo", "what is", ...) plus any block
+# word in the same sentence blocks at hardcoded high severity. Its block
+# words include phrases that appear in ordinary prompt-engineering
+# discussion ("system prompt", "custom instructions", "developer
+# instructions"), so asking about prompt design or a chatbot's
+# configuration false-blocks.
+#
+# This override keeps the always_block_keywords payload list (direct
+# instruction overrides, DAN persona manipulation, explicit system-prompt
+# extraction phrasings) and drops the conditional match. Exceptions are
+# kept.
+#
+# NOTE: avoid regex-special characters like ( ) [ ] in keywords,
+# because the content filter matches keywords via regex internally.
+category_name: "prompt_injection_system_prompt"
+description: "Detects attempts to extract, reveal, or override system prompts and instructions"
+default_action: "BLOCK"
+
+always_block_keywords:
+  # Direct instruction override
+  - keyword: "ignore previous instructions"
+    severity: "high"
+  - keyword: "ignore all instructions"
+    severity: "high"
+  - keyword: "ignore all previous instructions"
+    severity: "high"
+  - keyword: "ignore prior instructions"
+    severity: "high"
+  - keyword: "ignore above instructions"
+    severity: "high"
+  - keyword: "ignore the above"
+    severity: "high"
+  - keyword: "disregard previous instructions"
+    severity: "high"
+  - keyword: "disregard all instructions"
+    severity: "high"
+  - keyword: "disregard above"
+    severity: "high"
+  - keyword: "disregard your instructions"
+    severity: "high"
+  - keyword: "forget your instructions"
+    severity: "high"
+  - keyword: "forget all instructions"
+    severity: "high"
+  - keyword: "forget everything above"
+    severity: "high"
+  - keyword: "forget your previous instructions"
+    severity: "high"
+  - keyword: "override your instructions"
+    severity: "high"
+  - keyword: "override previous instructions"
+    severity: "high"
+
+  # Persona manipulation
+  - keyword: "you are now"
+    severity: "medium"
+  - keyword: "new persona"
+    severity: "medium"
+  - keyword: "act as DAN"
+    severity: "high"
+  - keyword: "you are DAN"
+    severity: "high"
+  - keyword: "switch to a new persona"
+    severity: "high"
+  - keyword: "new role assignment"
+    severity: "medium"
+  - keyword: "your new instructions are"
+    severity: "high"
+  - keyword: "your new role is"
+    severity: "medium"
+
+  # System prompt extraction
+  - keyword: "repeat your system prompt"
+    severity: "high"
+  - keyword: "print your system prompt"
+    severity: "high"
+  - keyword: "show me your system prompt"
+    severity: "high"
+  - keyword: "output your instructions"
+    severity: "high"
+  - keyword: "what was your system prompt"
+    severity: "high"
+  - keyword: "reveal your prompt"
+    severity: "high"
+  - keyword: "display your instructions"
+    severity: "high"
+
+exceptions:
+  - "prompt engineering tutorial"
+  - "explain system prompts"
+  - "what is a system prompt"
+  - "how to write a system prompt"
+  - "system prompt best practices"
+  - "prompt design"
+  - "prompt template"
+  - "prompt engineering"
+  - "chatbot development"
+  - "LLM security research"
