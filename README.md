@@ -100,6 +100,7 @@ graph TB
 - **Chatterbox TTS**: OpenAI-compatible voice cloning for Open WebUI, with a voice library UI at `voice.<domain>`. This is the only TTS engine in the stack.
 - **Brave Search MCP**: Web search for every chat model. The `brave-search-mcp` container serves the official Brave MCP tools over streamable HTTP, LiteLLM mounts them at `/mcp/brave_search`, and a LiteLLM startup hook (`litellm/brave_mcp_callback.py`) injects them into every `/v1/chat/completions` request. Models call the tools; LiteLLM executes them server-side (`require_approval: never`), so no client-side tool wiring is needed.
 - **Voice assistant**: LiteLLM alias `voice-assistant` routes to `gemini-3.5-flash-lite`. `./scripts/create-voice-key.sh` creates a virtual key that can call only that model and stores it in `.env` as `LITELLM_VOICE_API_KEY`.
+- **Code Sandbox**: Isolated Jupyter container for model-authored Python (STL/mesh generation, plotting, data transforms). Pinned `quay.io/jupyter/scipy-notebook` image with `numpy-stl` and `trimesh` baked in, token-authenticated, backend-network-only (no published port, no Traefik route), 2G/2CPU caps, non-root. Open WebUI's Jupyter code-execution wiring points at it; the legacy in-process engines stay off. See [Secure Code Execution](#secure-code-execution-code-sandbox).
 
 ##  Quick Start
 
@@ -185,7 +186,7 @@ Access the Keycloak Admin Console to manage users and applications:
    ansible-galaxy collection install -r requirements.yaml
    ansible-playbook playbooks/site.yml
    ```
-    This creates the `platform` realm, the `keycloak-provisioner` service account, confidential clients for Grafana, Open WebUI, and LiteLLM, client roles that match `docker-compose.yml`, group-to-role mappings, and one login user per group. It also turns on passkeys for that realm: Keycloak shows **Sign in with Passkey** on the username form, and users can register a passwordless credential from the account console. Set `keycloak_passkeys_enabled: false` in `ansible/group_vars/all/vars.yml` to leave password login unchanged. It also syncs `otel/`, `grafana/`, `traefik/`, `json-exporter/`, and `litellm/` (minus the rendered `config.yaml`) to `project_root` as mode `0644`. The collector image runs as uid `10001`, and a `0640` root-owned `otel/config.yaml` makes it crash-loop. Client secrets are the `*_OIDC_CLIENT_SECRET` values the role writes to `.env`; every Keycloak secret (admin password, provisioner client secret, OIDC client secrets, and the `keycloak_user_*` passwords) comes from `vault.local.yml`.
+    This creates the `platform` realm, the `keycloak-provisioner` service account, confidential clients for Grafana, Open WebUI, and LiteLLM, client roles that match `docker-compose.yml`, group-to-role mappings, and one login user per group. It also turns on passkeys for that realm: Keycloak shows **Sign in with Passkey** on the username form, and users can register a passwordless credential from the account console. Set `keycloak_passkeys_enabled: false` in `ansible/group_vars/all/vars.yml` to leave password login unchanged. It also syncs `otel/`, `grafana/`, `traefik/`, `json-exporter/`, `litellm/`, and `sandbox/` (minus the rendered `config.yaml`) to `project_root` as mode `0644`, carrying the `always` tag so tag-limited runs (`--tags compose`, `--tags environment`) still sync before `docker compose up`. The collector image runs as uid `10001`, and a `0640` root-owned `otel/config.yaml` makes it crash-loop. The sync builds its rsync from the inventory host's key (`private_key` + `rsync_path: rsync` — the delegate-host defaults offer the agent's identities and inject a sudo wrapper that Photon lacks). Before `docker compose up`, `tasks/compose_mount_check.yml` resolves the deployed compose file and fails the run when a file-kind bind source the checkout has (e.g. a mounted guardrail category file) is missing in the deployed tree: `docker compose` auto-creates missing short-syntax bind sources as empty directories, which the sync cannot replace, so the failure names the exact `rm -rf` to run. Client secrets are the `*_OIDC_CLIENT_SECRET` values the role writes to `.env`; every Keycloak secret (admin password, provisioner client secret, OIDC client secrets, and the `keycloak_user_*` passwords) comes from `vault.local.yml`.
 
 2. Only Grafana, Open WebUI, and LiteLLM use Keycloak. Traefik, Keycloak admin, and the exporters keep their own credentials. `./scripts/setup.sh` runs the playbook for you after installing collections.
 
@@ -340,6 +341,7 @@ Key environment variables in `.env`:
 | `CHATTERBOX_TTS_VOICE` | Voice library name Open WebUI speaks with | empty uses the built-in sample |
 | `LITELLM_VOICE_API_KEY` | Virtual key for the voice assistant. Created by `./scripts/create-voice-key.sh`. Allows only the model behind `voice-assistant`. | empty until the script runs |
 | `BRAVE_SEARCH_API_KEY` | Brave Search API key for the MCP server | From [brave.com/search/api](https://brave.com/search/api/) |
+| `CODE_SANDBOX_TOKEN` | Bearer token the code-sandbox Jupyter server requires and Open WebUI sends | Generated by the playbook on first run |
 
 ### Services Overview
 
@@ -357,7 +359,7 @@ Key environment variables in `.env`:
 
    **Guardrails.** `default-content-filter` is the built-in LiteLLM content filter (`litellm_content_filter`). It is `default_on`, so it runs on every request without the client naming it. `pre_call` scans the user message and `post_call` scans the reply. System and tool turns are skipped (`skip_system_message_in_guardrail`, `skip_tool_message_in_guardrail`) so stack prompts and tool results are not scanned. US SSNs, AWS access keys, AWS secret keys, and GitHub tokens are blocked. Email addresses and US phone numbers are masked. Prompt-injection categories and harmful self-harm, violence, weapons, and child-safety categories block the request. There is no extra container or API key. A blocked call returns HTTP 400 before the model is billed. Docs: [content filter](https://docs.litellm.ai/docs/proxy/guardrails/litellm_content_filter).
 
-   All five `prompt_injection_*` categories are conditional matches in the built-in data: an identifier word plus a block word in the same sentence blocks at hardcoded high severity, and the block words are ordinary dev vocabulary (`alter table`, `subprocess`, `crontab`, `system prompt`, `user data`, `debug mode`). Any SQL question, Python script, or prompt-engineering discussion false-blocked — including model replies, since `post_call` scans the response too (a generated backup script using `subprocess` blocked mid-generation). The stack overrides all five with files in `litellm/guardrail_categories/` referenced via `category_file` in the LiteLLM config, mounted at `/app/guardrail_categories/` in the compose file (`LITELLM_CONTENT_FILTER_ALLOW_EXTERNAL_PATHS: "true"` lets the guardrail read outside the litellm package data). Each override keeps the always-block payload lists, so genuine payloads (`'; DROP TABLE`, `' OR '1'='1`, `rm -rf /`, `curl | bash`, `nc -e /bin/sh`, `powershell -enc`, `ignore previous instructions`, `exfiltrate data`, DAN-mode jailbreaks) still block. Four categories drop the conditional match entirely; `prompt_injection_malicious_code` keeps a narrowed one (action verb + `reverse shell`/`fork bomb`) so bind-shell phrasings stay caught. Verified by parity test against the built-in files: no detection the built-in made is lost.
+   All five `prompt_injection_*` categories are conditional matches in the built-in data: an identifier word plus a block word in the same sentence blocks at hardcoded high severity, and the block words are ordinary dev vocabulary (`alter table`, `subprocess`, `crontab`, `system prompt`, `user data`, `debug mode`). Any SQL question, Python script, or prompt-engineering discussion false-blocked — including model replies, since `post_call` scans the response too (a generated backup script using `subprocess` blocked mid-generation). The stack overrides all five with files in `litellm/guardrail_categories/` referenced via `category_file` in the LiteLLM config, mounted at `/app/guardrail_categories/` in the compose file (`LITELLM_CONTENT_FILTER_ALLOW_EXTERNAL_PATHS: "true"` lets the guardrail read outside the litellm package data). Each override keeps the always-block payload lists, so genuine payloads (`'; DROP TABLE`, `' OR '1'='1`, `rm -rf /`, `curl | bash`, `nc -e /bin/sh`, `powershell -enc`, `ignore previous instructions`, `exfiltrate data`, DAN-mode jailbreaks) still block. Four categories drop the conditional match entirely; `prompt_injection_malicious_code` keeps a narrowed one (action verb + `reverse shell`/`fork bomb`) so bind-shell phrasings stay caught. Verified by parity test against the built-in files: no detection the built-in made is lost. Because the overrides are pinned (`category_file` replaces the built-in data entirely, so upstream keyword updates do not flow in), `scripts/check-guardrail-drift.sh` compares each override's always-block list against the latest LiteLLM sdist from PyPI and fails listing the missing keywords; the `Guardrail Drift Check` GitHub workflow (`.github/workflows/guardrail-drift.yml`) runs it weekly, on changes to the override files, and manually via workflow_dispatch. Run it locally with `scripts/check-guardrail-drift.sh [version]` (needs `python3` + PyYAML).
 
     **Complexity routing.** Model `auto` is `auto_router/complexity_router`. The heuristic scorer (no extra API call) maps each turn to a model already in `model_list`:
 
@@ -389,6 +391,7 @@ Key environment variables in `.env`:
 - **Brave Search MCP**: Official Brave Search MCP server (`mcp/brave-search`) over streamable HTTP. LiteLLM mounts it at `/mcp/brave_search` and injects the tools into every chat request (see [Web Search](#web-search-brave-search-mcp)). Not published to the internet; only reachable on the backend network.
 - **Playwright MCP cluster**: Five `mcr.microsoft.com/playwright/mcp` replicas behind Traefik, giving concurrent browser automation (clicks, PDFs, devtools) for chat models. MCP sessions live in each replica's process memory, so the Traefik `playwright` service pins every request of a session to one replica with sticky cookies; without it, round-robin routing returns `404 Session not found`. LiteLLM mounts the cluster as `playwright_cluster` via Traefik's non-redirecting `mcp` entrypoint (`http://traefik:8082/mcp`). See [Browser Automation (Playwright MCP cluster)](#browser-automation-playwright-mcp-cluster).
 - **Chatterbox TTS**: Local OpenAI-compatible text-to-speech with voice cloning (`voice.domain.com`). Open WebUI calls `http://chatterbox-tts:4123/v1` on the backend network. The UI and public API share `https://voice.${DOMAIN}`: Traefik sends `/v1`, `/audio`, `/voices`, and the API docs to the API, and everything else to the React frontend. Both public routes use the `voice-auth@file` ForwardAuth middleware. [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/keycloak_oidc/) `v7.15.1` checks the Keycloak `platform` realm and redirects anonymous browsers to `https://auth.${DOMAIN}`. The callback is `https://voice.${DOMAIN}/oauth2/callback`, not `auth.${DOMAIN}`, because that host is Keycloak. Open WebUI keeps calling `http://chatterbox-tts:4123/v1` on the backend network, so speech in chat does not go through the proxy. Set `VOICE_OIDC_CLIENT_SECRET` and `OAUTH2_PROXY_COOKIE_SECRET` before starting the proxy; both are generated by the playbook on first run (tiering in `ansible/group_vars/all/vault.yml`). Re-run `ansible-playbook playbooks/site.yml` so the `voice` client and `voice_user` role exist; `platform-admins` receive that role. Set Ansible `chatterbox_device` to `gpu` or `cpu` (default `gpu` in `ansible/group_vars/all/vars.yml`). The playbook adds profile `chatterbox-gpu` or `chatterbox-cpu`. GPU builds [travisvn/chatterbox-tts-api](https://github.com/travisvn/chatterbox-tts-api) `main` with `docker/Dockerfile.uv.gpu` (CUDA 12.4) and needs the NVIDIA Container Toolkit. CPU uses `docker/Dockerfile.cpu` and does not request a GPU. Do not enable both profiles. Without Ansible: `docker compose --profile chatterbox-gpu up -d` or `--profile chatterbox-cpu`. The first speech request downloads the model into `chatterbox_models` and can take several minutes. Traefik's default `responseHeaderTimeout` is 10s, which closes a speech request before the model returns audio. The `chatterbox@file` serversTransport sets that timeout to `0s` (no limit) for the Chatterbox API service only. Upstream notes that non-CUDA multilingual builds are currently unreliable; use the `stable` branch if the CPU image fails. Upload a voice at the UI, then set **TTS Voice** in Open WebUI to that library name (`CHATTERBOX_TTS_VOICE`). OpenAI voice names with no alias (`alloy`, and the rest) use the built-in sample. `AUDIO_TTS_*` are persisted after the first boot, so later changes belong in **Admin → Settings → Audio**. Integration notes: [Chatterbox TTS](https://docs.openwebui.com/features/chat-conversations/audio/text-to-speech/chatterbox-tts-api-integration). Env names checked against [Open WebUI v0.12.1](https://docs.openwebui.com/reference/env-configuration/). **Signed-in user and logout in the UI:** the Chatterbox navbar shows the oauth2-proxy session's email as a chip plus a Log out link. `ui/script.js` fetches `/oauth2/userinfo` (served by oauth2-proxy on the same origin), and Log out hits `/oauth2/sign_out?rd=`, which clears the proxy cookie and bounces to the Keycloak `end_session_endpoint` with `id_token_hint` (oauth2-proxy substitutes its `{id_token}` placeholder with the session ID token) and `post_logout_redirect_uri=https://voice.<domain>` — a full single logout, not just a cookie clear, so the browser lands on the Keycloak login page instead of silently re-authenticating. These pieces are not part of the upstream checkout: `auth.<domain>` is in `OAUTH2_PROXY_WHITELIST_DOMAINS` (comma-separated; the env list parser treats a space-separated value as one domain), the `voice` Keycloak client carries `post_logout_redirect_uris` (vars.yml `post_logout_redirect_uris`, rendered by `keycloak_app.yml` as `valid_post_logout_redirect_uris`), and the Ansible chatterbox role re-applies the UI patch idempotently after each `git checkout` of `./chatterbox` (`roles/chatterbox/tasks/ui_auth.yml`); the image rebuild bakes the patched UI into the container.
+- **Code Sandbox**: Isolated Jupyter container for model-authored Python. Pinned `quay.io/jupyter/scipy-notebook` image with `numpy-stl` and `trimesh` baked in, token-authenticated (`CODE_SANDBOX_TOKEN` from the vault), backend-network-only, 2G/2CPU limits, non-root with kernel culling. Open WebUI's Jupyter code-execution wiring points at it; the legacy in-process engines stay off. See [Secure Code Execution (Code Sandbox)](#secure-code-execution-code-sandbox).
 
 #### Storage & Search
 
@@ -593,6 +596,70 @@ docker compose exec postgres psql -U litellm -d litellm -c \
 | Compaction never fires | Hook not loaded | Check the volume mount and `LITELLM_WORKER_STARTUP_HOOKS` in `docker-compose.yml`; `docker compose logs litellm \| grep "startup hook"` |
 | Request rejected even though it should fit | Client set `metadata: {"context_compaction": false}` | Remove the opt-out or trim the client history |
 
+## Secure Code Execution (Code Sandbox)
+
+Chat models can write and run Python (generate STL meshes, plot data, transform files) without ever executing inside the Open WebUI container. Model-authored code runs in the isolated **code-sandbox** service instead. This follows the [Open WebUI hardening guidance](https://docs.openwebui.com/getting-started/advanced-topics/hardening): the legacy in-process engines stay off, and the only code-execution surface is a separate, locked-down Jupyter container.
+
+Open WebUI's workspace Tools still run inside the Open WebUI process — restrict `USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS` and review every Tool before importing it. The sandbox does not change that; it replaces the *code execution* path.
+
+### How it works
+
+1. **`code-sandbox` container** — a pinned `quay.io/jupyter/scipy-notebook:x86_64-2026-11-02` base ([sandbox/Dockerfile](sandbox/Dockerfile)) plus pinned `numpy-stl` and `trimesh` from [sandbox/requirements.txt](sandbox/requirements.txt) for mesh/STL work. The image builds on the Photon host during the playbook run; nothing installs packages at runtime (`ENABLE_PIP_INSTALL_FRONTMATTER_REQUIREMENTS` stays off for the same reason).
+2. **Network isolation** — backend network only (`internal: true`), no published port, no Traefik labels. Nothing outside the Docker backend network can reach the Jupyter API; only the Open WebUI container talks to it at `http://code-sandbox:8888`.
+3. **Token auth** — the server requires the `JUPYTER_TOKEN` from vault (`code_sandbox_token` in `ansible/group_vars/all/vault.local.yml`); Open WebUI sends it via `CODE_EXECUTION_JUPYTER_AUTH: token`. Unauthenticated requests get `403`. [sandbox/jupyter_server_config.py](sandbox/jupyter_server_config.py) also disables the terminal server and culls idle kernels after 5 minutes (busy after 10).
+4. **Resource limits** — `deploy.resources.limits` cap the container at 2G RAM / 2 CPUs; a runaway kernel cannot starve the host. The container runs as `jovyan` (uid 1000), non-root, with `no-new-privileges`.
+5. **Wiring is healed by the playbook** — Open WebUI persists code-execution settings in its DB after first boot, so [tasks/code_sandbox.yml](ansible/roles/openwebui_stack/tasks/code_sandbox.yml) asserts the intended values (`code_execution.engine: jupyter`, `code_execution.jupyter.url: http://code-sandbox:8888`, auth `token`, 120s timeout) on every run and heals drift, the same way `openwebui_config.yml` heals the OpenAI connection. `ENABLE_CODE_EXECUTION` / `ENABLE_CODE_INTERPRETER` stay `false` — the legacy pyodide/jupyter in-process engines never run.
+6. **Toggle** — `code_sandbox_enabled: true` in [ansible/group_vars/all/vars.yml](ansible/group_vars/all/vars.yml). Set `false` to drop the container and wiring entirely; the playbook renders the services out of the compose file.
+
+Artifacts (the generated STL) land in the `code_sandbox_data` volume mounted at `/home/jovyan/work`; kernels are per-request and culled when idle.
+
+> **Why quay.io:** Docker Hub's `jupyter/scipy-notebook` mirror stopped updating years ago; the current daily tags live on [quay.io/jupyter/scipy-notebook](https://quay.io/repository/jupyter/scipy-notebook). When rebuilding, pick the newest `x86_64-<date>` tag.
+
+### Verification
+
+```bash
+# 1. Container healthy, backend-only (no published ports, no traefik labels)
+docker compose ps code-sandbox
+docker inspect openwebui-stack_code-sandbox --format '{{json .HostConfig.PortBindings}}'
+# null (nothing published)
+
+# 2. Unauthenticated API access is refused
+docker compose exec open-webui python3 -c \
+  "import os,urllib.request,urllib.error;
+try:
+    urllib.request.urlopen(os.environ['CODE_EXECUTION_JUPYTER_URL']+'/api/status', timeout=5)
+except urllib.error.HTTPError as e:
+    assert e.code == 403; print('auth enforced')"
+# auth enforced
+
+# 3. A token-authenticated kernel executes code with the mesh stack
+docker compose exec open-webui python3 -c \
+  "import os,json,urllib.request
+base=os.environ['CODE_EXECUTION_JUPYTER_URL']; tok={'Authorization':'token '+os.environ['CODE_EXECUTION_JUPYTER_AUTH_TOKEN'],'Content-Type':'application/json'}
+r=urllib.request.Request(base+'/api/kernels', method='POST', data=json.dumps({'name':'python3'}).encode(), headers=tok)
+print('kernel:', json.load(urllib.request.urlopen(r, timeout=10))['id'][:8])"
+# kernel: <id>  -- then delete it: DELETE /api/kernels/<id> with the same token header
+
+# 4. The deps are in the image (no runtime pip)
+docker compose exec code-sandbox python3 -c \
+  "import numpy, trimesh, stl; print(numpy.__version__, trimesh.__version__, stl.__name__)"
+
+# 5. Model-authored STL generation, end to end (inside the sandbox)
+docker compose exec code-sandbox python3 /path/to/your_tree_script.py
+# child_tree_toy.stl; validate: docker compose exec code-sandbox python3 -c \
+#   "import trimesh; m=trimesh.load('child_tree_toy.stl'); print(len(m.faces))"
+```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `[ERROR: Error creating tool]` when saving a workspace Tool | The Tool source is not a valid Open WebUI tool module: it must have a top-level docstring and a `class Tools:` whose public methods are the model-callable tools — a bare script fails the import | Wrap the code in a `Tools` class (see [Tool Development](https://docs.openwebui.com/features/extensibility/plugin/tools/development)); workspace Tools still run in-process, so review them |
+| Model writes Python but nothing executes | `ENABLE_CODE_EXECUTION`/`ENABLE_CODE_INTERPRETER` are `false` (by design); the Jupyter wiring only serves code-execution calls, and in-chat code blocks stay inert | Ask the model to run the code through the interpreter path; or flip the env in the compose template if you accept the in-process engine |
+| `403` from Open WebUI tool calls into the sandbox | Token mismatch (vault rotated, container not recreated) | Re-run the playbook; verify `CODE_SANDBOX_TOKEN` in the deployed `.env` matches the vault value |
+| Sandbox container crash-loops | Image built from a stale tag, or volume permission issue on `code_sandbox_data` | `docker compose build code-sandbox` on the host after picking a newer `x86_64-<date>` tag; check `docker compose logs code-sandbox` |
+| Kernels accumulate | Culling config not loaded (config file not mounted) | Confirm `./sandbox/jupyter_server_config.py` is mounted at `/etc/jupyter/jupyter_server_config.py`; idle kernels are culled after 300s |
+
 ## Browser Automation (Playwright MCP cluster)
 
 Chat models can drive a real headless Chromium through the official [Playwright MCP server](https://github.com/microsoft/playwright-mcp). The stack runs five replicas (`deploy.replicas: 5`) behind Traefik so multiple users get parallel browser sessions.
@@ -691,6 +758,7 @@ For full HF-precision models larger than a single llama.cpp node can serve, use 
 - **Pipeline parallelism (`vllm_deployment_mode: ray`, default)**: one Ray head + workers, one `vllm serve` on the head. `--pipeline-parallel-size` defaults to the node count; each node serves a contiguous layer range. Fits the 10GbE fabric because PP transfers activations only at stage boundaries.
 - **Cross-node tensor parallelism**: set `vllm_cross_node_tensor_parallel: true`. Spreads TP across the cluster (`TP = tensor_parallel_size × nodes`). Verify the fabric can sustain it (25GbE+ recommended); 10GbE will bottleneck NCCL all-reduce.
 - **Standalone replicas (`vllm_deployment_mode: standalone`)**: every node runs the full model independently; LiteLLM load balances across endpoints. No cross-node traffic at all.
+- **Reasoning models**: set `vllm_reasoning_parser` (e.g. `gemma4`, `qwen3`, `deepseek_r1`) on the primary or a `reasoning_parser` key on an aux entry. The role renders `--reasoning-parser` so vLLM returns the trace in a separate `reasoning` field, optionally `--default-chat-template-kwargs` for thinking defaults (`vllm_chat_template_kwargs`, e.g. `{thinking: true}` for Gemma 4), and the LiteLLM registration carries `supports_reasoning: true`. Parser names per model series: [vLLM reasoning docs](https://docs.vllm.ai/en/stable/features/reasoning_outputs.html).
 
 1. **Inventory**: add your nodes under `vllm_compute` in `ansible/inventory/hosts.yml` and mark exactly one host `vllm_ray_head: true` for ray mode.
 2. **Configure**: edit `ansible/group_vars/vllm_compute/vars.yml` (model, GPUs per node, pipeline size, firewall CIDR, `VLLM_API_KEY`).
@@ -733,7 +801,7 @@ vllm_aux_models:
     hosts: all
 ```
 
-Each entry deploys one standalone `vllm serve` with its own `vllm-aux-<name>` systemd unit and host port (default base 8010) on the selected nodes only. Per-entry keys are the flux keys plus `hosts` (list, comma string, or `all`) and `api_key`; removing an entry or a host cleans up automatically. Each (node, entry) placement renders a `model_list` entry into `litellm/vllm-models.yaml` — a model placed on several nodes appears under the same `model_name` and LiteLLM load balances the replicas. Details: [docs/vllm-inference.md](docs/vllm-inference.md).
+Each entry deploys one standalone `vllm serve` with its own `vllm-aux-<name>` systemd unit and host port (default base 8010) on the selected nodes only. Per-entry keys are the flux keys plus `hosts` (list, comma string, or `all`), `api_key`, `reasoning_parser`, and `chat_template_kwargs`; removing an entry or a host cleans up automatically. Each (node, entry) placement renders a `model_list` entry into `litellm/vllm-models.yaml` — a model placed on several nodes appears under the same `model_name` and LiteLLM load balances the replicas. Details: [docs/vllm-inference.md](docs/vllm-inference.md).
 
 Ray traffic is unauthenticated and can execute arbitrary code; keep `vllm_firewall_zone_source` limited to the compute segment and set `VLLM_API_KEY` on the controller so the API requires auth. The zone's source binding routes all traffic from that subnet into the zone, so the role also admits the `ssh` service there — without it, management hosts in the subnet lose SSH to the node when the zone reloads.
 

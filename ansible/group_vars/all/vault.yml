@@ -26,6 +26,7 @@ voice_oidc_client_secret: CHANGE_ME
 oauth2_proxy_cookie_secret: CHANGE_ME
 keycloak_provisioner_client_secret: CHANGE_ME
 traefik_dashboard_password: CHANGE_ME
+code_sandbox_token: CHANGE_ME
 
 # Keycloak application user passwords
 keycloak_user_platform_admin_password: CHANGE_ME

@@ -95,6 +95,23 @@ vllm_gpu_memory_utilization: 0.90
 vllm_extra_args: []
 vllm_api_key: ""
 
+# Reasoning support (primary model). Set to a vLLM reasoning parser name
+# when the model emits reasoning traces (e.g. gemma4 for the Gemma 4
+# series, qwen3 for Qwen3, deepseek_r1 for DeepSeek R1 / QwQ; full list in
+# the vLLM docs). Renders --reasoning-parser <name> on `vllm serve`, so the
+# OpenAI-compatible API returns the reasoning in its own field instead of
+# inline in content, and marks the LiteLLM model_info with
+# supports_reasoning: true. Empty string disables both.
+vllm_reasoning_parser: ""
+
+# Default chat-template kwargs for the primary model, rendered as
+# --default-chat-template-kwargs '<json>' on `vllm serve` and merged with
+# request-level chat_template_kwargs (request values win). This is how a
+# model whose reasoning is off by default thinks: Gemma 4 needs
+# {"thinking": true}; Qwen3 thinks by default and can be turned off with
+# {"enable_thinking": false}. Empty dict omits the flag.
+vllm_chat_template_kwargs: {}
+
 # Adaptive-router registration for the primary model. When non-empty, the
 # LiteLLM registration tasks (and the litellm-models.yaml.j2 snippet) add
 # this model_info block, so the model can be listed in an adaptive router's
@@ -276,6 +293,14 @@ vllm_flux_api_key: ""
 #   gpu_memory_utilization fraction of GPU memory this server may use
 #   extra_args           raw vLLM CLI flags appended to `vllm serve`
 #   api_key              per-entry API key override (default vllm_aux_api_key)
+#   reasoning_parser     vLLM reasoning parser for reasoning models (default
+#                        vllm_aux_default_reasoning_parser; e.g. qwen3, gemma4,
+#                        deepseek_r1). Renders --reasoning-parser and marks
+#                        the LiteLLM model_info with supports_reasoning: true
+#   chat_template_kwargs default chat-template kwargs rendered as
+#                        --default-chat-template-kwargs (default
+#                        vllm_aux_default_chat_template_kwargs; e.g.
+#                        {thinking: true} to turn Gemma 4 thinking on)
 #
 # Ports must be unique across the flux AND aux lists per node - they all
 # bind host ports in the same space.
@@ -289,6 +314,8 @@ vllm_aux_default_tensor_parallel_size: 1
 vllm_aux_default_max_model_len: 8192
 vllm_aux_default_gpu_memory_utilization: 0.90
 vllm_aux_default_extra_args: []
+vllm_aux_default_reasoning_parser: ""
+vllm_aux_default_chat_template_kwargs: {}
 
 # Base host port for aux servers when an entry sets none; entry i binds
 # vllm_aux_base_port + i (8010, 8011, ...). 8010 keeps them clear of the

@@ -26,5 +26,16 @@
     - keycloak/themes
     - scripts
     - otel
+    - traefik
+    - init-db
+    - certs
+    - grafana
+    - litellm
+    - keycloak
+    - keycloak/import
+    - keycloak/themes
+    - scripts
+    - otel
     - grafana/provisioning
     - json-exporter
+    - sandbox

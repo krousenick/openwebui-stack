@@ -189,6 +189,8 @@ Per-entry keys (all optional except `model`; unset keys take the `vllm_aux_defau
 | `gpu_memory_utilization` | 0.90 | Fraction of GPU memory the server may claim |
 | `extra_args` | `[]` | Raw vLLM CLI flags appended to `vllm serve` |
 | `api_key` | `vllm_aux_api_key` (defaults to `vllm_api_key`) | API key this endpoint requires |
+| `reasoning_parser` | `""` | vLLM reasoning parser (`qwen3`, `gemma4`, `deepseek_r1`, …): renders `--reasoning-parser`, and the LiteLLM `model_info` gets `supports_reasoning: true` |
+| `chat_template_kwargs` | `{}` | Rendered as `--default-chat-template-kwargs '<json>'`: server-side thinking defaults (e.g. `{thinking: true}` for Gemma 4, `{enable_thinking: false}` to turn Qwen3 thinking off) |
 
 Behavior:
 
@@ -196,6 +198,64 @@ Behavior:
 - **Ports must be unique** across the aux, flux, and primary API ports; the role asserts this.
 - **GPU budget**: same rule as flux — the role validates each entry's TP against the node's GPUs but not the total; plan co-running servers (aux + flux + primary) to fit the node.
 - **LiteLLM**: each (node, entry) placement renders one `model_list` entry in `litellm/vllm-models.yaml`; a model placed on several nodes appears several times under the same `model_name`, and LiteLLM load balances those replicas.
+
+---
+
+## Reasoning models (thinking traces)
+
+For models that emit reasoning traces (DeepSeek R1, Qwen3, Gemma 4 with thinking on, …), vLLM needs a parser to split the trace from the answer, and LiteLLM needs to know the model is reasoning-capable. Both are one knob — no SQL edits, no manual LiteLLM config.
+
+**How to enable reasoning, step by step:**
+
+1. **Find your parser name** in the [vLLM reasoning docs](https://docs.vllm.ai/en/stable/features/reasoning_outputs.html) (table below for common ones). If the model is not listed, it does not emit structured traces and there is nothing to enable.
+
+2. **Check whether thinking is on by default** for your model (vLLM's docs note this per series) — if it is off, you also need the matching chat-template kwargs:
+
+   | Parser | Model series | Thinks by default? | `chat_template_kwargs` to set |
+   |---|---|---|---|
+   | `deepseek_r1` | DeepSeek R1, R1-Distill, QwQ | yes | — |
+   | `qwen3` | Qwen3 | yes | `{enable_thinking: false}` to **disable** |
+   | `gemma4` | Gemma 4 | **no** | `{thinking: true}` to **enable** |
+   | `deepseek_v3` | DeepSeek-V3.1 | **no** | see vLLM docs (`thinking: true`) |
+   | `glm45` | GLM-4.5 | yes | — |
+   | `granite` | IBM Granite 3.2 | **no** | `{thinking: true}` to **enable** |
+   | `ernie45` | ERNIE-4.5-VL / 4.5-21B | varies | see vLLM docs |
+
+3. **Set the knobs** in `ansible/group_vars/vllm_compute/vars.yml` (primary) or in the entry (aux) — then re-run the playbook:
+
+   ```yaml
+   # primary (Gemma 4: parser + thinking is off by default)
+   vllm_reasoning_parser: gemma4
+   vllm_chat_template_kwargs:
+     thinking: true
+
+   # aux (Qwen3 thinks by default; no kwargs needed)
+   vllm_aux_models:
+     - name: gatekeeper
+       model: Qwen/Qwen3-0.6B
+       reasoning_parser: qwen3
+   ```
+
+   - **Primary**: `vllm_reasoning_parser` renders `--reasoning-parser <name>` on `vllm serve`; `vllm_chat_template_kwargs` renders `--default-chat-template-kwargs '<json>'`. Aux entries carry the same two as per-entry keys (`reasoning_parser`, `chat_template_kwargs`; defaults `vllm_aux_default_reasoning_parser` / `vllm_aux_default_chat_template_kwargs`). Flux servers have no reasoning path, so no knob exists there.
+
+4. **Re-run `ansible-playbook playbooks/inference.yml`.** The unit restarts with the new flags, and — with `LITELLM_MASTER_KEY` exported — the LiteLLM registration automatically picks up `supports_reasoning: true` (the stale-prune check compares it, so flipping a parser on/off re-registers the model like a `max_model_len` change; no restart of the gateway, no manual config edit). Without the key, merge the regenerated `litellm/vllm-models.yaml` snippet into `litellm/config.yaml` and `docker compose restart litellm` instead.
+
+5. **Verify:**
+
+   ```bash
+   # the rendered launch script carries the flags
+   grep -E "reasoning-parser|default-chat-template-kwargs" /opt/vllm/vllm-serve.sh
+   # a chat request returns the trace in the reasoning field, not inline
+   curl -s http://<node>:8000/v1/chat/completions -H "Authorization: Bearer $VLLM_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"model":"<served_model_name>","messages":[{"role":"user","content":"9.11 vs 9.8, which is greater?"}]}' \
+     | python3 -c "import json,sys; m=json.load(sys.stdin)['choices'][0]['message']; print('reasoning:', bool(m.get('reasoning')))"
+   # through LiteLLM, the model advertises reasoning support
+   curl -sk https://litellm.localhost/model_group/info -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+     | python3 -c "import json,sys; print([(m['model_group'], m.get('supports_reasoning')) for m in json.load(sys.stdin)['data']])"
+   ```
+
+**Turning reasoning off** is the same steps in reverse: clear `vllm_reasoning_parser` (and `vllm_chat_template_kwargs`) — or the aux entry's `reasoning_parser` — and re-run; the prune + re-register cycle clears `supports_reasoning` automatically.
 
 ---
 
@@ -271,7 +331,7 @@ The run renders `litellm/vllm-models.yaml` in the repo: one `model_list` entry f
 
 With `store_model_in_db` enabled on the proxy (the default in this stack), the role **also registers the model directly**: it resolves the litellm container's API from the controller, diffs against `GET /v1/models`, and POSTs each missing endpoint to `/model/new` — no restart needed. `model_info` is POSTed with `max_input_tokens`/`max_tokens` as JSON **numbers**: clients that gate on `Number.isFinite` (MAGIE Coder's discovery plugin) reject string limits, so a string `"262144"` made the client fall back to a default context window and refuse to send large prompts even though vLLM accepted them. Requires `LITELLM_MASTER_KEY` exported on the controller (the same secret in `.env`). Missing key, or litellm not running → registration is skipped with the file snippet as fallback.
 
-The same run **prunes stale vLLM models** from the gateway's model db: any registered model whose `api_base` points at a `vllm_compute` node (`http://<ip>:<port>/v1`) but which this run no longer serves — a retired `vllm_model`, a removed aux entry, a changed `max_model_len`, a **non-number stored limit** (legacy string-typed registration), or (primary only) a changed `vllm_adaptive_quality_tier`/`vllm_adaptive_strengths` — is deleted via `POST /model/delete`. Without the prune, removed models linger in every client's model list forever (that is how `Qwen2.5-7B-Instruct` stuck around after the primary was switched). Scope is strict: only db models with a vLLM `api_base` are touched; config-declared models (gemini, bedrock, `auto`/`adaptive`, `voice-assistant`) have no `api_base` and are never deleted.
+The same run **prunes stale vLLM models** from the gateway's model db: any registered model whose `api_base` points at a `vllm_compute` node (`http://<ip>:<port>/v1`) but which this run no longer serves — a retired `vllm_model`, a removed aux entry, a changed `max_model_len`, a **non-number stored limit** (legacy string-typed registration), a **changed `supports_reasoning`** (parser turned on or off), or (primary only) a changed `vllm_adaptive_quality_tier`/`vllm_adaptive_strengths` — is deleted via `POST /model/delete`. Without the prune, removed models linger in every client's model list forever (that is how `Qwen2.5-7B-Instruct` stuck around after the primary was switched). Scope is strict: only db models with a vLLM `api_base` are touched; config-declared models (gemini, bedrock, `auto`/`adaptive`, `voice-assistant`) have no `api_base` and are never deleted.
 
 **Adaptive-router registration.** When `vllm_adaptive_quality_tier` is set (per-node group_vars; see `ansible/roles/vllm_compute/defaults/main.yml`), the primary model's registration carries `adaptive_router_preferences` (`quality_tier`, `strengths`) in its `model_info`, and the rendered snippet includes the same block. List the model under an `auto_router/adaptive_router` deployment's `available_models` in `litellm/config.yaml` to let the bandit route to it; the preferences are its cold-start prior. `vllm_adaptive_input_cost_per_token` is recorded for humans but `/model/new` does not persist cost fields in `model_info` — the adaptive router defaults a missing cost to 0, which is what a self-hosted node costs.
 
@@ -290,6 +350,7 @@ The models then appear in Open WebUI's model dropdown.
 |---|---|
 | Switch the primary model | Edit `vllm_model` → re-run the playbook → merge the regenerated snippet |
 | Change adaptive-router prefs | Edit `vllm_adaptive_quality_tier`/`vllm_adaptive_strengths` in group_vars → re-run (prune + re-register is automatic) |
+| Turn reasoning on/off | Set/clear `vllm_reasoning_parser` (+ `vllm_chat_template_kwargs`) or an aux entry's `reasoning_parser` → re-run (prune + re-register is automatic) |
 | Change topology | Set `vllm_deployment_mode` / `vllm_cross_node_tensor_parallel` → re-run |
 | Add/remove an image model | Edit `vllm_flux_models` → re-run; removal cleans up automatically |
 | Add/remove/placement an aux model | Edit `vllm_aux_models` (add/remove hosts in its `hosts` key) → re-run; cleanup is automatic |

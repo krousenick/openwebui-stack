@@ -1,0 +1,18 @@
+---
+# Scoped deployment of the tool result image filter (outlet filter that makes
+# MCP tool-result images, e.g. Playwright screenshots, render in the chat
+# window). Imports the same task file the openwebui_stack role includes via
+# tasks/mcp/main.yml, without running the rest of the role. The task needs
+# role defaults (playwright_mcp_enabled is referenced by mcp/main.yml, not by
+# the task itself) and the Open WebUI database settings from vault.local.yml.
+- name: Register the tool result image filter
+  hosts: openwebui
+  become: true
+  vars_files:
+    - ../group_vars/all/vars.yml
+    - ../group_vars/all/vault.yml
+    - ../group_vars/all/vault.local.yml
+  tasks:
+    - name: Import the tool result image filter task file
+      ansible.builtin.import_tasks:
+        file: ../roles/openwebui_stack/tasks/mcp/tool_image_filter.yml

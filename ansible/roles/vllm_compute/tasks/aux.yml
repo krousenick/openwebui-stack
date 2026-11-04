@@ -47,6 +47,8 @@
       gpu_memory_utilization: "{{ item.gpu_memory_utilization | default(vllm_aux_default_gpu_memory_utilization) }}"
       extra_args: "{{ item.extra_args | default(vllm_aux_default_extra_args) }}"
       api_key: "{{ item.api_key | default(vllm_aux_api_key) }}"
+      reasoning_parser: "{{ item.reasoning_parser | default(vllm_aux_default_reasoning_parser) }}"
+      chat_template_kwargs: "{{ item.chat_template_kwargs | default(vllm_aux_default_chat_template_kwargs) }}"
   loop: "{{ vllm_aux_models | default([]) }}"
   loop_control:
     extended: true
