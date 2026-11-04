@@ -53,6 +53,7 @@ stack_secret_names:
   - oauth2_proxy_cookie_secret
   - keycloak_provisioner_client_secret
   - traefik_dashboard_password
+  - code_sandbox_token
   - keycloak_user_platform_admin_password
   - keycloak_user_grafana_editor_password
   - keycloak_user_grafana_viewer_password
@@ -73,6 +74,13 @@ keycloak_admin_ip_range: "0.0.0.0/0"
 # containers and Traefik wiring live in docker-compose.yml. Set false in
 # group_vars to skip the wiring.
 playwright_mcp_enabled: true
+
+# Isolated code-sandbox (pinned jupyter/scipy-notebook image, backend-only
+# network, token auth). When true, the compose file adds the code-sandbox
+# container and Open WebUI's Jupyter code-execution wiring points at it.
+# The legacy in-process engines stay disabled either way. Set false in
+# group_vars to drop the sandbox entirely.
+code_sandbox_enabled: true
 
 # AWS Bedrock models in the LiteLLM model_list. Off by default: they need
 # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (see .env.example) and provision

@@ -12,13 +12,14 @@
       - chatterbox_port | int <= 65535
     fail_msg: "chatterbox_port must be a TCP port."
 
-# The HTTPS-mirror patch below modifies the vendored Dockerfiles, which makes
-# the next git checkout fail with "local modifications". Restore the two
-# patched files before checking out; the patch task re-applies right after.
+# The HTTPS-mirror patch below modifies the vendored Dockerfiles, and the
+# ui_auth tasks patch ui/index.html, ui/script.js and ui/styles.css; both
+# make the next git checkout fail with "local modifications". Restore all
+# patched files before checking out; the patch tasks re-apply right after.
 # (config.yaml is handled by skip-worktree below.)
-- name: Restore patched Dockerfiles before checkout
+- name: Restore patched files before checkout
   ansible.builtin.command:
-    cmd: git checkout -- Dockerfile Dockerfile.cpu
+    cmd: git checkout -- Dockerfile Dockerfile.cpu ui/index.html ui/script.js ui/styles.css
     chdir: "{{ project_root }}/chatterbox"
   register: chatterbox_git_restore
   changed_when: chatterbox_git_restore.stdout | length > 0

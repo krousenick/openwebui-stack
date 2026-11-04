@@ -15,6 +15,9 @@
     src: "{{ playbook_dir }}/../../{{ item }}/"
     dest: "{{ project_root }}/{{ item }}/"
     delete: false
+    private_key: "{{ hostvars[inventory_hostname].ansible_ssh_private_key_file | default(omit) }}"
+    verify_host: false
+    rsync_path: rsync
     rsync_opts:
       - "--chmod=D755,F644"
       - "--exclude=.env"
@@ -27,5 +30,17 @@
     - traefik
     - json-exporter
     - litellm
+    - sandbox
   delegate_to: localhost
-  when: ansible_connection != 'local'
+  # Synchronize's delegated mode builds its rsync from the delegate host's
+  # connection settings (localhost: agent identities, no key), not the
+  # inventory host's, so the inventory host's private key must be passed
+  # explicitly or SSH fails with "Too many authentication failures" (the
+  # agent offers every loaded identity first). rsync_path is pinned because
+  # the play's become:true would otherwise inject "sudo -u root rsync" on
+  # the remote side, and Photon has no sudo; the deploy user is already
+  # root. The when must be evaluated from the delegated host's perspective
+  # too; a bare `ansible_connection != 'local'` reads the delegate host's
+  # connection (always local for localhost) and would skip the sync on
+  # every run. hostvars[] pins both to the inventory host.
+  when: hostvars[inventory_hostname].ansible_connection | default('ssh') != 'local'

@@ -11,6 +11,9 @@
       description: "{{ vllm_served_model_name }} - vLLM Ray cluster ({{ vllm_effective_tp }}xTP, {{ vllm_effective_pp }}xPP)"
       max_input_tokens: {{ vllm_max_model_len }}
       max_tokens: {{ vllm_max_model_len }}
+{% if vllm_reasoning_parser | default('') | length > 0 %}
+      supports_reasoning: true
+{% endif %}
 {% else %}
 # Managed by Ansible (role: vllm_compute). Standalone replicas; LiteLLM
 # load balances across these endpoints.
@@ -24,6 +27,9 @@
       description: "{{ vllm_served_model_name }} - vLLM on {{ host }}"
       max_input_tokens: {{ vllm_max_model_len }}
       max_tokens: {{ vllm_max_model_len }}
+{% if vllm_reasoning_parser | default('') | length > 0 %}
+      supports_reasoning: true
+{% endif %}
 {% if vllm_adaptive_quality_tier | default('') | string | length > 0 %}
       adaptive_router_preferences:
         quality_tier: {{ vllm_adaptive_quality_tier }}
@@ -68,5 +74,8 @@
       description: "{{ aux_pair.0.served_model_name }} - vLLM aux on {{ aux_pair.1 }} ({{ aux_pair.0.model }})"
       max_input_tokens: {{ aux_pair.0.max_model_len }}
       max_tokens: {{ aux_pair.0.max_model_len }}
+{% if aux_pair.0.reasoning_parser | default('') | length > 0 %}
+      supports_reasoning: true
+{% endif %}
 {% endfor %}
 {% endif %}

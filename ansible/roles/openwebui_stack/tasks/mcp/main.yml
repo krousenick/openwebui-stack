@@ -13,6 +13,13 @@
     file: playwright.yml
   when: playwright_mcp_enabled | bool
 
+# Runs after the MCP servers: the filter makes their image results (e.g.
+# Playwright screenshots) visible in the chat window.
+- name: Register the tool result image filter
+  ansible.builtin.import_tasks:
+    file: tool_image_filter.yml
+  when: playwright_mcp_enabled | bool
+
 # Runs last: it derives the global default tool IDs from which MCP servers
 # were wired above, so it must see both merge results.
 - name: Set global model default tools for enabled MCP servers

@@ -1,0 +1,6 @@
+# Pinned dependencies for the code-sandbox image (jupyter/scipy-notebook base
+# already ships numpy, scipy, matplotlib, pandas). These add mesh/STL support
+# so model code can generate 3D artifacts. Keep pinned: the image must be
+# reproducible from a rebuild on Photon.
+numpy-stl==4.1.3
+trimesh==5.2.0

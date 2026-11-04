@@ -89,10 +89,13 @@
     #      so a max_model_len change must invalidate the old entry - or is
     #      not a JSON number (a string "262144" equals 262144 after int()
     #      but clients gating on Number.isFinite reject string limits), or
-   #   3. (primary only) its stored adaptive_router_preferences /
-   #      input_cost_per_token no longer match vllm_adaptive_model_info -
-   #      the gateway serves the stored model_info, so a tier/strengths/
-   #      cost edit only lands via delete + re-register.
+    #   3. (primary only) its stored adaptive_router_preferences /
+    #      input_cost_per_token no longer match vllm_adaptive_model_info -
+    #      the gateway serves the stored model_info, so a tier/strengths/
+    #      cost edit only lands via delete + re-register, or
+    #   4. its stored supports_reasoning no longer matches whether this
+    #      run sets a reasoning parser (vllm_reasoning_parser /
+    #      aux reasoning_parser) - same delete + re-register refresh path.
    # int()-normalized: LiteLLM stores the primary's value as int and
    # older registrations may hold a string. Only db models whose api_base
    # points at a vLLM endpoint (http(s)://<host>:<port>/v1) are considered;
@@ -121,10 +124,22 @@
     # never persists and must not invalidate. jsonb storage normalizes key
     # order, so both sides serialize with sort_keys or the API's ordering
     # (strengths before quality_tier) never matches the POST's.
-    # 'ABSENT' on both sides means "no prefs" (vars disabled and/or never
-    # registered): equal -> not stale.
+     # 'ABSENT' on both sides means "no prefs" (vars disabled and/or never
+     # registered): equal -> not stale.
     vllm_expected_adaptive_prefs: >-
       {{ vllm_adaptive_model_info['adaptive_router_preferences'] | default('ABSENT', true) }}
+    # Expected supports_reasoning per model: true only when this run passes
+    # a reasoning parser (vllm_reasoning_parser for the primary, the aux
+    # entry's reasoning_parser). Missing key == false on both sides.
+    vllm_expected_supports_reasoning: >-
+      {{ dict((vllm_aux_endpoint_pairs | default([])
+          | map(attribute='0.served_model_name') | list
+          + [vllm_served_model_name])
+        | zip(
+            ((vllm_aux_endpoint_pairs | default([])
+              | map(attribute='0.reasoning_parser') | map('default', '') | list
+              + [vllm_reasoning_parser | default('')])
+             | map('ternary', true, false) | list))) }}
   loop: "{{ vllm_litellm_model_info.json.data | default([])
     | selectattr('litellm_params.api_base', 'defined')
     | selectattr('litellm_params.api_base', 'match', '^https?://[0-9.]+:[0-9]+/v1$')
@@ -142,6 +157,8 @@
         and (candidate_item.model_info.adaptive_router_preferences | default('ABSENT', true)
              | to_json(sort_keys=true))
             != (vllm_expected_adaptive_prefs | to_json(sort_keys=true)))
+      or (candidate_item.model_info.supports_reasoning | default(false) | bool)
+        != (vllm_expected_supports_reasoning[candidate_item.model_name] | default(false))
   delegate_to: localhost
   run_once: true
   become: false
@@ -225,10 +242,11 @@
       # POSTed, and clients that gate on Number.isFinite (MAGIE's discovery
       # plugin) never learn a string limit, so they fall back to a default
       # context window and refuse to send large prompts.
-      model_info: "{{ {'description': vllm_served_model_name ~ ' - vLLM on ' ~ item,
+      model_info: "{{ ({'description': vllm_served_model_name ~ ' - vLLM on ' ~ item,
             'max_input_tokens': vllm_max_model_len | int,
             'max_tokens': vllm_max_model_len | int}
-           | combine(vllm_adaptive_model_info | default({})) }}"
+           | combine(vllm_adaptive_model_info | default({})))
+        | combine({'supports_reasoning': true} if vllm_reasoning_parser | default('') | length > 0 else {}) }}"
     status_code: [200]
   register: vllm_litellm_register
   changed_when: vllm_litellm_register.status == 200
@@ -259,10 +277,11 @@
         model: "openai/{{ aux_pair.0.served_model_name }}"
         api_base: "http://{{ hostvars[aux_pair.1].vllm_host_ip }}:{{ aux_pair.0.port }}/v1"
         api_key: "{{ aux_pair.0.api_key if aux_pair.0.api_key | length > 0 else 'local' }}"
-      model_info:
-        description: "{{ aux_pair.0.served_model_name }} - vLLM aux on {{ aux_pair.1 }} ({{ aux_pair.0.model }})"
-        max_input_tokens: "{{ aux_pair.0.max_model_len | int }}"
-        max_tokens: "{{ aux_pair.0.max_model_len | int }}"
+      model_info: "{{ ({'description': aux_pair.0.served_model_name ~ ' - vLLM aux on '
+            ~ aux_pair.1 ~ ' (' ~ aux_pair.0.model ~ ')',
+          'max_input_tokens': aux_pair.0.max_model_len | int,
+          'max_tokens': aux_pair.0.max_model_len | int})
+        | combine({'supports_reasoning': true} if aux_pair.0.reasoning_parser | default('') | length > 0 else {}) }}"
     status_code: [200]
   register: vllm_aux_litellm_register
   changed_when: vllm_aux_litellm_register.status == 200

@@ -1,0 +1,42 @@
+name: Guardrail Drift Check
+
+# The stack pins LiteLLM's prompt_injection_* guardrail categories with
+# category_file overrides in litellm/guardrail_categories/ (the built-in
+# conditional matches false-blocked ordinary SQL/Python questions). The
+# overrides must keep every always-block keyword upstream ships, so this
+# compares them against the latest LiteLLM sdist on a schedule and on
+# changes to the override files or this script. See
+# scripts/check-guardrail-drift.sh.
+on:
+    schedule:
+        # 06:00 UTC Monday.
+        - cron: "0 6 * * 1"
+    push:
+        paths:
+            - "litellm/guardrail_categories/**"
+            - "scripts/check-guardrail-drift.sh"
+            - ".github/workflows/guardrail-drift.yml"
+    pull_request:
+        paths:
+            - "litellm/guardrail_categories/**"
+            - "scripts/check-guardrail-drift.sh"
+            - ".github/workflows/guardrail-drift.yml"
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    guardrail-drift:
+        name: Compare pinned guardrail categories with upstream LiteLLM
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v6
+
+            - name: Install PyYAML
+              run: python3 -m pip install --user pyyaml
+
+            - name: Check guardrail drift against the latest LiteLLM release
+              run: scripts/check-guardrail-drift.sh

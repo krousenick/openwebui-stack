@@ -135,6 +135,18 @@ services:
       ENABLE_COMMUNITY_SHARING: "false"
       ENABLE_CODE_EXECUTION: "false"
       ENABLE_CODE_INTERPRETER: "false"
+{% if code_sandbox_enabled | bool %}
+      # Legacy engines stay off; sandbox wiring below only points Open WebUI
+      # at the isolated code-sandbox container for Tools that opt into it.
+      CODE_EXECUTION_JUPYTER_URL: "http://code-sandbox:8888"
+      CODE_EXECUTION_JUPYTER_AUTH: "token"
+      CODE_EXECUTION_JUPYTER_AUTH_TOKEN: "${CODE_SANDBOX_TOKEN:?error}"
+      CODE_EXECUTION_JUPYTER_TIMEOUT: "120"
+      CODE_INTERPRETER_JUPYTER_URL: "http://code-sandbox:8888"
+      CODE_INTERPRETER_JUPYTER_AUTH: "token"
+      CODE_INTERPRETER_JUPYTER_AUTH_TOKEN: "${CODE_SANDBOX_TOKEN:?error}"
+      CODE_INTERPRETER_JUPYTER_TIMEOUT: "120"
+{% endif %}
 
       # Chatterbox TTS (OpenAI-compatible, devnen Chatterbox-TTS-Server).
       # ConfigVars: persisted after first boot.
@@ -167,6 +179,10 @@ services:
         condition: service_healthy
       lgtm:
         condition: service_started
+{% if code_sandbox_enabled | bool %}
+      code-sandbox:
+        condition: service_healthy
+{% endif %}
     labels:
       - traefik.enable=true
       - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
@@ -670,6 +686,55 @@ services:
       - backend
       - frontend
 
+{% if code_sandbox_enabled | bool %}
+  # ===========================================================================
+  # Code Sandbox - isolated Jupyter for model-authored Python
+  # Open WebUI calls http://code-sandbox:8888 with the token below. The
+  # legacy engines stay off (ENABLE_CODE_EXECUTION / ENABLE_CODE_INTERPRETER
+  # are false above); this container is the only code-execution surface.
+  # Backend-only network, no published port, no Traefik route: nothing
+  # outside the Docker backend network can reach it.
+  # https://docs.openwebui.com/getting-started/advanced-topics/hardening
+  # ===========================================================================
+  code-sandbox:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile
+    image: ${CODE_SANDBOX_IMAGE:-openwebui-stack/code-sandbox:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_code-sandbox
+    restart: unless-stopped
+    logging: *default-logging
+    user: "1000:100"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      JUPYTER_TOKEN: "${CODE_SANDBOX_TOKEN:?error}"
+    volumes:
+      # Config: token auth, kernel culling, no terminals, work dir root.
+      - ./sandbox/jupyter_server_config.py:/etc/jupyter/jupyter_server_config.py:ro
+      # Writable scratch space for generated artifacts (STL, plots).
+      - code_sandbox_data:/home/jovyan/work
+    networks:
+      - backend
+    healthcheck:
+      # TCP connect proves the Jupyter server is up; the API answers 403
+      # without the token, and an authenticated check would put the token in
+      # `docker inspect` output.
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('localhost', 8888), timeout=5).close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+{% endif %}
+
   # ===========================================================================
   # Playwright MCP Server - Web Clicking for LLM
   # ===========================================================================
@@ -1066,5 +1131,7 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak_backups
   chatterbox_models:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox_models
+  code_sandbox_data:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_code_sandbox_data
   alloy_data:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_alloy_data

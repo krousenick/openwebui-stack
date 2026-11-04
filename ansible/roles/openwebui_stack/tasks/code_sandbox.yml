@@ -1,0 +1,124 @@
+---
+# Open WebUI persists code-execution settings in its config table after the
+# first boot (docs: docs.openwebui.com/reference/env-configuration,
+# ENABLE_PERSISTENT_CONFIG). An old setting (or an Admin UI edit) would keep
+# pointing at a stale or missing Jupyter even after the compose env changes,
+# so this task asserts the intended sandbox values and heals them on every
+# playbook run, the same way openwebui_config.yml heals the OpenAI connection.
+#
+# The sandbox is the only code-execution surface: ENABLE_CODE_EXECUTION and
+# ENABLE_CODE_INTERPRETER stay false (legacy in-process engines), and the
+# jupyter wiring points at the isolated, token-authenticated code-sandbox
+# container on the backend network.
+
+- name: Assert sandbox settings
+  ansible.builtin.assert:
+    that:
+      - openwebui_db_password | length > 0
+      - openwebui_db_name | length > 0
+      - code_sandbox_token | length > 0
+    fail_msg: "Code sandbox config requires the Open WebUI database settings and the code_sandbox_token vault secret."
+
+- name: Record current code execution config
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+      - -tAc
+      - >-
+        SELECT json_build_object(
+          'exec_enable', (SELECT value #>> '{}' FROM config WHERE key = 'code_execution.enable'),
+          'exec_engine', (SELECT value #>> '{}' FROM config WHERE key = 'code_execution.engine'),
+          'exec_jupyter_url', (SELECT value #>> '{}' FROM config WHERE key = 'code_execution.jupyter.url'),
+          'exec_jupyter_auth', (SELECT value #>> '{}' FROM config WHERE key = 'code_execution.jupyter.auth'),
+          'exec_jupyter_timeout', (SELECT value #>> '{}' FROM config WHERE key = 'code_execution.jupyter.timeout'),
+          'ci_enable', (SELECT value #>> '{}' FROM config WHERE key = 'code_interpreter.enable'),
+          'ci_engine', (SELECT value #>> '{}' FROM config WHERE key = 'code_interpreter.engine'),
+          'ci_jupyter_url', (SELECT value #>> '{}' FROM config WHERE key = 'code_interpreter.jupyter.url'),
+          'ci_jupyter_auth', (SELECT value #>> '{}' FROM config WHERE key = 'code_interpreter.jupyter.auth'),
+          'ci_jupyter_timeout', (SELECT value #>> '{}' FROM config WHERE key = 'code_interpreter.jupyter.timeout')
+        )
+  register: openwebui_stack_current_code_config
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Build the desired code execution config
+  ansible.builtin.set_fact:
+    openwebui_stack_desired_code_config:
+      exec_enable: "false"
+      exec_engine: "jupyter"
+      exec_jupyter_url: "http://code-sandbox:8888"
+      exec_jupyter_auth: "token"
+      exec_jupyter_timeout: "120"
+      ci_enable: "false"
+      ci_engine: "jupyter"
+      ci_jupyter_url: "http://code-sandbox:8888"
+      ci_jupyter_auth: "token"
+      ci_jupyter_timeout: "120"
+  no_log: true
+
+- name: Heal the code execution config in the database
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+    stdin: |
+      INSERT INTO config (key, value, updated_at)
+      VALUES
+        ('code_execution.enable', 'false'::json, (extract(epoch from now())*1000)::bigint),
+        ('code_execution.engine', '"jupyter"'::json, (extract(epoch from now())*1000)::bigint),
+        ('code_execution.jupyter.url', '"http://code-sandbox:8888"'::json, (extract(epoch from now())*1000)::bigint),
+        ('code_execution.jupyter.auth', '"token"'::json, (extract(epoch from now())*1000)::bigint),
+        ('code_execution.jupyter.auth_token', '"{{ code_sandbox_token | replace("'", "''") }}"'::json, (extract(epoch from now())*1000)::bigint),
+        ('code_execution.jupyter.timeout', '120'::json, (extract(epoch from now())*1000)::bigint),
+        ('code_interpreter.enable', 'false'::json, (extract(epoch from now())*1000)::bigint),
+        ('code_interpreter.engine', '"jupyter"'::json, (extract(epoch from now())*1000)::bigint),
+        ('code_interpreter.jupyter.url', '"http://code-sandbox:8888"'::json, (extract(epoch from now())*1000)::bigint),
+        ('code_interpreter.jupyter.auth', '"token"'::json, (extract(epoch from now())*1000)::bigint),
+        ('code_interpreter.jupyter.auth_token', '"{{ code_sandbox_token | replace("'", "''") }}"'::json, (extract(epoch from now())*1000)::bigint),
+        ('code_interpreter.jupyter.timeout', '120'::json, (extract(epoch from now())*1000)::bigint)
+      ON CONFLICT (key) DO UPDATE
+      SET value = EXCLUDED.value,
+          updated_at = EXCLUDED.updated_at;
+  register: openwebui_stack_code_config_update
+  # Compare parsed structures, not raw strings: psql emits JSON with its own
+  # spacing that never matches a literal byte-for-byte.
+  changed_when: >-
+    (openwebui_stack_current_code_config.stdout | trim | from_json) is not mapping
+    or (openwebui_stack_current_code_config.stdout | trim | from_json)
+    != (openwebui_stack_desired_code_config | to_json | from_json)
+  no_log: true
+
+- name: Recreate Open WebUI to reload the sandbox wiring
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - open-webui
+    state: present
+    recreate: always
+    wait: true
+    wait_timeout: 180
+  when: openwebui_stack_code_config_update is changed

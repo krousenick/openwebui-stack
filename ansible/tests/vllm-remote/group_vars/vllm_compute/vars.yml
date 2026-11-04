@@ -97,8 +97,14 @@ vllm_extra_args:
   - "--enable-auto-tool-choice"
   - "--tool-call-parser"
   - "gemma4"
-  - "--reasoning-parser"
-  - "gemma4"
+# Gemma 4 emits reasoning traces; the parser splits them into the reasoning
+# field instead of inline in content, and the LiteLLM model_info gets
+# supports_reasoning: true. Gemma 4 thinking is off by default, so the
+# chat-template kwargs turn it on server-side (request-level kwargs still
+# win per the vLLM docs).
+vllm_reasoning_parser: gemma4
+vllm_chat_template_kwargs:
+  thinking: true
 
 # The compute segment the controller reaches the node on (set in
 # vars.local.yml). The API port opens in the vllm-cluster zone for LiteLLM;

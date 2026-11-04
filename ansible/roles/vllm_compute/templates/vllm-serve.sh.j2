@@ -57,4 +57,10 @@ exec {{ vllm_container_cli }} run \
 {% endif %}
     --enable-prefix-caching \
     --disable-log-requests \
+{% if vllm_reasoning_parser | length > 0 %}
+    --reasoning-parser {{ vllm_reasoning_parser }} \
+{% endif %}
+{% if vllm_chat_template_kwargs | default({}) | length > 0 %}
+    --default-chat-template-kwargs {{ vllm_chat_template_kwargs | to_json | quote }} \
+{% endif %}
     {{ vllm_extra_args | join(' ') }}"

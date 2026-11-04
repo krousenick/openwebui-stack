@@ -32,6 +32,8 @@
 - name: Sync stack files
   ansible.builtin.import_tasks:
     file: sync.yml
+  tags:
+    - always
 
 - name: Render the LiteLLM config
   ansible.builtin.import_tasks:
@@ -51,6 +53,12 @@
   tags:
     - environment
 
+- name: Verify compose bind-mount sources are present before starting
+  ansible.builtin.import_tasks:
+    file: compose_mount_check.yml
+  tags:
+    - compose
+
 - name: Deploy Docker Compose stack
   ansible.builtin.import_tasks:
     file: compose.yml
@@ -60,6 +68,13 @@
 - name: Assert Open WebUI connection config
   ansible.builtin.import_tasks:
     file: openwebui_config.yml
+  tags:
+    - openwebui-config
+
+- name: Configure the code sandbox wiring in Open WebUI
+  ansible.builtin.import_tasks:
+    file: code_sandbox.yml
+  when: code_sandbox_enabled | bool
   tags:
     - openwebui-config
 

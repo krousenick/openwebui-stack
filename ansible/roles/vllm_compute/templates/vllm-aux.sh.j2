@@ -47,4 +47,10 @@ exec {{ vllm_container_cli }} run \
     --max-model-len {{ aux_item.max_model_len }} \
     --gpu-memory-utilization {{ aux_item.gpu_memory_utilization }} \
     --tensor-parallel-size {{ aux_item.tensor_parallel_size }} \
+{% if aux_item.reasoning_parser | default('') | length > 0 %}
+    --reasoning-parser {{ aux_item.reasoning_parser }} \
+{% endif %}
+{% if aux_item.chat_template_kwargs | default({}) | length > 0 %}
+    --default-chat-template-kwargs {{ aux_item.chat_template_kwargs | to_json | quote }} \
+{% endif %}
     {{ aux_item.extra_args | join(' ') }}"

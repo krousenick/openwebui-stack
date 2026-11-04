@@ -80,3 +80,4 @@ npm-debug.log*
 .magie-tmp
 # Cloudflare Origin CA root (public root CA, safe to commit; used by the opencode role)
 !ansible/roles/opencode/files/origin_ca_rsa_root.pem
+.tmp*
