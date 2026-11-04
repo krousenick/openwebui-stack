@@ -95,6 +95,36 @@ vllm_gpu_memory_utilization: 0.90
 vllm_extra_args: []
 vllm_api_key: ""
 
+# Adaptive-router registration for the primary model. When non-empty, the
+# LiteLLM registration tasks (and the litellm-models.yaml.j2 snippet) add
+# this model_info block, so the model can be listed in an adaptive router's
+# available_models (LiteLLM's adaptive router reads quality_tier +
+# strengths as the cold-start prior and input_cost_per_token as the cost
+# signal). Empty string disables the block entirely.
+#   quality_tier: 1 (light) .. 3 (frontier); see litellm/config.yaml
+#   strengths: request types the model is strong at (code_generation,
+#     code_understanding, technical_design, analytical_reasoning, writing,
+#     factual_lookup, general)
+#   input_cost_per_token: $/token; 0.0 for self-hosted nodes (the adaptive
+#     router's cost weight then always favors this model on price)
+vllm_adaptive_quality_tier: ""
+vllm_adaptive_strengths: []
+vllm_adaptive_input_cost_per_token: "0.0"
+
+# model_info fragment the LiteLLM registration tasks add when the tier is
+# set. Derived, not configured: combine() into the registered model_info so
+# the POST body and the rendered snippet stay in sync. Empty when the tier
+# is unset (aux models never carry adaptive prefs).
+vllm_adaptive_model_info: >-
+  {{ {} if (vllm_adaptive_quality_tier | default('') | string | length == 0)
+     else {
+       'adaptive_router_preferences': {
+         'quality_tier': vllm_adaptive_quality_tier | int,
+         'strengths': vllm_adaptive_strengths,
+       },
+       'input_cost_per_token': vllm_adaptive_input_cost_per_token | float,
+     } }}
+
 # Hugging Face cache directory shared by all vllm containers. Put it on the
 # node's large data volume; the same weights are read by the primary model
 # server and every flux server.

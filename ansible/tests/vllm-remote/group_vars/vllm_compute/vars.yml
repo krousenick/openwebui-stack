@@ -69,15 +69,25 @@ vllm_pipeline_parallel_size: 1
 #     fp8 KV halves that again - MEASURE the real line from the logs
 #     before trusting the estimate (every number on this node has been
 #     measured, not projected).
-#   - 64K window kept from the Qwen config: same real-prompt floor
-#     (16385-token Open WebUI prompts), full-repo dumps in one request.
-#   - --max-num-seqs 16 as before; no aux, no flux, no CPU offloads.
-#   - gemma4 tool-call + reasoning parsers (verified present in the
-#     installed vLLM image); Open WebUI sends tool_choice: "auto".
+#   - 256K window (model-native ceiling): fp8 KV grew the pool to 289,427
+#     tokens (measured at 128K window), comfortably above 262,144, so the
+#     full max_position_embeddings now fits. Trade-off: a single 256K
+#     request occupies ~91% of the pool (1.10x concurrency) vs 2.21x at
+#     128K; concurrent full-window requests queue behind the first one.
+#     The LiteLLM context-compaction callback trims oversized histories
+#     for models with smaller windows, so clients are protected either way.
 vllm_model: cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit
 vllm_served_model_name: gemma-4-26b-a4b
-vllm_max_model_len: 65536
+vllm_max_model_len: 262144
 vllm_gpu_memory_utilization: 0.90
+
+# Adaptive-router registration (litellm/config.yaml's "adaptive" router
+# lists this model in available_models). Tier 2 = mid quality, matching the
+# auto router's MEDIUM tier pairing with gemini-3.8-flash; strengths mirror
+# what a 26B-A4B local model is good at. Self-hosted, so its price is 0.
+vllm_adaptive_quality_tier: "2"
+vllm_adaptive_strengths: ["code_generation", "code_understanding", "analytical_reasoning"]
+vllm_adaptive_input_cost_per_token: "0.0"
 vllm_extra_args:
   - "--kv-cache-dtype"
   - "fp8"

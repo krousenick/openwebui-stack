@@ -195,6 +195,7 @@ services:
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
       - ./litellm/brave_mcp_callback.py:/app/brave_mcp_callback.py:ro
+      - ./litellm/context_compaction_callback.py:/app/context_compaction_callback.py:ro
       - ./certs:/etc/ssl/certs/local:ro
     #   - ./ci_entrypoint.py:/app/ci_entrypoint.py
     # command: ["python", "/app/ci_entrypoint.py"]
@@ -225,7 +226,7 @@ services:
       REQUESTS_CA_BUNDLE: "/etc/ssl/certs/local/origin_ca_rsa_root.pem"
       SSL_CERT_FILE: "/etc/ssl/certs/local/origin_ca_rsa_root.pem"
       GLOBAL_SSL_VERIFY: "false"
-      LITELLM_WORKER_STARTUP_HOOKS: "brave_mcp_callback:register_callback"
+      LITELLM_WORKER_STARTUP_HOOKS: "brave_mcp_callback:register_callback,context_compaction_callback:register_callback"
 
       # -----------------------------------------------------------------------
       # Generic OIDC

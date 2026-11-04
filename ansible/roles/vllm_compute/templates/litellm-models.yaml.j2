@@ -24,6 +24,12 @@
       description: "{{ vllm_served_model_name }} - vLLM on {{ host }}"
       max_input_tokens: {{ vllm_max_model_len }}
       max_tokens: {{ vllm_max_model_len }}
+{% if vllm_adaptive_quality_tier | default('') | string | length > 0 %}
+      adaptive_router_preferences:
+        quality_tier: {{ vllm_adaptive_quality_tier }}
+        strengths: {{ vllm_adaptive_strengths | to_json }}
+      input_cost_per_token: {{ vllm_adaptive_input_cost_per_token }}
+{% endif %}
 {% endfor %}
 {% endif %}
 {% if vllm_flux_enabled | default(false) | bool and (vllm_flux_effective_models | default([]) | length > 0) %}

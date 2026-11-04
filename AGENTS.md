@@ -148,6 +148,10 @@ curl -sk https://litellm.localhost/v1/chat/completions \
 
 Pieces: `brave-search-mcp` container (`BRAVE_SEARCH_API_KEY` required), `mcp_servers.brave_search` in `litellm/config.yaml`, and the `BraveMCPInjector` in `litellm/brave_mcp_callback.py` loaded via `LITELLM_WORKER_STARTUP_HOOKS`. Full details in README "Web Search (Brave Search MCP)".
 
+### Context Compaction (oversized histories)
+
+`litellm/context_compaction_callback.py` is a second `LITELLM_WORKER_STARTUP_HOOKS` callback. Its `async_pre_call_hook` trims an oversized message history to the target model's `max_input_tokens` (resolved from `proxy_server.llm_router.get_model_list()` → `model_info`, then LiteLLM's cost map, then `CONTEXT_COMPACTION_MODEL_<name>`) before the provider sees it, keeping system prompts, the newest `CONTEXT_COMPACTION_KEEP_LAST_N` (default 6) messages, and a `[Earlier conversation was compacted...]` note. Trimmed, not summarized. Works on streaming too (no tool deltas involved). Opt out per request with `metadata: {"context_compaction": false}`. Full details in README "Context Compaction".
+
 **Critical implementation notes:**
 - LiteLLM's `/v1/chat/completions` route invokes `async_pre_call_hook` with `call_type="acompletion"`, not `"completion"`. The injector must match both or it silently never fires on proxy traffic.
 - The injector must skip `stream: true` requests. Streaming Open WebUI chats run their own function-calling loop; LiteLLM's MCP streaming iterator forwards tool-call deltas to the client, the client cannot resolve the MCP-namespaced tool name, and the resulting "Error: Tool not found" tool responses corrupt the history. The next Gemini turn then fails with "Missing corresponding tool call for tool response message".

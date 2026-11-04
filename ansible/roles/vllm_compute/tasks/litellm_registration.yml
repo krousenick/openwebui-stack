@@ -80,18 +80,22 @@
     - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
 
 - name: Compute the stale vLLM registrations
-  # Builds the prune list per item (selectattr cannot compare against a
-  # per-model expected value). An entry is stale when either:
-  #   1. its model_name is not registered by this run (retired model,
-  #      removed aux entry, model moved to another node), or
-  #   2. its stored max_input_tokens no longer matches the context length
-  #      this run would register - the gateway enforces the stored value,
-  #      so a max_model_len change must invalidate the old entry.
-  # int()-normalized: LiteLLM stores the primary's value as int and
-  # older registrations may hold a string. Only db models whose api_base
-  # points at a vLLM endpoint (http(s)://<host>:<port>/v1) are considered;
-  # config-declared models never reach this loop. The delete + re-register
-  # cycle below is the refresh path.
+   # Builds the prune list per item (selectattr cannot compare against a
+   # per-model expected value). An entry is stale when any of:
+   #   1. its model_name is not registered by this run (retired model,
+   #      removed aux entry, model moved to another node), or
+   #   2. its stored max_input_tokens no longer matches the context length
+   #      this run would register - the gateway enforces the stored value,
+   #      so a max_model_len change must invalidate the old entry, or
+   #   3. (primary only) its stored adaptive_router_preferences /
+   #      input_cost_per_token no longer match vllm_adaptive_model_info -
+   #      the gateway serves the stored model_info, so a tier/strengths/
+   #      cost edit only lands via delete + re-register.
+   # int()-normalized: LiteLLM stores the primary's value as int and
+   # older registrations may hold a string. Only db models whose api_base
+   # points at a vLLM endpoint (http(s)://<host>:<port>/v1) are considered;
+   # config-declared models never reach this loop. The delete + re-register
+   # cycle below is the refresh path.
   ansible.builtin.set_fact:
     vllm_stale_models: "{{ (vllm_stale_models | default([])) + [candidate_item] }}"
   vars:
@@ -106,6 +110,19 @@
             (vllm_aux_endpoint_pairs | default([])
               | map(attribute='0.max_model_len') | map('int') | list
               + [vllm_max_model_len | int]))) }}
+    # The primary model is stale on an adaptive-preferences change too:
+    # the gateway serves the stored model_info, so a tier/strengths edit
+    # only lands via delete + re-register. Only adaptive_router_preferences
+    # is compared: /model/new strips input_cost_per_token from model_info
+    # (without_server_derived_pricing), and the adaptive router defaults a
+    # missing cost to 0.0 - correct for a self-hosted node - so the cost key
+    # never persists and must not invalidate. jsonb storage normalizes key
+    # order, so both sides serialize with sort_keys or the API's ordering
+    # (strengths before quality_tier) never matches the POST's.
+    # 'ABSENT' on both sides means "no prefs" (vars disabled and/or never
+    # registered): equal -> not stale.
+    vllm_expected_adaptive_prefs: >-
+      {{ vllm_adaptive_model_info['adaptive_router_preferences'] | default('ABSENT', true) }}
   loop: "{{ vllm_litellm_model_info.json.data | default([])
     | selectattr('litellm_params.api_base', 'defined')
     | selectattr('litellm_params.api_base', 'match', '^https?://[0-9.]+:[0-9]+/v1$')
@@ -118,6 +135,10 @@
     - candidate_item.model_name not in vllm_registered_names
       or (candidate_item.model_info.max_input_tokens | default(0) | int)
         != (vllm_expected_max_input[candidate_item.model_name] | default(0) | int)
+      or (candidate_item.model_name == vllm_served_model_name
+        and (candidate_item.model_info.adaptive_router_preferences | default('ABSENT', true)
+             | to_json(sort_keys=true))
+            != (vllm_expected_adaptive_prefs | to_json(sort_keys=true)))
   delegate_to: localhost
   run_once: true
   become: false
@@ -179,6 +200,10 @@
   # model_name entries as load-balanced replicas). Entries already present
   # are skipped, so re-runs are idempotent - the prune above removed the
   # stale entry, so a context-length change lands here as a re-register.
+  # model_info is rendered to a JSON string because uri's json serializer
+  # turns a YAML/Ansible multi-line string body scalar into a quoted
+  # string; LiteLLM's /model/new accepts a model_info object, so the
+  # template must produce the object, not its serialization.
   ansible.builtin.uri:
     url: "{{ vllm_litellm_endpoint.stdout }}/model/new"
     method: POST
@@ -192,10 +217,10 @@
         model: "openai/{{ vllm_served_model_name }}"
         api_base: "http://{{ item }}:{{ vllm_port }}/v1"
         api_key: "{{ vllm_api_key if vllm_api_key | length > 0 else 'local' }}"
-      model_info:
-        description: "{{ vllm_served_model_name }} - vLLM on {{ item }}"
-        max_input_tokens: "{{ vllm_max_model_len }}"
-        max_tokens: "{{ vllm_max_model_len }}"
+      model_info: "{{ {'description': vllm_served_model_name ~ ' - vLLM on ' ~ item,
+            'max_input_tokens': vllm_max_model_len | string,
+            'max_tokens': vllm_max_model_len | string}
+           | combine(vllm_adaptive_model_info | default({})) }}"
     status_code: [200]
   register: vllm_litellm_register
   changed_when: vllm_litellm_register.status == 200

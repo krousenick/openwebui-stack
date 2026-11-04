@@ -357,25 +357,28 @@ Key environment variables in `.env`:
 
    **Guardrails.** `default-content-filter` is the built-in LiteLLM content filter (`litellm_content_filter`). It is `default_on`, so it runs on every request without the client naming it. `pre_call` scans the user message and `post_call` scans the reply. System and tool turns are skipped (`skip_system_message_in_guardrail`, `skip_tool_message_in_guardrail`) so stack prompts and tool results are not scanned. US SSNs, AWS access keys, AWS secret keys, and GitHub tokens are blocked. Email addresses and US phone numbers are masked. Prompt-injection categories and harmful self-harm, violence, weapons, and child-safety categories block the request. There is no extra container or API key. A blocked call returns HTTP 400 before the model is billed. Docs: [content filter](https://docs.litellm.ai/docs/proxy/guardrails/litellm_content_filter).
 
-   **Complexity routing.** Model `auto` is `auto_router/complexity_router`. The heuristic scorer (no extra API call) maps each turn to a Gemini model already in `model_list`:
+    **Complexity routing.** Model `auto` is `auto_router/complexity_router`. The heuristic scorer (no extra API call) maps each turn to a model already in `model_list`:
 
-   | Tier | Model |
-   | --- | --- |
-   | SIMPLE | `gemini-3.5-flash-lite` |
-   | MEDIUM | `gemini-3.8-flash` |
-   | COMPLEX | `gemini-4-argon` |
-   | REASONING | `gemini-3.1-pro` |
+    | Tier | Model |
+    | --- | --- |
+    | SIMPLE | `gemini-3.5-flash-lite` |
+    | MEDIUM | `gemini-3.8-flash` or `gemma-4-26b-a4b` (random pick) |
+    | COMPLEX | `gemini-4-argon` |
+    | REASONING | `gemini-3.1-pro` |
 
-   Unclassifiable turns use `gemini-3.8-flash`. `session_affinity` is off, so a short follow-up is not stuck on the model that answered a hard first turn. Open WebUI can select `auto` like any other model. Bedrock models stay direct-select only. Docs: [auto routing](https://docs.litellm.ai/docs/proxy/auto_routing). `store_model_in_db` is on, so a guardrail or router key saved in the Admin UI overrides the same key in this file after a restart.
+    A tier with a two-model pool picks randomly, so MEDIUM traffic splits ~50/50 between `gemini-3.8-flash` and the local vLLM node. Unclassifiable turns use `gemini-3.8-flash`. `session_affinity` is off, so a short follow-up is not stuck on the model that answered a hard first turn. Open WebUI can select `auto` like any other model. Bedrock models stay direct-select only. Docs: [auto routing](https://docs.litellm.ai/docs/proxy/auto_routing). `store_model_in_db` is on, so a guardrail or router key saved in the Admin UI overrides the same key in this file after a restart.
 
    **Adaptive routing (beta).** Model `adaptive` is `auto_router/adaptive_router`. Unlike the heuristic `auto` router, it is a Thompson-sampling bandit that learns which model wins each request type (`code_generation`, `code_understanding`, `technical_design`, `analytical_reasoning`, `writing`, `factual_lookup`, `general`) from conversation signals (user satisfaction, stagnation, misalignment). It balances quality against cost with `weights: {quality: 0.7, cost: 0.3}`:
 
-   | Model | quality_tier | strengths | input $/tok |
-   | --- | --- | --- | --- |
-   | `gemini-3.5-flash-lite` | 1 (budget) | factual_lookup | 0.0000003 |
-   | `gemini-3.8-flash` | 2 (mid) | writing, code_understanding | 0.00000075 |
-   | `gemini-3.1-pro` | 3 (frontier) | analytical_reasoning | 0.000002 |
-   | `gemini-4-argon` | 3 (frontier) | code_generation, technical_design, analytical_reasoning | 0.000002 |
+    | Model | quality_tier | strengths | input $/tok |
+    | --- | --- | --- | --- |
+    | `gemini-3.5-flash-lite` | 1 (budget) | factual_lookup | 0.0000003 |
+    | `gemini-3.8-flash` | 2 (mid) | writing, code_understanding | 0.00000075 |
+    | `gemini-3.1-pro` | 3 (frontier) | analytical_reasoning | 0.000002 |
+    | `gemini-4-argon` | 3 (frontier) | code_generation, technical_design, analytical_reasoning | 0.000002 |
+    | `gemma-4-26b-a4b` | 2 (mid) | code_generation, code_understanding, analytical_reasoning | 0 (self-hosted) |
+
+    The vLLM model's adaptive preferences are registered by the `vllm_compute` role (`vllm_adaptive_quality_tier`, `vllm_adaptive_strengths`, `vllm_adaptive_input_cost_per_token` in `ansible/roles/vllm_compute/defaults/main.yml`, set per node in group_vars), not by this file — its LiteLLM entry lives in the model DB, created by `POST /model/new` during the role run. `/model/new` does not persist `input_cost_per_token` in `model_info`, and the adaptive router defaults a missing cost to 0 — correct for a self-hosted node, which also biases the 0.3 cost weight toward it.
 
    Cold start uses these declared tiers; after ~10 real requests per model per type, learned estimates take over. The response carries `x-litellm-adaptive-router-model` naming the model actually used. Force a frontier model on one request with the `x-litellm-min-quality-tier: 3` header (or `min_quality_tier` request metadata). Inspect what it has learned with `GET /adaptive_router/state` (admin). Learned state persists in Postgres (`LiteLLM_AdaptiveRouter*` tables) and survives restarts. Beta: latency is not scored and signals are regex/English-biased. Docs: [adaptive router](https://docs.litellm.ai/docs/adaptive_router).
 - **Keycloak**: Identity provider for SSO (auth.domain.com)
@@ -543,6 +546,50 @@ The playbook configures both MCP tool servers as the **default tools for every m
 |---------|-------|-----|
 | New chats do not start with the MCP tools | `models.default_metadata` row missing or stale | Rerun the playbook (`ansible-playbook playbooks/site.yml`); verify `SELECT value FROM config WHERE key = 'models.default_metadata'` lists the expected `toolIds` |
 | A model never uses the MCP tools | That model has its own `meta.toolIds` set, which replaces the global default | Add the MCP IDs to the model's Default Tools in the Workspace editor |
+
+## Context Compaction
+
+Long chats never die at the context limit again. Every `/v1/chat/completions` request that would exceed the target model's context window is trimmed before it reaches the provider.
+
+### How it works
+
+1. **A startup hook loads the compactor.** `LITELLM_WORKER_STARTUP_HOOKS` includes `context_compaction_callback:register_callback`, which loads [litellm/context_compaction_callback.py](litellm/context_compaction_callback.py). Like the Brave MCP injector, it is a LiteLLM `CustomLogger` whose `async_pre_call_hook` runs on every `completion`/`acompletion` call — streaming included, because trimming never emits tool deltas.
+2. **The hook resolves the model's input window** from the live proxy router (`proxy_server.llm_router.get_model_list()` → `model_info.max_input_tokens`, the same field the `vllm_compute` role registers), then LiteLLM's known-model cost map, then a per-model env override (`CONTEXT_COMPACTION_MODEL_<name>`). A model with no resolvable window is left untouched — the provider's own 400 is clearer than a guessed trim.
+3. **Oversized histories are trimmed, not summarized.** When the estimated prompt exceeds `window - output_allowance`, the hook keeps every system/developer message, protects up to `CONTEXT_COMPACTION_KEEP_LAST_N` (default 6) newest messages, and drops oldest turns until the rest fits. The retained window is aligned to start at a `user` turn, so assistant tool calls and their tool results are never split apart. A short `[Earlier conversation was compacted...]` note replaces what was dropped, so the model knows older context is missing instead of silently hallucinating around the gap.
+4. **The proxy's response is untouched.** Clients (Open WebUI, automations, curl) keep their full local history; only the provider request is trimmed. The trim re-estimates with a 5% safety margin over a 4-chars-per-token floor, so providers do not see borderline prompts.
+
+Turn it off per request with `metadata: {"context_compaction": false}`. Models whose windows are known to the router or the cost map (all registered Gemini/Bedrock/vLLM models here) are handled automatically; register edge-node models with `max_input_tokens` in their LiteLLM entry or set `CONTEXT_COMPACTION_MODEL_<name>`.
+
+### Verification
+
+```bash
+# 1. Both startup hooks loaded
+docker compose logs litellm | grep "startup hook"
+# ... Worker startup hook 'brave_mcp_callback:register_callback' executed successfully
+# ... Worker startup hook 'context_compaction_callback:register_callback' executed successfully
+
+# 2. Send a history larger than the target window (gemma-4-26b-a4b: 262144)
+#    and confirm a 200 with a compacted prompt instead of a 400
+curl -sk https://litellm.<domain>/v1/chat/completions \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" \
+  -d '{"model": "gemma-4-26b-a4b", "messages": [...more than 256K tokens...], "max_tokens": 40}'
+# 200 + answer: the provider saw the trimmed history.
+
+# 3. The compaction note is stored with the request
+docker compose exec postgres psql -U litellm -d litellm -c \
+  "SELECT substring(messages->1->>'content', 1, 60) FROM \"LiteLLM_SpendLogs\"
+   WHERE model LIKE '%gemma%' ORDER BY \"startTime\" DESC LIMIT 1;"
+# "[Earlier conversation was compacted to fit the model's context window. ..."
+```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Long chat still 400s with "maximum context length" | Model has no resolvable window (router, cost map, env all miss) | Register `max_input_tokens` in the model's LiteLLM entry, or set `CONTEXT_COMPACTION_MODEL_<sanitized_name>` in the litellm environment |
+| Model forgets earlier details after a long chat | Expected: trim-style compaction drops the oldest turns | Raise `CONTEXT_COMPACTION_KEEP_LAST_N` or use a model with a larger window |
+| Compaction never fires | Hook not loaded | Check the volume mount and `LITELLM_WORKER_STARTUP_HOOKS` in `docker-compose.yml`; `docker compose logs litellm \| grep "startup hook"` |
+| Request rejected even though it should fit | Client set `metadata: {"context_compaction": false}` | Remove the opt-out or trim the client history |
 
 ## Browser Automation (Playwright MCP cluster)
 

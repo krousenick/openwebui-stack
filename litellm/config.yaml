@@ -239,7 +239,9 @@ model_list:
       complexity_router_config:
         tiers:
           SIMPLE: gemini-3.5-flash-lite
-          MEDIUM: gemini-3.8-flash
+          # MEDIUM picks randomly between two comparable models; the local
+          # vLLM node serves roughly half the mid-tier traffic.
+          MEDIUM: [gemini-3.8-flash, gemma-4-26b-a4b]
           COMPLEX: gemini-4-argon
           REASONING: gemini-3.1-pro
         classifier_type: heuristic
@@ -264,6 +266,7 @@ model_list:
             "gemini-3.8-flash",
             "gemini-3.1-pro",
             "gemini-4-argon",
+            "gemma-4-26b-a4b",
           ]
         weights:
           quality: 0.7
