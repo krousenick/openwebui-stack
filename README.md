@@ -194,10 +194,11 @@ Access the Keycloak Admin Console to manage users and applications:
 
    | Variable | Task file | What it configures |
    |----------|-----------|---------------------|
-   | `brave_search_enabled` + `brave_search_api_key` (vault) | `mcp/brave.yml` | Open WebUI web search and the `brave_search` tool server connection |
-   | `playwright_mcp_enabled` (role default `true`) | `mcp/playwright.yml` | The `playwright_cluster` tool server connection (no secret; containers run from docker-compose.yml) |
+    | `brave_search_enabled` + `brave_search_api_key` (vault) | `mcp/brave.yml` | Open WebUI web search and the `brave_search` tool server connection |
+    | `playwright_mcp_enabled` (role default `true`) | `mcp/playwright.yml` | The `playwright_cluster` tool server connection (no secret; containers run from docker-compose.yml) |
+    | `playwright_mcp_enabled` (same toggle) | `mcp/tool_image_filter.yml` | The `tool_result_image_display` global outlet filter that promotes MCP tool-result images (Playwright screenshots) to chat message files so they render in the chat window |
 
-   Both MCP tasks **merge** into the same `tool_server.connections` row (matched by `info.id`, sorted canonically), so each preserves the other's entry, and consecutive playbook runs are idempotent: the litellm and open-webui containers are recreated only when the row actually changes.
+    Both MCP tasks **merge** into the same `tool_server.connections` row (matched by `info.id`, sorted canonically), so each preserves the other's entry, and consecutive playbook runs are idempotent: the litellm and open-webui containers are recreated only when the row actually changes. The tool-image filter task is idempotent the same way (it upserts the `function` row only when content/flags differ, then recreates only `open-webui`).
 
    Add a future MCP server by dropping `<name>.yml` in `tasks/mcp/`, guarding it in `tasks/mcp/main.yml` with `mcp_<name>_enabled`, and adding that variable to `group_vars/all/vars.yml` and the role defaults.
 
@@ -671,6 +672,7 @@ Chat models can drive a real headless Chromium through the official [Playwright 
 3. **Sticky cookies keep MCP sessions working.** Playwright MCP keeps each streamable-HTTP session (`mcp-session-id`) in the replica process's memory. Round-robin routing sends follow-up calls to replicas that never saw the `initialize` and they answer `404 Session not found`. The `playwright` service sets `loadbalancer.sticky.cookie=true` (cookie `pwsticky`), so Traefik pins all requests of one session to the replica that owns it. LiteLLM's MCP client reuses Traefik's `Set-Cookie` automatically (httpx cookie jar), so no client-side wiring is needed.
 4. **`PLAYWRIGHT_MCP_ALLOWED_HOSTS: "*"` passes the Host check.** The server enforces a Host allowlist (DNS-rebinding protection) that only contains `localhost:8931` by default. Traefik forwards the incoming `Host: playwright-mcp.<domain>` header, which would get a `403 Access is only allowed at localhost:8931` without the wildcard.
 5. **LiteLLM mounts it as `playwright_cluster`** (`mcp_servers:` in [litellm/config.yaml](litellm/config.yaml)) with `url: http://traefik:8082/mcp`, a `Host` header matching the router rule, and `allow_all_keys`-style open access. Tools are exposed with the `playwright_cluster-` prefix (for example `playwright_cluster-browser_navigate`).
+6. **Screenshots render in the chat window** through the `tool_result_image_display` global filter. Open WebUI 0.13.0 stores MCP image results only on the `function_call_output` output item's `files` array, which the frontend renders solely inside the collapsed "Tool Executed" box; the message node's own `files` array stays empty, so `browser_take_screenshot` images never appeared in the chat (the [open-webui#33320](https://github.com/open-webui/open-webui/issues/33320) class of bug). The filter — a global outlet filter (functions must expose a `Filter` class in 0.13.0; the loader rejects module-level handlers) registered by `mcp/tool_image_filter.yml` from `roles/openwebui_stack/files/functions/tool_result_image_display.py` — re-emits the tool image URLs through the socket `files` event after each turn, which persists them onto the assistant message node and pushes them to the frontend, where the chat bubble renders them like any attached image. No request or response content is modified. The task recreates only the `open-webui` service (with `build: never`, so a compose file referencing unpublished local images cannot break the recreate) and is idempotent.
 
 Scaling up or down: change `deploy.replicas` in `docker-compose.yml`, then `docker compose up -d playwright-mcp`. Existing sessions stay pinned to their replica via the sticky cookie; a new `initialize` lands on whichever replica Traefik picks next.
 
@@ -706,6 +708,8 @@ curl -s -X POST http://traefik:8082/mcp -b "pwsticky=<cookie>" \
 | `can't set container_name ... must be unique: invalid compose project` | `container_name` left on the replicas service | Remove `container_name` from `playwright-mcp` |
 | LiteLLM gets `301/308` or connection errors on the MCP server | URL points at the redirecting `web` entrypoint | Use `http://traefik:8082/mcp` (the `mcp` entrypoint) |
 | Compose cannot resolve `traefik` from litellm | Services not sharing a network | `litellm` and `traefik` both attach to `frontend` |
+| Tool screenshots missing from the chat window (only in the "Tool Executed" box) | `tool_result_image_display` filter missing, disabled, or failed to load (0.13.0 requires a `Filter` class; the loader also auto-disables a function that fails to compile) | Rerun the playbook (or `ansible-playbook playbooks/tool_image_filter.yml` for just this fix); check `SELECT is_active FROM function WHERE id = 'tool_result_image_display'` |
+| `Error loading module: tool_result_image_display: No Function class found` in Open WebUI logs | Filter source written with a module-level `outlet` function | Handlers must be methods of a `class Filter` in 0.13.0; redeploy after fixing |
 
 ## Local models
 
