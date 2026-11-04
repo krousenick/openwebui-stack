@@ -86,7 +86,7 @@
       - -d
       - "{{ openwebui_db_name }}"
     stdin: |
-      UPDATE config SET value = 'true'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'web.search.enable';
+      UPDATE config SET value = 'false'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'web.search.enable';
       UPDATE config SET value = '"brave"'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'web.search.engine';
       UPDATE config SET value = to_jsonb('{{ brave_search_api_key | replace("'", "''") }}'::text), updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'web.search.brave_search_api_key';
       UPDATE config SET value = '{{ brave_tool_server_desired | to_json | replace("'", "''") }}'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'tool_server.connections';
@@ -95,7 +95,7 @@
   # key order and spacing that never matches to_json byte-for-byte, which
   # would recreate the services on every run.
   changed_when: >-
-    (brave_current_config.stdout | trim | from_json).enabled != 'true'
+    (brave_current_config.stdout | trim | from_json).enabled != 'false'
     or (brave_current_config.stdout | trim | from_json).engine != '"brave"'
     or (((brave_current_config.stdout | trim | from_json).connection | from_json) | map(attribute='info.id') | list | sort)
     != (brave_tool_server_desired | map(attribute='info.id') | list | sort)

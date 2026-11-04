@@ -530,6 +530,20 @@ curl -sk https://litellm.localhost/v1/chat/completions \
 
 Open WebUI's **direct** MCP path (Admin Settings → Tool Servers) is independent: an `mcp`-type tool server connects per-chat via tool IDs (`server:mcp:<id>`) and logs `Initialized 0 tool server(s)` at boot, which is expected for MCP-only configs. The Gemini Workspace models ship with Default Tools set, so streaming chats get web search without per-chat tool selection. Other models (Bedrock, Ollama) get it by adding `server:mcp:brave_search` to their Default Tools, or by picking the tool in the chat composer.
 
+### Default-enabled MCP tools and hidden built-in web search
+
+The playbook configures both MCP tool servers as the **default tools for every model**:
+
+- Open WebUI's built-in web search is **off** (`web.search.enable=false` is set by the Brave task), so the built-in Web Search toggle does not appear for users. Web search happens through the Brave MCP tool server instead, which keeps a single search path (the LiteLLM MCP gateway) for every model.
+- The Playbook's `mcp/tool_defaults.yml` writes `models.default_metadata` (`DEFAULT_MODEL_METADATA`) with `toolIds: ["server:mcp:brave_search", "server:mcp:playwright_cluster"]` — restricted to the MCP servers enabled by `brave_search_enabled` / `playwright_mcp_enabled`. Open WebUI fill-only merges this into every model that has no `toolIds` of its own (`get_all_models`), and the frontend merges model `meta.toolIds` into every new chat's selected tools. New chats therefore start with the MCP tools already selected; no per-chat toggle is needed.
+- Models with their own Default Tools (the Gemini Workspace models) keep theirs; models that later set their own `toolIds` keep those instead of the global default.
+- Turn it off per chat in the chat's tool picker; the default only changes what a new chat starts with.
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| New chats do not start with the MCP tools | `models.default_metadata` row missing or stale | Rerun the playbook (`ansible-playbook playbooks/site.yml`); verify `SELECT value FROM config WHERE key = 'models.default_metadata'` lists the expected `toolIds` |
+| A model never uses the MCP tools | That model has its own `meta.toolIds` set, which replaces the global default | Add the MCP IDs to the model's Default Tools in the Workspace editor |
+
 ## Browser Automation (Playwright MCP cluster)
 
 Chat models can drive a real headless Chromium through the official [Playwright MCP server](https://github.com/microsoft/playwright-mcp). The stack runs five replicas (`deploy.replicas: 5`) behind Traefik so multiple users get parallel browser sessions.
