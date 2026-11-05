@@ -95,7 +95,9 @@
     #      cost edit only lands via delete + re-register, or
     #   4. its stored supports_reasoning no longer matches whether this
     #      run sets a reasoning parser (vllm_reasoning_parser /
-    #      aux reasoning_parser) - same delete + re-register refresh path.
+    #      aux reasoning_parser), or
+    #   5. its stored repetition_detection no longer matches the effective
+    #      model setting - same delete + re-register refresh path.
    # int()-normalized: LiteLLM stores the primary's value as int and
    # older registrations may hold a string. Only db models whose api_base
    # points at a vLLM endpoint (http(s)://<host>:<port>/v1) are considered;
@@ -136,10 +138,20 @@
           | map(attribute='0.served_model_name') | list
           + [vllm_served_model_name])
         | zip(
-            ((vllm_aux_endpoint_pairs | default([])
-              | map(attribute='0.reasoning_parser') | map('default', '') | list
-              + [vllm_reasoning_parser | default('')])
-             | map('ternary', true, false) | list))) }}
+          ((vllm_aux_endpoint_pairs | default([])
+            | map(attribute='0.reasoning_parser') | map('default', '') | list
+            + [vllm_reasoning_parser | default('')])
+           | map('ternary', true, false) | list))) }}
+    # LiteLLM keeps deployment defaults under litellm_params, so changing
+    # repetition detection also requires replacing the stored db model.
+    vllm_expected_repetition_detection: >-
+      {{ dict((vllm_aux_endpoint_pairs | default([])
+          | map(attribute='0.served_model_name') | list
+          + [vllm_served_model_name])
+        | zip(
+          ((vllm_aux_endpoint_pairs | default([])
+            | map(attribute='0.repetition_detection') | list)
+           + [vllm_repetition_detection | default({})]))) }}
   loop: "{{ vllm_litellm_model_info.json.data | default([])
     | selectattr('litellm_params.api_base', 'defined')
     | selectattr('litellm_params.api_base', 'match', '^https?://[0-9.]+:[0-9]+/v1$')
@@ -159,6 +171,10 @@
             != (vllm_expected_adaptive_prefs | to_json(sort_keys=true)))
       or (candidate_item.model_info.supports_reasoning | default(false) | bool)
         != (vllm_expected_supports_reasoning[candidate_item.model_name] | default(false))
+      or ((candidate_item.litellm_params.repetition_detection | default({}))
+          | to_json(sort_keys=true))
+        != ((vllm_expected_repetition_detection[candidate_item.model_name] | default({}))
+          | to_json(sort_keys=true))
   delegate_to: localhost
   run_once: true
   become: false
@@ -237,7 +253,9 @@
           'api_base': 'http://' ~ item ~ ':' ~ vllm_port ~ '/v1',
           'api_key': (vllm_api_key if vllm_api_key | length > 0 else 'local')}
         | combine({'reasoning_effort': vllm_reasoning_effort}
-            if vllm_reasoning_effort | default('') | length > 0 else {}) }}"
+            if vllm_reasoning_effort | default('') | length > 0 else {})
+        | combine({'repetition_detection': vllm_repetition_detection}
+            if (vllm_repetition_detection | default({}) | dict2items | length > 0) else {}) }}"
       # max_input_tokens/max_tokens must serialize as JSON numbers, not
       # strings: the /model/info response round-trips whatever type was
       # POSTed, and clients that gate on Number.isFinite (MAGIE's discovery
@@ -278,7 +296,9 @@
           'api_base': 'http://' ~ hostvars[aux_pair.1].vllm_host_ip ~ ':' ~ aux_pair.0.port ~ '/v1',
           'api_key': (aux_pair.0.api_key if aux_pair.0.api_key | length > 0 else 'local')}
         | combine({'reasoning_effort': aux_pair.0.reasoning_effort}
-            if aux_pair.0.reasoning_effort | default('') | length > 0 else {}) }}"
+            if aux_pair.0.reasoning_effort | default('') | length > 0 else {})
+        | combine({'repetition_detection': aux_pair.0.repetition_detection}
+            if (aux_pair.0.repetition_detection | default({}) | dict2items | length > 0) else {}) }}"
       model_info: "{{ ({'description': aux_pair.0.served_model_name ~ ' - vLLM aux on '
             ~ aux_pair.1 ~ ' (' ~ aux_pair.0.model ~ ')',
           'max_input_tokens': aux_pair.0.max_model_len | int,

@@ -12,6 +12,12 @@
       # reasoning_effort (Open WebUI / MAGIE) overrides this default.
       reasoning_effort: {{ vllm_reasoning_effort }}
 {% endif %}
+{% if vllm_repetition_detection | default({}) | dict2items | length > 0 %}
+      # Default repetition-loop detection (Gemma 4 structured-output bug,
+      # vllm-project/vllm#40080); a request-level repetition_detection
+      # overrides this default.
+      repetition_detection: {{ vllm_repetition_detection | to_json }}
+{% endif %}
     model_info:
       description: "{{ vllm_served_model_name }} - vLLM Ray cluster ({{ vllm_effective_tp }}xTP, {{ vllm_effective_pp }}xPP)"
       max_input_tokens: {{ vllm_max_model_len }}
@@ -32,6 +38,12 @@
       # Default effort for requests that send none; a request-level
       # reasoning_effort (Open WebUI / MAGIE) overrides this default.
       reasoning_effort: {{ vllm_reasoning_effort }}
+{% endif %}
+{% if vllm_repetition_detection | default({}) | dict2items | length > 0 %}
+      # Default repetition-loop detection (Gemma 4 structured-output bug,
+      # vllm-project/vllm#40080); a request-level repetition_detection
+      # overrides this default.
+      repetition_detection: {{ vllm_repetition_detection | to_json }}
 {% endif %}
     model_info:
       description: "{{ vllm_served_model_name }} - vLLM on {{ host }}"
@@ -84,6 +96,12 @@
       # Default effort for requests that send none; a request-level
       # reasoning_effort (Open WebUI / MAGIE) overrides this default.
       reasoning_effort: {{ aux_pair.0.reasoning_effort }}
+{% endif %}
+{% if aux_pair.0.repetition_detection | default({}) | dict2items | length > 0 %}
+      # Default repetition-loop detection (Gemma 4 structured-output bug,
+      # vllm-project/vllm#40080); a request-level repetition_detection
+      # overrides this default.
+      repetition_detection: {{ aux_pair.0.repetition_detection | to_json }}
 {% endif %}
     model_info:
       description: "{{ aux_pair.0.served_model_name }} - vLLM aux on {{ aux_pair.1 }} ({{ aux_pair.0.model }})"
