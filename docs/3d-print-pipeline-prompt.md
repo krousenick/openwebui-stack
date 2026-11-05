@@ -1,11 +1,15 @@
-# 3D print pipeline — model system-prompt rules
+# 3D print pipeline — model skill
 
-Paste this into Open WebUI **Admin Settings → Settings → Models → (each model) →
-System Prompt**, or into a Knowledge entry attached to the models that use the
-3D print pipeline. The tool-server connections and default tool IDs are wired
-automatically by the playbook (`server:mcp:printer_3d`, `server:mcp:blender`,
-`server:mcp:freecad` in global model defaults); this text is the behavioral
-half — file conventions and the print-start guardrail.
+**The canonical skill text lives in `skills/3d-print-pipeline/SKILL.md`**
+(Claude/Anthropic Agent Skills format). The playbook registers that package
+into the LiteLLM Skills Gateway: the zip is uploaded to the proxy-hosted
+skill store (`/v1/skills`, `custom_llm_provider=litellm_proxy`) and the
+registry entry (`/claude-code/plugins/3d-print-pipeline`) is served from the
+proxy's own archive, so Claude Code (`3d-print-pipeline@litellm`), `npx
+skills add`, and any Skills-API agent can fetch it. Semantic search
+(`skill_search_embedding_model: text-embedding`) lets agents find it by
+description. The copy below is kept for human reading; if you edit one,
+edit both.
 
 ---
 

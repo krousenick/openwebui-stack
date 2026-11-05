@@ -65,6 +65,10 @@ services:
     logging: *default-logging
     volumes:
       - openwebui_data:/app/backend/data
+      # Centralized SKILL.md packages: mounted read-only for the skill
+      # publishing task (tasks/openwebui_skills.yml reads SKILL.md and
+      # pushes it through the workspace API).
+      - ./skills:/app/skills:ro
       - ./certs:/etc/ssl/certs/local:ro
     environment:
       # Database configuration
@@ -220,6 +224,9 @@ services:
       - ./litellm/guardrail_categories/prompt_injection_system_prompt.yaml:/app/guardrail_categories/prompt_injection_system_prompt.yaml:ro
       - ./litellm/guardrail_categories/prompt_injection_malicious_code.yaml:/app/guardrail_categories/prompt_injection_malicious_code.yaml:ro
       - ./litellm/guardrail_categories/prompt_injection_data_exfiltration.yaml:/app/guardrail_categories/prompt_injection_data_exfiltration.yaml:ro
+      # Centralized SKILL.md packages: mounted read-only for the Skills
+      # Gateway task (zip build for the /v1/skills proxy-hosted store).
+      - ./skills:/app/skills:ro
       - ./certs:/etc/ssl/certs/local:ro
     environment:
       # Database for LiteLLM

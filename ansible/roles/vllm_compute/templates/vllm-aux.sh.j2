@@ -47,6 +47,8 @@ exec {{ vllm_container_cli }} run \
     --max-model-len {{ aux_item.max_model_len }} \
     --gpu-memory-utilization {{ aux_item.gpu_memory_utilization }} \
     --tensor-parallel-size {{ aux_item.tensor_parallel_size }} \
+    --enable-prefix-caching \
+    --disable-log-requests \
 {% if aux_item.reasoning_parser | default('') | length > 0 %}
     --reasoning-parser {{ aux_item.reasoning_parser }} \
 {% endif %}

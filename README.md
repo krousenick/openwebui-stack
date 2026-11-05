@@ -604,6 +604,28 @@ docker compose exec postgres psql -U litellm -d litellm -c \
 | Compaction never fires | Hook not loaded | Check the volume mount and `LITELLM_WORKER_STARTUP_HOOKS` in `docker-compose.yml`; `docker compose logs litellm \| grep "startup hook"` |
 | Request rejected even though it should fit | Client set `metadata: {"context_compaction": false}` | Remove the opt-out or trim the client history |
 
+## Prompt caching (provider-side, per model family)
+
+LiteLLM's exact-response cache in Valkey is a different feature (see `litellm_settings.cache`); this section is provider-side **prompt caching** — the provider stores the KV state of a repeated prompt prefix and bills reads at a discount. Nothing here needs Redis.
+
+State per model family served through the gateway — the second column is what the mechanism is, the third is what **LiteLLM** can (and cannot) do about it:
+
+| Family / models | Mechanism | LiteLLM-side configuration | State |
+|---|---|---|---|
+| Anthropic (none deployed yet; any future `anthropic/` or Claude-on-`bedrock/`) | `cache_control` markers (512–4,096 token minimum by model, 4 blocks max, 5m/1h TTL) | `enable_anthropic_prompt_caching: true` in `litellm_settings` — LiteLLM auto-injects one checkpoint on the system prompt and one on the trailing turn; never double-injects when the client sets its own `cache_control` | Enabled gateway-wide; **the only family LiteLLM can inject markers for in this stack** |
+| Gemini (`gemini-3.8-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro`, `gemini-4-argon`) | Google implicit caching (repeated prefixes, no marker) | **Nothing to enable, and do not add `cache_control_injection_points`**: Gemini 2.5+ caches implicitly for free; markers switch the request to paid explicit context caching with per-object storage billing | Provider-automatic |
+| Bedrock OSS (`minimax-m2.5`, `qwen3-next`, `qwen3-coder`, `kimi-k3`) | None — these models are absent from Bedrock's prompt-caching model table ([AWS list](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html#prompt-caching-models)); only Claude/GPT/Nova/DeepSeek on Bedrock cache | Nothing LiteLLM can send that would help; a `cache_control` marker to these models risks a `ValidationException`. `enable_anthropic_prompt_caching` skips them automatically (it is cost-map driven) | N/A (provider doesn't offer it) |
+| vLLM compute nodes (`gemma-4-26b-a4b`, aux models) and llama.cpp edge nodes | Server-side KV reuse inside the inference server: vLLM `--enable-prefix-caching` (primary [vllm-serve.sh.j2](ansible/roles/vllm_compute/templates/vllm-serve.sh.j2), aux [vllm-aux.sh.j2](ansible/roles/vllm_compute/templates/vllm-aux.sh.j2)), llama.cpp `--cache-prompt` / `--cache-reuse` ([setup-edge-nodes.sh](scripts/setup-edge-nodes.sh)). Flux image servers have none (image prompts don't repeat prefixes) | **LiteLLM cannot enable this**: these register as `openai/` with a custom `api_base`, and LiteLLM's OpenAI marker mapping only fires against `api.openai.com` hosts — off a custom `api_base` any `cache_control`/breakpoint marker is stripped (a no-op). The caching knob is on the server, already enabled. Prefix hits visible as `vllm:prefix_cache_hits_total` on the Grafana vLLM dashboards | Server-side, enabled (not a LiteLLM knob) |
+| Ollama models (`sync-ollama-models.sh`) | Ollama keeps each model's context warm on `localhost:11434` | LiteLLM ignores `cache_control` for `ollama/`; nothing to send. Ollama's own keep-warm behavior applies | Daemon-managed |
+
+How it interacts with the other request rewriters:
+
+- **Context compaction** (above) only fires on oversized histories, and *after* caching the model sees a different retained window — no `cache_control` conflict because LiteLLM's checkpoint injection targets the (system, trailing-turn) shape the compactor preserves.
+- **Anthropic checkpoints and Headroom-style compressors** never collide: compressors skip `cache_control`-marked messages by design.
+- Open WebUI's long-lived chat sessions are the ideal prompt-cache shape: the system prompt plus all prior turns repeat exactly turn over turn, and only the newest message differs.
+
+Verification: cached reads surface in the response `usage` (`cache_read_input_tokens` on Anthropic shape, `cached_tokens`/`prompt_tokens_details` on OpenAI shape) and per-request in LiteLLM spend logs; vLLM hits on the Grafana `vLLM Remote Nodes` / `vLLM Inference Deployments` dashboards (prefix cache hit% panel); llama.cpp slot reuse in the `/slots` endpoint.
+
 ## Secure Code Execution (Code Sandbox)
 
 Chat models can write and run Python (generate STL meshes, plot data, transform files) without ever executing inside the Open WebUI container. Model-authored code runs in the isolated **code-sandbox** service instead. This follows the [Open WebUI hardening guidance](https://docs.openwebui.com/getting-started/advanced-topics/hardening): the legacy in-process engines stay off, and the only code-execution surface is a separate, locked-down Jupyter container.
@@ -718,6 +740,93 @@ curl -s -X POST http://traefik:8082/mcp -b "pwsticky=<cookie>" \
 | Tool screenshots missing from the chat window (only in the "Tool Executed" box) | `tool_result_image_display` filter missing, disabled, or failed to load (0.13.0 requires a `Filter` class; the loader also auto-disables a function that fails to compile) | Rerun the playbook (or `ansible-playbook playbooks/tool_image_filter.yml` for just this fix); check `SELECT is_active FROM function WHERE id = 'tool_result_image_display'` |
 | `Error loading module: tool_result_image_display: No Function class found` in Open WebUI logs | Filter source written with a module-level `outlet` function | Handlers must be methods of a `class Filter` in 0.13.0; redeploy after fixing |
 
+## Centralized Skills (Skills Gateway)
+
+Reusable agent know-how lives in `skills/<name>/SKILL.md` (Claude/Anthropic
+Agent Skills format, agentskills.io). One checkout, three consumers:
+
+| Skill | What it teaches |
+|---|---|
+| `3d-print-pipeline` | Prompt-to-print on the Bambu H2C (tool map, `/models`, mm checks, ask-before-print) |
+| `stack-ops` | Operating this stack: playbook re-runs, health checks, SpendLogs/guardrail/MCP diagnostics, Photon host layout |
+| `sso-troubleshooting` | Keycloak OIDC failures across Open WebUI/LiteLLM/Grafana: symptom → cause → fix |
+| `guardrail-tuning` | Editing the content-filter category overrides without losing injection defenses |
+| `web-search-verify` | End-to-end Brave MCP verification: container, startup hook, injected tools, streaming path |
+
+### How it works
+
+Each `skills/<name>/SKILL.md` (frontmatter `name` must match the directory,
+`description` drives discovery) is published to three places by the
+playbook — no MCP server needs to be enabled, skills are plain
+instructions:
+
+1. **LiteLLM proxy skill store** (`tasks/mcp/skills_gateway.yml`): the
+   zip is uploaded to `POST /v1/skills` with `custom_llm_provider=
+   litellm_proxy`, persisted in the proxy's Postgres. The
+   `/.well-known/agent-skills/index.json` discovery index lists every
+   stored skill with its archive sha256 (`litellm_settings.
+   public_skills_index: true`, rendered from `templates/config.yaml.j2`,
+   toggle `skills_public_index_enabled`). Idempotent: the task recomputes
+   the deterministic archive digest of the checkout's SKILL.md and only
+   deletes + re-uploads on drift (the store has no update endpoint).
+2. **Claude Code marketplace**: a registry entry per skill
+   (`POST`/`PUT /claude-code/plugins/<name>`), its archive source pointing
+   at the proxy's own `https://litellm.<domain>/v1/skills/<id>/archive` —
+   nothing leaves the network. Sources must be https, hence the public URL.
+3. **Open WebUI workspace** (`tasks/openwebui_skills.yml`): the playbook
+   pushes each SKILL.md through Open WebUI's Skills API
+   (`/api/v1/skills/create` + `/id/<name>/update` with
+   `expected_version_id`) using a dedicated `skill-publisher` admin API
+   key (`openwebui_api_admin_key` in the vault). Skills then appear in
+   Workspace → Skills for everyone; bind them to models or `$`-mention
+   them per chat. Idempotent: unchanged content is skipped.
+4. **opencode** (optional, `opencode_sync_skills: true` in the opencode
+   role): the playbook copies `skills/*` into each user's global
+   `~/.config/opencode/skills/`, where opencode discovers them through its
+   native `skill` tool.
+
+Semantic skill search ranks the proxy store on demand
+(`skill_search_embedding_model: text-embedding` → gemini-embedding-001,
+needs `litellm_gemini_models_enabled: true`).
+
+### Consume the skills
+
+```bash
+# opencode — synced automatically by the playbook (see above); or manually:
+mkdir -p ~/.config/opencode/skills && cp -r skills/stack-ops ~/.config/opencode/skills/
+
+# Any Agent Skills client — opencode, Claude Code, etc. (discovery index)
+npx skills add https://litellm.<domain>
+
+# Claude Code marketplace (marketplace is always named "litellm")
+claude plugin marketplace add https://litellm.<domain>/claude-code/marketplace.json
+claude plugin install stack-ops@litellm
+
+# Skills API directly (semantic search needs the embedding model)
+KEY=$(grep -m1 "^LITELLM_MASTER_KEY=" .env | cut -d= -f2-)
+curl -sk "https://litellm.<domain>/v1/skills?custom_llm_provider=litellm_proxy" \
+  -H "Authorization: Bearer $KEY"
+curl -sk "https://litellm.<domain>/v1/skills?custom_llm_provider=litellm_proxy&query=diagnose+sso+login&top_k=3" \
+  -H "Authorization: Bearer $KEY"
+```
+
+Open WebUI users: type `$` in the chat input and pick the skill, or enable
+it per chat from the + Integrations menu.
+
+### Adding a skill
+
+1. Create `skills/<kebab-name>/SKILL.md` (frontmatter `name` must equal
+   the directory name, 1–1024 char `description`).
+2. Rerun the playbook — `--tags skills,environment,compose` covers the
+   config render, the skills mounts, and both publishers.
+3. Verify: the skill appears in `GET /v1/skills?custom_llm_provider=
+   litellm_proxy`, the discovery index, Workspace → Skills in Open WebUI,
+   and (after the next opencode run) the `skill` tool listing.
+
+The compose template mounts `./skills` read-only into both `litellm`
+(`/app/skills`, zip source for the store upload) and `open-webui`
+(`/app/skills`, source for the workspace push).
+
 ## 3D Print Pipeline (Blender / FreeCAD / printer MCP)
 
 Prompt-to-print: the chat model authors geometry (Blender mesh or FreeCAD
@@ -760,24 +869,42 @@ A shared named volume `models` is mounted at `/models`: writable in
 `blender`, `freecad`, and `code-sandbox` (trimesh post-processing), read-only
 in `printer-mcp` (the slicer only ever reads STLs from it).
 
+**Agent behavior lives in the LiteLLM Skills Gateway.** The 3D-print
+skill is a Claude/Anthropic Agent Skills package at
+`skills/3d-print-pipeline/SKILL.md` (tool map, `/models` convention, mm
+dimension check, ask-before-print rule). It is registered by the same
+Skills Gateway flow as every other skill in `skills/` — see
+[Centralized Skills](#centralized-skills-skills-gateway). Semantic skill
+search ranks it on demand (`litellm_settings.skill_search_embedding_model:
+text-embedding` → gemini-embedding-001), so agents describe what they need
+instead of listing the registry.
+
+**Open WebUI** gets the skill the same way as the rest of `skills/` —
+the playbook pushes it into the workspace through the Open WebUI Skills
+API (`ansible/roles/openwebui_stack/tasks/openwebui_skills.yml`), after
+which you can bind it to models (Workspace → Models → Skills row) or
+`$`-mention it per chat. **The ask-before-print rule travels with the
+skill text in every store.**
+
 ### Enabling
 
 1. Printer: touchscreen **Settings → Network → LAN Only Mode + Developer
    Mode**. Developer Mode off makes the firmware refuse remote starts
    (HMS `0500-0500-0001-0007`).
-2. Vault (`ansible/group_vars/all/vault.local.yml`): `bambu_host` (printer
-   IP), `bambu_serial` (Settings → Device Info), `bambu_token` (LAN access
-   code). Never paste these in chat.
+2. Vault (`ansible/group_vars/all/vault.local.yml`, gitignored): set
+   `bambu_host` (printer IP), `bambu_serial` (Settings → Device Info),
+   `bambu_token` (LAN access code). Never paste these in chat. They follow
+   the same var tiering as the rest of the stack, so `-e` extra-vars can
+   override them per-run if you prefer not persisting them.
 3. Toggles (`ansible/group_vars/all/vars.yml`): `printer_mcp_enabled: true`,
    `blender_mcp_enabled: true`, `freecad_mcp_enabled: true`. Optional:
    `printer_mcp_bed_type` (default `textured_plate` — `supertack_plate` is
    not verified through the CLI) and `printer_mcp_nozzle_diameter`.
-4. `cd ansible && ansible-playbook playbooks/site.yml` — builds the three
-   images on the Photon host, renders compose/env/config, and merges the
-   Open WebUI `tool_server.connections` plus global default tool IDs.
-5. Paste the rules from `docs/3d-print-pipeline-prompt.md` into the model's
-   system prompt (the ask-before-print guardrail lives there, not in the
-   server).
+ 4. `cd ansible && ansible-playbook playbooks/site.yml` — builds the three
+    images on the Photon host, renders compose/env/config, merges the
+    Open WebUI `tool_server.connections` plus global default tool IDs, and
+    registers the `3d-print-pipeline` skill through the Centralized Skills
+    flow (proxy skill store, Claude Code marketplace, Open WebUI workspace).
 
 ### Verification
 

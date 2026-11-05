@@ -13,19 +13,29 @@
 #   - uv so the server can spawn `uvx mcp-for-blender` as its Blender bridge
 #     child process (BLENDER_MCP_COMMAND=uvx)
 #
+# Base: python:3.12-slim-bookworm (not node:24-bookworm-slim or
+# debian:bookworm-slim) because it is the only slim Debian base that ships a
+# working CA store, and the deployment network 403s plain HTTP, so apt must
+# run over https from the very first layer. Node comes from Debian's
+# nodejs package (v18, sufficient for bambu-printer-mcp).
+#
 # Rebuild: ansible-playbook playbooks/site.yml (docker_compose build: always)
-FROM node:24-bookworm-slim
+FROM python:3.12-slim-bookworm
 
 ARG BAMBU_STUDIO_VERSION=v02.08.02.60
 ARG BAMBU_STUDIO_ASSET=BambuStudio_ubuntu24.04-v02.08.02.60-20260814171356.AppImage
 ARG BAMBU_STUDIO_SHA256=b78d2527a20ee9fbcf70ee82138c3b3ca707aa9c6625881629db29627252acc3
 
-RUN apt-get update \
+# The deployment network 403s plain HTTP; switch apt to https.
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         xz-utils \
         ffmpeg \
+        nodejs \
+        npm \
     && rm -rf /var/lib/apt/lists/*
 
 # uv provides the `uvx` command the server uses to spawn mcp-for-blender.

@@ -82,6 +82,13 @@
   ansible.builtin.import_tasks:
     file: mcp/main.yml
 
+- name: Publish skills into the Open WebUI workspace
+  ansible.builtin.import_tasks:
+    file: openwebui_skills.yml
+  tags:
+    - skills
+    - openwebui-config
+
 - name: Configure Keycloak SSO
   ansible.builtin.import_tasks:
     file: keycloak.yml

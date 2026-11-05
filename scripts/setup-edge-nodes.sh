@@ -165,6 +165,8 @@ ExecStart=/usr/local/bin/llama-server \
     --ctx-size CTX_SIZE \
     --slots N_SLOTS \
     --cont-batching \
+    --cache-prompt \
+    --cache-reuse 256 \
     --metrics
 Restart=always
 RestartSec=10
