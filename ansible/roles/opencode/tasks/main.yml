@@ -55,3 +55,11 @@
   loop_control:
     loop_var: opencode_user
     label: "{{ opencode_user.username }}"
+
+- name: Sync skills into opencode
+  ansible.builtin.include_tasks: skills.yml
+  loop: "{{ opencode_users }}"
+  loop_control:
+    loop_var: opencode_user
+    label: "{{ opencode_user.username }}"
+  when: opencode_sync_skills | bool

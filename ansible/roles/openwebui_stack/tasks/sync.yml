@@ -31,6 +31,10 @@
     - json-exporter
     - litellm
     - sandbox
+    - printer-mcp
+    - blender
+    - freecad
+    - skills
   delegate_to: localhost
   # Synchronize's delegated mode builds its rsync from the delegate host's
   # connection settings (localhost: agent identities, no key), not the

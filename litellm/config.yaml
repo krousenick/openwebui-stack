@@ -40,6 +40,15 @@ litellm_settings:
   # Enable streaming
   set_verbose: false
 
+  # Agent Skills discovery index: publishes every proxy-hosted skill at
+  # /.well-known/agent-skills/index.json, each served as a zip at
+  # /v1/skills/{skill_id}/archive. Lets any Agent Skills client install
+  # the centralized skills with: npx skills add https://litellm.<domain>.
+  # Unauthenticated by design; rendered from templates/config.yaml.j2,
+  # gated on skills_public_index_enabled.
+  # https://docs.litellm.ai/docs/skills_gateway#agent-skills-discovery-index
+  public_skills_index: true
+
   # Exact-response cache in Valkey. This is not provider prompt caching.
   # https://docs.litellm.ai/docs/proxy/caching
   cache: true
@@ -49,11 +58,26 @@ litellm_settings:
     port: os.environ/REDIS_PORT
     password: os.environ/REDIS_PASSWORD
 
-  # Claude prompt caching. Adds a checkpoint on the system prompt and the
-  # latest turn for anthropic/ and cache-capable bedrock/ models.
-  # Gemini 2.5+ already caches repeated prefixes implicitly. Do not add
-  # cache_control_injection_points to those models: it switches them to
-  # paid explicit context caching.
+  # Provider prompt caching (NOT the Valkey exact-response cache above).
+  # enable_anthropic_prompt_caching (LiteLLM >= 1.94.0) auto-injects
+  # cache_control checkpoints (system prompt + trailing turn) on anthropic/
+  # and bedrock/ Claude models the cost map flags as cache-capable. It never
+  # double-injects when the client sets its own cache_control, and it does
+  # NOT touch any other provider.
+  # Every model family this stack serves, and why nothing further is set:
+  #   gemini/ (3.x)     - Google implicit caching is automatic and free; do
+  #                       NOT add cache_control_injection_points (switches
+  #                       to paid explicit context caching with storage).
+  #   bedrock/ OSS      - MiniMax/Qwen/Kimi are absent from AWS's prompt
+  #                       caching table; markers risk ValidationException.
+  #   openai/ + custom  - vLLM/llama.cpp/edge-node deployments: LiteLLM's
+  #     api_base         OpenAI marker mapping only fires against
+  #                       api.openai.com hosts; off a custom api_base the
+  #                       markers are stripped (no-op). Their caching is
+  #                       server-side (--enable-prefix-caching /
+  #                       --cache-prompt), already on.
+  #   ollama/           - LiteLLM ignores cache_control for ollama/;
+  #                       Ollama keeps context warm daemon-side.
   # https://docs.litellm.ai/docs/tutorials/prompt_caching
   enable_anthropic_prompt_caching: true
 

@@ -19,14 +19,25 @@
 # in FreeCAD. This container is backend-network-only (no internet, no Traefik
 # route, no docker socket); its only client is the freecad-mcp stdio server
 # in this same container over loopback.
-FROM debian:bookworm-slim
+# Base: python:3.12-slim-bookworm rather than debian:bookworm-slim because
+# it is the slim Debian base that ships a working CA store, and the
+# deployment network 403s plain HTTP, so apt must run over https from the
+# very first layer.
+FROM python:3.12-slim-bookworm
 
 ARG FREECAD_TAG=1.1.4
 ARG FREECAD_APPIMAGE=FreeCAD_1.1.4-Linux-x86_64-py311.AppImage
 ARG FREECAD_SHA256=f6dc6ba676e5ac96a565ebc8d657232f94c6158e85b4352141bd1a46f6b43434
 ARG FREECAD_MCP_REF=6f0b530b3e562cb9b7fd79709d84191413fbd17d
 
-RUN apt-get update \
+# The fork source is vendored into the build context (fetched from
+# https://github.com/alosslessdev/freecad-mcp/archive/<ref>.tar.gz) because
+# the deployment network's DNS for github.com is unreliable from inside
+# build containers; the build never needs the network for this source.
+
+# The deployment network 403s plain HTTP; switch apt to https.
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
@@ -46,6 +57,7 @@ RUN apt-get update \
         libharfbuzz0b \
         libb2-1 \
         nodejs \
+        npm \
         git \
     && rm -rf /var/lib/apt/lists/*
 
@@ -73,16 +85,16 @@ RUN curl -L -o /tmp/freecad.AppImage \
     && chmod +x /opt/freecad/bin/freecadcmd \
     && freecadcmd --version || true
 
-# MCP server + bridge from the same fork commit (see version note above).
-RUN git clone https://github.com/alosslessdev/freecad-mcp.git /tmp/freecad-mcp-src \
-    && git -C /tmp/freecad-mcp-src checkout "${FREECAD_MCP_REF}" \
+# MCP server + bridge from the same fork commit (see version note above),
+# from the vendored tarball — no network access needed. One COPY feeds both:
+# the addon tree for the headless bridge, and the source dir for uv.
+COPY freecad-mcp-6f0b530.tar.gz /tmp/freecad-mcp-src.tar.gz
+RUN mkdir -p /tmp/freecad-mcp-src \
+    && tar -xzf /tmp/freecad-mcp-src.tar.gz -C /tmp/freecad-mcp-src --strip-components=1 \
     && mv /tmp/freecad-mcp-src/addon/FreeCADMCP /opt/FreeCADMCP \
-    && rm -rf /tmp/freecad-mcp-src
-
-# Install the MCP server with uv into its own isolated env and expose the
-# entrypoint on PATH.
-RUN uv tool install --python 3.12 "git+https://github.com/alosslessdev/freecad-mcp.git@${FREECAD_MCP_REF}" \
-    && ln -s /root/.local/bin/freecad-mcp /usr/local/bin/freecad-mcp
+    && uv tool install --python 3.12 /tmp/freecad-mcp-src \
+    && ln -s /root/.local/bin/freecad-mcp /usr/local/bin/freecad-mcp \
+    && rm -rf /tmp/freecad-mcp-src /tmp/freecad-mcp-src.tar.gz
 
 # Non-root user owning /models writes and the FreeCAD config dir.
 # FREECAD_USER_HOME points FreeCAD's user data (getUserAppDataDir) at the

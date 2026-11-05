@@ -28,6 +28,17 @@
     file: freecad.yml
   when: freecad_mcp_enabled | default(false) | bool
 
+# Skills Gateway: register every ./skills SKILL.md package in LiteLLM's
+# skill store (semantic search) and the Claude Code marketplace. Runs
+# unconditionally: skills are plain instructions, not tied to any MCP
+# server being enabled (each skill's SKILL.md states which tools it
+# assumes, and clients only load it when relevant).
+- name: Register pipeline skills (Skills Gateway)
+  ansible.builtin.import_tasks:
+    file: skills_gateway.yml
+  tags:
+    - skills
+
 # Runs after the MCP servers: the filter makes their image results (e.g.
 # Playwright screenshots) visible in the chat window.
 - name: Register the tool result image filter

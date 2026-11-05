@@ -54,6 +54,7 @@ stack_secret_names:
   - keycloak_provisioner_client_secret
   - traefik_dashboard_password
   - code_sandbox_token
+  - openwebui_api_admin_key
   - keycloak_user_platform_admin_password
   - keycloak_user_grafana_editor_password
   - keycloak_user_grafana_viewer_password
@@ -106,3 +107,10 @@ litellm_bedrock_models_enabled: false
 # they need GEMINI_API_KEY (see .env.example) and provision nothing useful
 # without a key. Set true in group_vars once the Gemini key exists.
 litellm_gemini_models_enabled: false
+
+# Agent Skills discovery index (litellm_settings.public_skills_index).
+# Serves every proxy-hosted skill in ./skills at
+# /.well-known/agent-skills/index.json for `npx skills add` (opencode,
+# Claude Code, and other Agent Skills clients). Unauthenticated by design;
+# set false to keep skills visible only to keys with store access.
+skills_public_index_enabled: true

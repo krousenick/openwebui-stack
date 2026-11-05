@@ -93,6 +93,12 @@ opencode_node_ca_cert: false
 # Per-user token usage log written by the local plugin.
 opencode_usage_log: "~/.local/share/opencode/usage.jsonl"
 
+# Sync the stack's centralized skills (skills/*/SKILL.md, the same
+# packages registered with the LiteLLM Skills Gateway) into each user's
+# global opencode skill directory (~/.config/opencode/skills). OpenCode
+# discovers them natively and exposes them through its `skill` tool.
+opencode_sync_skills: true
+
 # Optional per-key spend budget (USD). null = unlimited.
 opencode_key_max_budget: null
 # Rate limit requests per minute per key. null = unlimited.
