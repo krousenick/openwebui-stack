@@ -192,6 +192,7 @@ Per-entry keys (all optional except `model`; unset keys take the `vllm_aux_defau
 | `reasoning_parser` | `""` | vLLM reasoning parser (`qwen3`, `gemma4`, `deepseek_r1`, …): renders `--reasoning-parser`, and the LiteLLM `model_info` gets `supports_reasoning: true` |
 | `chat_template_kwargs` | `{}` | Rendered as `--default-chat-template-kwargs '<json>'`: server-side thinking defaults (e.g. `{thinking: true}` for Gemma 4, `{enable_thinking: false}` to turn Qwen3 thinking off) |
 | `reasoning_effort` | `""` | Default `reasoning_effort` in the LiteLLM `litellm_params` (`none`…`max`): used when a request sends no effort; Open WebUI / MAGIE per-request effort overrides it |
+| `repetition_detection` | `{max_pattern_size: 20, min_pattern_size: 3, min_count: 4}` | Default vLLM N-gram loop detection in LiteLLM `litellm_params`; detects 3–20-token phrases repeated four times and terminates generation |
 
 Behavior:
 
@@ -288,6 +289,12 @@ curl -sk https://litellm.localhost/v1/chat/completions -H "Authorization: Bearer
 
 If the model's chat template does not recognize the effort value, vLLM's `--reasoning-effort-map` (via `vllm_extra_args`) can rewrite it to one it knows.
 
+### Repetition-loop mitigation
+
+Gemma 4 can repeat indefinitely when grammar-constrained decoding is active (for example, JSON schemas or tool arguments). The role sends `vllm_repetition_detection` to vLLM through LiteLLM on every request by default. Its defaults (`max_pattern_size: 20`, `min_pattern_size: 3`, `min_count: 4`) match [vLLM PR #40099](https://github.com/vllm-project/vllm/pull/40099): vLLM stops output after a 3–20-token phrase repeats four times. A request-level `repetition_detection` object overrides it; set `vllm_repetition_detection: {}` to disable it.
+
+This is a safety stop, not a repair for malformed prompts. It may return a partial response when a genuine phrase repeats, so validate structured output and retry only that request. Run the inference playbook after changing this setting; registration detects the changed LiteLLM parameter, replaces the stored deployment, and does not require a gateway restart.
+
 ---
 
 ## Setup
@@ -362,7 +369,7 @@ The run renders `litellm/vllm-models.yaml` in the repo: one `model_list` entry f
 
 With `store_model_in_db` enabled on the proxy (the default in this stack), the role **also registers the model directly**: it resolves the litellm container's API from the controller, diffs against `GET /v1/models`, and POSTs each missing endpoint to `/model/new` — no restart needed. `model_info` is POSTed with `max_input_tokens`/`max_tokens` as JSON **numbers**: clients that gate on `Number.isFinite` (MAGIE Coder's discovery plugin) reject string limits, so a string `"262144"` made the client fall back to a default context window and refuse to send large prompts even though vLLM accepted them. Requires `LITELLM_MASTER_KEY` exported on the controller (the same secret in `.env`). Missing key, or litellm not running → registration is skipped with the file snippet as fallback.
 
-The same run **prunes stale vLLM models** from the gateway's model db: any registered model whose `api_base` points at a `vllm_compute` node (`http://<ip>:<port>/v1`) but which this run no longer serves — a retired `vllm_model`, a removed aux entry, a changed `max_model_len`, a **non-number stored limit** (legacy string-typed registration), a **changed `supports_reasoning`** (parser turned on or off), or (primary only) a changed `vllm_adaptive_quality_tier`/`vllm_adaptive_strengths` — is deleted via `POST /model/delete`. Without the prune, removed models linger in every client's model list forever (that is how `Qwen2.5-7B-Instruct` stuck around after the primary was switched). Scope is strict: only db models with a vLLM `api_base` are touched; config-declared models (gemini, bedrock, `auto`/`adaptive`, `voice-assistant`) have no `api_base` and are never deleted.
+The same run **prunes stale vLLM models** from the gateway's model db: any registered model whose `api_base` points at a `vllm_compute` node (`http://<ip>:<port>/v1`) but which this run no longer serves — a retired `vllm_model`, a removed aux entry, a changed `max_model_len`, a **non-number stored limit** (legacy string-typed registration), changed `supports_reasoning` or `repetition_detection`, or (primary only) a changed `vllm_adaptive_quality_tier`/`vllm_adaptive_strengths` — is deleted via `POST /model/delete`. Without the prune, removed models linger in every client's model list forever (that is how `Qwen2.5-7B-Instruct` stuck around after the primary was switched). Scope is strict: only db models with a vLLM `api_base` are touched; config-declared models (gemini, bedrock, `auto`/`adaptive`, `voice-assistant`) have no `api_base` and are never deleted.
 
 **Adaptive-router registration.** When `vllm_adaptive_quality_tier` is set (per-node group_vars; see `ansible/roles/vllm_compute/defaults/main.yml`), the primary model's registration carries `adaptive_router_preferences` (`quality_tier`, `strengths`) in its `model_info`, and the rendered snippet includes the same block. List the model under an `auto_router/adaptive_router` deployment's `available_models` in `litellm/config.yaml` to let the bandit route to it; the preferences are its cold-start prior. `vllm_adaptive_input_cost_per_token` is recorded for humans but `/model/new` does not persist cost fields in `model_info` — the adaptive router defaults a missing cost to 0, which is what a self-hosted node costs.
 
@@ -383,6 +390,7 @@ The models then appear in Open WebUI's model dropdown.
 | Change adaptive-router prefs | Edit `vllm_adaptive_quality_tier`/`vllm_adaptive_strengths` in group_vars → re-run (prune + re-register is automatic) |
 | Turn reasoning on/off | Set/clear `vllm_reasoning_parser` (+ `vllm_chat_template_kwargs`) or an aux entry's `reasoning_parser` → re-run (prune + re-register is automatic) |
 | Change the default thinking level | Set `vllm_reasoning_effort` (or an aux entry's `reasoning_effort`) → re-run; per-request effort from Open WebUI / MAGIE still overrides it |
+| Tune repetition-loop detection | Set `vllm_repetition_detection` (or an aux entry's `repetition_detection`) → re-run; `{}` disables it |
 | Change topology | Set `vllm_deployment_mode` / `vllm_cross_node_tensor_parallel` → re-run |
 | Add/remove an image model | Edit `vllm_flux_models` → re-run; removal cleans up automatically |
 | Add/remove/placement an aux model | Edit `vllm_aux_models` (add/remove hosts in its `hosts` key) → re-run; cleanup is automatic |

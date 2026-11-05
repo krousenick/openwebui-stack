@@ -106,6 +106,11 @@ vllm_reasoning_parser: gemma4
 vllm_chat_template_kwargs:
   thinking: true
 
+vllm_repetition_detection:
+  max_pattern_size: 20
+  min_pattern_size: 3
+  min_count: 4
+
 # The compute segment the controller reaches the node on (set in
 # vars.local.yml). The API port opens in the vllm-cluster zone for LiteLLM;
 # Ray ports stay open for later ray-mode runs.

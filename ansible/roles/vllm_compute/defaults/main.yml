@@ -122,6 +122,11 @@ vllm_chat_template_kwargs: {}
 # that set reasoning_effort per request still work.
 vllm_reasoning_effort: ""
 
+vllm_repetition_detection:
+  max_pattern_size: 20
+  min_pattern_size: 3
+  min_count: 4
+
 # Adaptive-router registration for the primary model. When non-empty, the
 # LiteLLM registration tasks (and the litellm-models.yaml.j2 snippet) add
 # this model_info block, so the model can be listed in an adaptive router's
@@ -316,7 +321,12 @@ vllm_flux_api_key: ""
 #                        vllm_aux_default_reasoning_effort; one of none,
 #                        minimal, low, medium, high, xhigh, max). A
 #                        request-level reasoning_effort overrides it
+#   repetition_detection default repetition-loop detection rendered into the
+#                        LiteLLM litellm_params (default
+#                        vllm_aux_default_repetition_detection); vLLM ends
+#                        generation early on repeated N-gram patterns
 #
+
 # Ports must be unique across the flux AND aux lists per node - they all
 # bind host ports in the same space.
 # ===========================================================================
@@ -332,6 +342,10 @@ vllm_aux_default_extra_args: []
 vllm_aux_default_reasoning_parser: ""
 vllm_aux_default_chat_template_kwargs: {}
 vllm_aux_default_reasoning_effort: ""
+vllm_aux_default_repetition_detection:
+  max_pattern_size: 20
+  min_pattern_size: 3
+  min_count: 4
 
 # Base host port for aux servers when an entry sets none; entry i binds
 # vllm_aux_base_port + i (8010, 8011, ...). 8010 keeps them clear of the
