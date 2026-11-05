@@ -379,3 +379,32 @@ mcp_servers:
     transport: "http" # Connects via Streamable HTTP/SSE
     auth_type: "none"
     allow_all_keys: true
+{% if printer_mcp_enabled | default(false) | bool %}
+  printer_3d:
+    # bambu-printer-mcp (slice_stl / print_3mf / get_printer_status /
+    # resolve_3mf_ams_slots / camera_snapshot) for the Bambu H2C.
+    url: "http://printer-mcp:3000/mcp"
+    transport: "http"
+    auth_type: "none"
+    allow_all_keys: true
+{% endif %}
+{% if blender_mcp_enabled | default(false) | bool %}
+  blender:
+    # mcp-for-blender behind its in-container supergateway (stdI/O ->
+    # streamable HTTP). Blender 5.0.1 full GUI under Xvfb; addon 2.2.7 with
+    # BLENDER_MCP_SAFE_MODE=1.
+    url: "http://blender:8000/mcp"
+    transport: "http"
+    auth_type: "none"
+    allow_all_keys: true
+{% endif %}
+{% if freecad_mcp_enabled | default(false) | bool %}
+  freecad:
+    # freecad-mcp (alosslessdev headless bridge) behind its in-container
+    # supergateway (stdI/O -> streamable HTTP). FreeCAD 1.1.4 headless via
+    # freecadcmd; execute_code / document tools / parts list.
+    url: "http://freecad:8000/mcp"
+    transport: "http"
+    auth_type: "none"
+    allow_all_keys: true
+{% endif %}

@@ -125,7 +125,10 @@ services:
       ENABLE_OAUTH_ROLE_MANAGEMENT: "true"
       OAUTH_ROLES_CLAIM: "roles"
       OAUTH_ADMIN_ROLES: "openwebui_admin"
-      # OAUTH_ALLOWED_ROLES: "openwebui_admin,openwebui_user"
+      # Roles from the claim must literally match the allowed list or Open
+      # WebUI 403s the login (get_user_role rejects non-matching roles when
+      # role management is on). The Keycloak client role is openwebui_user.
+      OAUTH_ALLOWED_ROLES: "openwebui_user"
       OAUTH_ROLES_SEPARATOR: ","
       OAUTH_MERGE_ACCOUNTS_BY_EMAIL: "true"
       DEFAULT_USER_ROLE: "user"
@@ -226,6 +229,11 @@ services:
       # Authentication
       LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?error}"
       LITELLM_SALT_KEY: "${LITELLM_SALT_KEY:?error}"
+{% if litellm_license | default('') | length > 0 %}
+      # Optional LiteLLM Enterprise license (lifts the 5-user UI SSO seat
+      # limit; only rendered when a license key is set in the vault).
+      LITELLM_LICENSE: "${LITELLM_LICENSE}"
+{% endif %}
 
       # Redis/Valkey Cache Authentication
       REDIS_PASSWORD: "${VALKEY_PASSWORD:?error}"
@@ -684,6 +692,152 @@ services:
       - backend
       - frontend
 
+{% if printer_mcp_enabled | default(false) | bool %}
+  # ===========================================================================
+  # Printer MCP - bambu-printer-mcp + Bambu Studio CLI slicer
+  # Serves the printer_3d MCP tool server (slice_stl / print_3mf /
+  # get_printer_status / resolve_3mf_ams_slots / camera_snapshot) on
+  # streamable HTTP :3000/mcp. Built from ./printer-mcp (bambu-printer-mcp
+  # 1.1.59 with H2C printing support + extracted Bambu Studio v02.08.02.60
+  # with H2C machine presets).
+  # Networks: frontend (LAN egress to the printer: MQTT 8883, FTPS 990, RTSP
+  # 322 - backend is internal with no route out) + backend (LiteLLM).
+  # No Traefik route: only LiteLLM reaches it.
+  # Reads model-generated STLs from the shared models volume (read-only).
+  # ===========================================================================
+  printer-mcp:
+    build:
+      context: ./printer-mcp
+      dockerfile: Dockerfile
+    image: ${PRINTER_MCP_IMAGE:-openwebui-stack/printer-mcp:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_printer-mcp
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PRINTER_TYPE: bambu
+      PRINTER_HOST: "${BAMBU_HOST:?error}"
+      BAMBU_SERIAL: "${BAMBU_SERIAL:?error}"
+      BAMBU_TOKEN: "${BAMBU_TOKEN:?error}"
+      BAMBU_MODEL: "${BAMBU_MODEL:-h2c}"
+      # Slicer paths are baked into the image (SLICER_TYPE / SLICER_PATH /
+      # BAMBU_PROFILES_ROOT ENV in printer-mcp/Dockerfile); bed and nozzle
+      # stay overridable here. textured_plate: supertack_plate is not
+      # verified through the CLI path.
+      BED_TYPE: "${PRINTER_MCP_BED_TYPE:-textured_plate}"
+      NOZZLE_DIAMETER: "${PRINTER_MCP_NOZZLE_DIAMETER:-0.4}"
+      MCP_TRANSPORT: streamable-http
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: "3000"
+      MCP_HTTP_PATH: /mcp
+    volumes:
+      - models:/models:ro
+    networks:
+      - backend
+      - frontend
+    healthcheck:
+      # TCP connect proves the MCP listener is up; the MCP endpoint answers
+      # only valid POST handshakes, and a GET would fail as a healthcheck.
+      test: ["CMD", "node", "-e", "const n=require('net');const s=n.connect(3000,'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),5000)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+{% endif %}
+
+{% if blender_mcp_enabled | default(false) | bool %}
+  # ===========================================================================
+  # Blender MCP - mesh modeling via mcp-for-blender
+  # Full Blender 5.0.1 GUI under Xvfb (the addon's socket server refuses
+  # background mode; it needs the GUI event loop) + mcp-for-blender 2.2.7
+  # addon with SAFE_MODE=1. The addon listener (:9876) is unauthenticated:
+  # backend-only network, no internet, no Traefik route; its only client is
+  # the in-container stdio MCP server bridged by supergateway to
+  # :8000/mcp for LiteLLM (mcp_servers.blender).
+  # Writes exported STLs to the shared models volume.
+  # ===========================================================================
+  blender:
+    build:
+      context: ./blender
+      dockerfile: Dockerfile
+    image: ${BLENDER_MCP_IMAGE:-openwebui-stack/blender-mcp:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_blender
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - models:/models
+    networks:
+      - backend
+    healthcheck:
+      # TCP connect to the supergateway MCP endpoint (:8000/mcp).
+      test: ["CMD", "node", "-e", "const n=require('net');const s=n.connect(8000,'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),5000)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Blender GUI boot + addon auto-start can take a while on first boot.
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+        reservations:
+          memory: 1G
+          cpus: "0.5"
+{% endif %}
+
+{% if freecad_mcp_enabled | default(false) | bool %}
+  # ===========================================================================
+  # FreeCAD MCP - parametric CAD via headless freecadcmd
+  # FreeCAD 1.1.4 (extracted AppImage, freecadcmd with bundled py311) +
+  # the alosslessdev headless XML-RPC bridge (freecad-mcp 0.1.24) +
+  # supergateway stdio->streamable-HTTP on :8000/mcp for LiteLLM
+  # (mcp_servers.freecad). No GUI, no display, no docker socket. The XML-RPC
+  # bridge (:9875) is unauthenticated: backend-only network, no internet,
+  # no Traefik route; its only client is the in-container stdio MCP server.
+  # Writes exported STL/STEP to the shared models volume.
+  # ===========================================================================
+  freecad:
+    build:
+      context: ./freecad
+      dockerfile: Dockerfile
+    image: ${FREECAD_MCP_IMAGE:-openwebui-stack/freecad-mcp:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_freecad
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - models:/models
+    networks:
+      - backend
+    healthcheck:
+      # TCP connect to the supergateway MCP endpoint (:8000/mcp).
+      test: ["CMD", "node", "-e", "const n=require('net');const s=n.connect(8000,'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),5000)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+        reservations:
+          memory: 1G
+          cpus: "0.5"
+{% endif %}
 {% if code_sandbox_enabled | bool %}
   # ===========================================================================
   # Code Sandbox - isolated Jupyter for model-authored Python
@@ -712,6 +866,10 @@ services:
       - ./sandbox/jupyter_server_config.py:/etc/jupyter/jupyter_server_config.py:ro
       # Writable scratch space for generated artifacts (STL, plots).
       - code_sandbox_data:/home/jovyan/work
+      # Shared model artifacts (STL/STEP) written by Blender/FreeCAD MCP and
+      # read by printer-mcp; the sandbox also uses it for trimesh
+      # post-processing of generated meshes.
+      - models:/models
     networks:
       - backend
     healthcheck:
@@ -1131,5 +1289,7 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox_models
   code_sandbox_data:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_code_sandbox_data
+  models:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_models
   alloy_data:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_alloy_data

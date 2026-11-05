@@ -45,7 +45,10 @@
       {{ (['server:mcp:brave_search']
           if brave_search_enabled | bool and brave_search_api_key | length > 0
           else [])
-         + (['server:mcp:playwright_cluster'] if playwright_mcp_enabled | bool else []) }}
+         + (['server:mcp:playwright_cluster'] if playwright_mcp_enabled | bool else [])
+         + (['server:mcp:printer_3d'] if printer_mcp_enabled | default(false) | bool else [])
+         + (['server:mcp:blender'] if blender_mcp_enabled | default(false) | bool else [])
+         + (['server:mcp:freecad'] if freecad_mcp_enabled | default(false) | bool else []) }}
   no_log: true
 
 - name: Merge the tool IDs into the current default metadata

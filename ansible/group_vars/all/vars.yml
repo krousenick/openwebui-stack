@@ -113,6 +113,25 @@ brave_search_enabled: true
 # to remove the sandbox container and Open WebUI's Jupyter wiring.
 code_sandbox_enabled: true
 
+# 3D print pipeline MCP servers (docs/plans/3d-print-pipeline.md).
+# printer_mcp: bambu-printer-mcp (slice + print for the Bambu H2C, Bambu
+#   Studio CLI slicer in-image). Needs bambu_host / bambu_serial /
+#   bambu_token in vault.local.yml, printer in LAN Only + Developer Mode,
+#   Photon host on the printer's L2. Default bed/nozzle overridden by
+#   printer_mcp_bed_type / printer_mcp_nozzle_diameter in vars.yml.
+# blender_mcp: mcp-for-blender 2.2.7, full Blender 5.0.1 GUI under Xvfb,
+#   SAFE_MODE=1, first-class LiteLLM mcp_servers.blender entry. Organic /
+#   mesh modeling; exports STL to the shared models volume.
+# freecad_mcp: FreeCAD 1.1.4 headless (freecadcmd) + alosslessdev bridge,
+#   first-class LiteLLM mcp_servers.freecad entry. Parametric CAD; exports
+#   STL/STEP to the shared models volume.
+printer_mcp_enabled: false
+blender_mcp_enabled: false
+freecad_mcp_enabled: false
+
+printer_mcp_bed_type: textured_plate
+printer_mcp_nozzle_diameter: "0.4"
+
 # AWS Bedrock models in the LiteLLM model_list (MiniMax, Qwen, Kimi). Off
 # unless AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are set in the vault:
 # without credentials the models provision but cannot serve.

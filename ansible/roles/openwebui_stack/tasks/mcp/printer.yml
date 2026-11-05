@@ -1,0 +1,125 @@
+---
+# Printer MCP: bambu-printer-mcp (printer_3d tool server) for the Bambu H2C.
+# The container, Bambu Studio CLI slicer, and the LiteLLM mcp_servers
+# entry live in docker-compose.yml and litellm/config.yaml; this task wires
+# the Open WebUI client-side tool server connection so models can slice and
+# start prints from chat. Print-start tools are NOT gated here: the chat-side
+# guardrail (system prompt / model defaults) requires the model to ask the
+# user before print_3mf / process_and_print_stl.
+
+- name: Require Printer MCP settings
+  ansible.builtin.assert:
+    that:
+      - bambu_host | default('') | length > 0
+      - bambu_serial | default('') | length > 0
+      - bambu_token | default('') | length > 0
+      - litellm_master_key | length > 0
+      - openwebui_db_user | length > 0
+      - openwebui_db_password | length > 0
+      - openwebui_db_name | length > 0
+    fail_msg: >-
+      Printer MCP requires bambu_host, bambu_serial and bambu_token in
+      group_vars/all/vault.local.yml, plus the LiteLLM key and Open WebUI
+      database settings.
+
+- name: Read current Open WebUI tool server connections
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+      - -tAc
+      - SELECT value::text FROM config WHERE key = 'tool_server.connections'
+  register: printer_tool_server_current
+  changed_when: false
+  # Check mode skips this command, leaving stdout empty; the merge task
+  # then falls back to an empty list instead of failing to parse "".
+  failed_when: false
+  no_log: true
+
+- name: Build the Printer MCP tool server connection
+  ansible.builtin.set_fact:
+    printer_connection_entry:
+      - type: mcp
+        url: http://litellm:4000/mcp/printer_3d
+        path: ""
+        auth_type: bearer
+        key: "{{ litellm_master_key }}"
+        config:
+          enable: true
+        info:
+          id: printer_3d
+          name: 3D Printer
+          description: >-
+            Slice STLs and send prints to the Bambu H2C (slice_stl,
+            print_3mf, get_printer_status, resolve_3mf_ams_slots). Ask the
+            user before starting any print.
+  no_log: true
+
+- name: Merge the Printer connection into the desired tool server list
+  ansible.builtin.set_fact:
+    # Keep existing connections (Brave, Playwright, Blender, FreeCAD) and
+    # append the Printer entry only when not already present, matching by
+    # info.id. Empty stdout (check mode, or no connections row yet) reads
+    # as an empty list.
+    printer_tool_server_desired: >-
+      {{ ((printer_tool_server_current.stdout | trim | default('', true) or '[]')
+         | from_json
+         | selectattr('info.id', 'defined')
+         | rejectattr('info.id', 'equalto', 'printer_3d')
+         | list
+         | union(printer_connection_entry)
+         | sort(attribute='info.id')) }}
+  no_log: true
+
+- name: Update persisted Printer MCP configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+    stdin: |
+      UPDATE config SET value = '{{ printer_tool_server_desired | to_json | replace("'", "''") }}'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'tool_server.connections';
+  register: printer_config_update
+  # Compare parsed structures, not raw strings: psql emits JSON with its own
+  # key order and spacing that never matches to_json byte-for-byte, which
+  # would recreate the services on every run.
+  changed_when: >-
+    ((printer_tool_server_current.stdout | trim | default('', true) or '[]') | from_json | map(attribute='info.id') | list | sort)
+    != (printer_tool_server_desired | map(attribute='info.id') | list | sort)
+    or ((printer_tool_server_current.stdout | trim | default('', true) or '[]') | from_json | map('to_json') | list | sort)
+    != (printer_tool_server_desired | map('to_json') | list | sort)
+  no_log: true
+
+- name: Recreate Printer MCP enabled services
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - printer-mcp
+      - litellm
+      - open-webui
+    state: present
+    recreate: always
+    wait: true
+    wait_timeout: 180
+  when: printer_config_update is changed
