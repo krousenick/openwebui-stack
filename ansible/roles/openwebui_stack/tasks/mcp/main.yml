@@ -13,6 +13,21 @@
     file: playwright.yml
   when: playwright_mcp_enabled | bool
 
+- name: Configure Printer MCP (Bambu H2C slice + print)
+  ansible.builtin.import_tasks:
+    file: printer.yml
+  when: printer_mcp_enabled | default(false) | bool
+
+- name: Configure Blender MCP (mesh modeling)
+  ansible.builtin.import_tasks:
+    file: blender.yml
+  when: blender_mcp_enabled | default(false) | bool
+
+- name: Configure FreeCAD MCP (parametric CAD)
+  ansible.builtin.import_tasks:
+    file: freecad.yml
+  when: freecad_mcp_enabled | default(false) | bool
+
 # Runs after the MCP servers: the filter makes their image results (e.g.
 # Playwright screenshots) visible in the chat window.
 - name: Register the tool result image filter

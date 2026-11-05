@@ -1,0 +1,119 @@
+---
+# FreeCAD MCP: headless FreeCAD (parametric CAD) as a first-class LiteLLM
+# tool server. The container (FreeCAD 1.1.4 via freecadcmd + alosslessdev
+# headless bridge + in-container supergateway) and the LiteLLM
+# mcp_servers.freecad entry live in docker-compose.yml and
+# litellm/config.yaml; this task wires the Open WebUI client-side tool
+# server connection so models can author dimensioned parts and export
+# STL/STEP to the shared models volume from chat.
+
+- name: Require FreeCAD MCP settings
+  ansible.builtin.assert:
+    that:
+      - litellm_master_key | length > 0
+      - openwebui_db_user | length > 0
+      - openwebui_db_password | length > 0
+      - openwebui_db_name | length > 0
+    fail_msg: "FreeCAD MCP requires the LiteLLM key and Open WebUI database settings."
+
+- name: Read current Open WebUI tool server connections
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+      - -tAc
+      - SELECT value::text FROM config WHERE key = 'tool_server.connections'
+  register: freecad_tool_server_current
+  changed_when: false
+  # Check mode skips this command, leaving stdout empty; the merge task
+  # then falls back to an empty list instead of failing to parse "".
+  failed_when: false
+  no_log: true
+
+- name: Build the FreeCAD MCP tool server connection
+  ansible.builtin.set_fact:
+    freecad_connection_entry:
+      - type: mcp
+        url: http://litellm:4000/mcp/freecad
+        path: ""
+        auth_type: bearer
+        key: "{{ litellm_master_key }}"
+        config:
+          enable: true
+        info:
+          id: freecad
+          name: FreeCAD MCP
+          description: >-
+            Parametric CAD in headless FreeCAD (execute_code, documents,
+            parts list). Prefer for dimensioned/mechanical parts; export
+            STL or STEP to /models.
+  no_log: true
+
+- name: Merge the FreeCAD connection into the desired tool server list
+  ansible.builtin.set_fact:
+    # Keep existing connections (Brave, Playwright, Printer, Blender) and
+    # append the FreeCAD entry only when not already present, matching by
+    # info.id. Empty stdout (check mode, or no connections row yet) reads
+    # as an empty list.
+    freecad_tool_server_desired: >-
+      {{ ((freecad_tool_server_current.stdout | trim | default('', true) or '[]')
+         | from_json
+         | selectattr('info.id', 'defined')
+         | rejectattr('info.id', 'equalto', 'freecad')
+         | list
+         | union(freecad_connection_entry)
+         | sort(attribute='info.id')) }}
+  no_log: true
+
+- name: Update persisted FreeCAD MCP configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+    stdin: |
+      UPDATE config SET value = '{{ freecad_tool_server_desired | to_json | replace("'", "''") }}'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'tool_server.connections';
+  register: freecad_config_update
+  # Compare parsed structures, not raw strings: psql emits JSON with its own
+  # key order and spacing that never matches to_json byte-for-byte, which
+  # would recreate the services on every run.
+  changed_when: >-
+    ((freecad_tool_server_current.stdout | trim | default('', true) or '[]') | from_json | map(attribute='info.id') | list | sort)
+    != (freecad_tool_server_desired | map(attribute='info.id') | list | sort)
+    or ((freecad_tool_server_current.stdout | trim | default('', true) or '[]') | from_json | map('to_json') | list | sort)
+    != (freecad_tool_server_desired | map('to_json') | list | sort)
+  no_log: true
+
+- name: Recreate FreeCAD MCP enabled services
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - freecad
+      - litellm
+      - open-webui
+    state: present
+    recreate: always
+    wait: true
+    wait_timeout: 180
+  when: freecad_config_update is changed

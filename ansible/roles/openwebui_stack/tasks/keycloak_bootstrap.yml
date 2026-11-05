@@ -27,6 +27,22 @@
     failure_factor: 5
     wait_increment_seconds: 60
     max_failure_wait_seconds: 900
+    # Applies to self-registration and manual credential sets; existing
+    # passwords are grandfathered. Keycloak 26 defaults to Argon2 hashing.
+    password_policy: >-
+      length(12) and upperCase(1) and digits(1) and notUsername
+      and notEmail and passwordHistory(5)
+    # Refresh token rotation: each refresh invalidates the previous token
+    # (refresh_token_max_reuse 0 = no reuse window; an old token fails
+    # immediately after a newer one is issued).
+    revoke_refresh_token: true
+    refresh_token_max_reuse: 0
+    # Login and admin event logging. events_expiration is seconds of DB
+    # retention (30 days); admin events include the full change payload.
+    events_enabled: true
+    events_expiration: 2592000
+    admin_events_enabled: true
+    admin_events_details_enabled: true
     state: present
     validate_certs: "{{ keycloak_validate_certs }}"
   delegate_to: localhost

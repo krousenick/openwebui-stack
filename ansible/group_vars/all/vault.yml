@@ -47,3 +47,17 @@ aws_secret_access_key: ""
 aws_region: ""
 hf_token: ""
 grafana_discord_webhook_url: ""
+
+# 3D printer MCP (bambu-printer-mcp -> Bambu H2C). Only required when
+# printer_mcp_enabled is true in vars.yml. bambu_serial = Settings -> Device
+# Info on the printer; bambu_token = LAN access code (Settings -> Network).
+# The printer must be in LAN Only Mode with Developer Mode enabled.
+bambu_host: ""
+bambu_serial: ""
+bambu_token: ""
+
+# Optional LiteLLM Enterprise license (leave empty to stay on the free tier:
+# UI SSO for up to 5 users). Set to a LITELLM_LICENSE key to lift the seat
+# limit and enable enterprise features; it only reads from the env var, so
+# the playbook renders it into .env for the litellm container.
+litellm_license: ""
