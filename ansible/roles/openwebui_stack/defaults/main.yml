@@ -69,6 +69,19 @@ backup_retention_days: 7
 # compose file consumes it).
 keycloak_admin_ip_range: "0.0.0.0/0"
 
+# User self-registration on the platform realm login page. Off by default.
+# When true the Keycloak login page shows a Register link, and every new
+# account lands in keycloak_default_groups (role mappings in group_vars
+# keycloak_group_role_mappings grant it access).
+# Default groups are applied after the groups exist, and Keycloak's realm
+# update replaces the whole list, so while registration is enabled clearing
+# this list removes the realm's default groups on the next run.
+# keycloak_verify_email needs an SMTP server configured in Keycloak; leave
+# false until one exists or self-registered users cannot finish signup.
+keycloak_registration_enabled: false
+keycloak_verify_email: false
+keycloak_default_groups: []
+
 # Playwright MCP cluster. When true, the playbook adds the Open WebUI tool
 # server connection for the playwright_cluster LiteLLM MCP server. The
 # containers and Traefik wiring live in docker-compose.yml. Set false in
@@ -87,3 +100,9 @@ code_sandbox_enabled: true
 # nothing useful without credentials. Set true in group_vars once the AWS
 # keys exist.
 litellm_bedrock_models_enabled: false
+
+# Google Gemini models in the LiteLLM model_list, plus the auto/adaptive
+# routers and the voice-assistant alias that route to them. Off by default:
+# they need GEMINI_API_KEY (see .env.example) and provision nothing useful
+# without a key. Set true in group_vars once the Gemini key exists.
+litellm_gemini_models_enabled: false

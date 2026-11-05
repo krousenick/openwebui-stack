@@ -99,7 +99,7 @@ graph TB
 - **Security**: Network isolation, secure headers, rate limiting, admin IP restriction
 - **Chatterbox TTS**: OpenAI-compatible voice cloning for Open WebUI, with a voice library UI at `voice.<domain>`. This is the only TTS engine in the stack.
 - **Brave Search MCP**: Web search for every chat model. The `brave-search-mcp` container serves the official Brave MCP tools over streamable HTTP, LiteLLM mounts them at `/mcp/brave_search`, and a LiteLLM startup hook (`litellm/brave_mcp_callback.py`) injects them into every `/v1/chat/completions` request. Models call the tools; LiteLLM executes them server-side (`require_approval: never`), so no client-side tool wiring is needed.
-- **Voice assistant**: LiteLLM alias `voice-assistant` routes to `gemini-3.5-flash-lite`. `./scripts/create-voice-key.sh` creates a virtual key that can call only that model and stores it in `.env` as `LITELLM_VOICE_API_KEY`.
+- **Voice assistant**: LiteLLM alias `voice-assistant` routes to `gemini-3.5-flash-lite` (rendered only when `litellm_gemini_models_enabled: true`, the same flag that gates the Gemini models). `./scripts/create-voice-key.sh` creates a virtual key that can call only that model and stores it in `.env` as `LITELLM_VOICE_API_KEY`.
 - **Code Sandbox**: Isolated Jupyter container for model-authored Python (STL/mesh generation, plotting, data transforms). Pinned `quay.io/jupyter/scipy-notebook` image with `numpy-stl` and `trimesh` baked in, token-authenticated, backend-network-only (no published port, no Traefik route), 2G/2CPU caps, non-root. Open WebUI's Jupyter code-execution wiring points at it; the legacy in-process engines stay off. See [Secure Code Execution](#secure-code-execution-code-sandbox).
 
 ##  Quick Start
@@ -227,6 +227,8 @@ Role names are the values in the `roles` token claim. Grafana maps them with the
 
 To register a passkey for that user, follow [docs/passkey-user.md](docs/passkey-user.md).
 
+**Self-registration:** The playbook turns on user self-registration for the `platform` realm (`keycloak_registration_enabled` in `ansible/group_vars/all/vars.yml`, default `true` in this deployment; role default `false`). The Keycloak login page shows a **Register** link. New accounts land in `keycloak_default_groups` (here: `user`), so group-to-role mappings grant `openwebui_user` (Open WebUI) and `internal_user` (LiteLLM) immediately — the same access as the provisioned `openwebui-user`. `keycloak_verify_email` is off because no SMTP server is configured: with it on and no mail server, a self-registered user is stuck on the Verify Email screen. Configure SMTP in Keycloak (Realm Settings → Email) and set it to `true` to require address verification. Default groups are set after the groups exist (Keycloak's realm update replaces the whole list and fails on a missing group). Set `keycloak_registration_enabled: false` to hide the Register link again.
+
 ### SSO Login Flow
 
 **Open WebUI:**
@@ -272,11 +274,11 @@ Keycloak database backups can be run on-demand:
 # Run backup
 docker compose --profile backup up keycloak-backup
 
-# List backups
-docker volume ls | grep keycloak_backups
+# List backups (bind mount under the deployed tree, not a Docker volume)
+ls backups/
 ```
 
-Configure retention with `BACKUP_RETENTION_DAYS` in `.env` (default: 7 days)
+Backups land in `backups/` under the deployed tree on the host data disk (default `/mnt/data1/openwebui-stack/backups`), so they survive `docker compose down -v` and can be restored straight from the host path. Configure retention with `BACKUP_RETENTION_DAYS` in `.env` (default: 7 days)
 
 ### opencode (terminal AI coding agent)
 
@@ -350,7 +352,7 @@ Key environment variables in `.env`:
 
 - **Traefik**: Reverse proxy with automatic HTTPS, routing, and load balancing
 - **Open WebUI**: Web UI for interacting with LLMs (chatbot.domain.com)
-- **LiteLLM**: Unified gateway for multiple LLM providers (litellm.domain.com). `litellm/config.yaml` ships Gemini 3.8 Flash, Gemini 3.5 Flash-Lite, Gemini 3.1 Pro, and Gemini 4 Argon, plus Bedrock MiniMax M2.5, Qwen3 Next 80B A3B, Qwen3 Coder Next, and Kimi K3 (`us.moonshotai.kimi-k3`) — the Bedrock entries render only when `litellm_bedrock_models_enabled: true` (default false; they need AWS keys). Bedrock calls use `AWS_REGION` (default `us-east-1`). Model IDs were checked on 2026-10-21. The `voice-assistant` alias routes to `gemini-3.5-flash-lite` for short spoken replies. LiteLLM rewrites the alias to that model before checking the key, so the voice key allows `gemini-3.5-flash-lite`. Point Home Assistant at `https://litellm.<domain>/v1`, model `voice-assistant`, with `LITELLM_VOICE_API_KEY`. Do not use the master key. Create it after LiteLLM is healthy:
+- **LiteLLM**: Unified gateway for multiple LLM providers (litellm.domain.com). `litellm/config.yaml` ships Gemini 3.8 Flash, Gemini 3.5 Flash-Lite, Gemini 3.1 Pro, and Gemini 4 Argon, plus Bedrock MiniMax M2.5, Qwen3 Next 80B A3B, Qwen3 Coder Next, and Kimi K3 (`us.moonshotai.kimi-k3`) — the Gemini entries render only when `litellm_gemini_models_enabled: true` (default false; they need `GEMINI_API_KEY`), and the Bedrock entries render only when `litellm_bedrock_models_enabled: true` (default false; they need AWS keys). Bedrock calls use `AWS_REGION` (default `us-east-1`). Model IDs were checked on 2026-10-21. The `voice-assistant` alias routes to `gemini-3.5-flash-lite` for short spoken replies. LiteLLM rewrites the alias to that model before checking the key, so the voice key allows `gemini-3.5-flash-lite`. Point Home Assistant at `https://litellm.<domain>/v1`, model `voice-assistant`, with `LITELLM_VOICE_API_KEY`. Do not use the master key. Create it after LiteLLM is healthy:
 
   ```bash
   ./scripts/create-voice-key.sh
@@ -362,7 +364,7 @@ Key environment variables in `.env`:
 
    All five `prompt_injection_*` categories are conditional matches in the built-in data: an identifier word plus a block word in the same sentence blocks at hardcoded high severity, and the block words are ordinary dev vocabulary (`alter table`, `subprocess`, `crontab`, `system prompt`, `user data`, `debug mode`). Any SQL question, Python script, or prompt-engineering discussion false-blocked — including model replies, since `post_call` scans the response too (a generated backup script using `subprocess` blocked mid-generation). The stack overrides all five with files in `litellm/guardrail_categories/` referenced via `category_file` in the LiteLLM config, mounted at `/app/guardrail_categories/` in the compose file (`LITELLM_CONTENT_FILTER_ALLOW_EXTERNAL_PATHS: "true"` lets the guardrail read outside the litellm package data). Each override keeps the always-block payload lists, so genuine payloads (`'; DROP TABLE`, `' OR '1'='1`, `rm -rf /`, `curl | bash`, `nc -e /bin/sh`, `powershell -enc`, `ignore previous instructions`, `exfiltrate data`, DAN-mode jailbreaks) still block. Four categories drop the conditional match entirely; `prompt_injection_malicious_code` keeps a narrowed one (action verb + `reverse shell`/`fork bomb`) so bind-shell phrasings stay caught. Verified by parity test against the built-in files: no detection the built-in made is lost. Because the overrides are pinned (`category_file` replaces the built-in data entirely, so upstream keyword updates do not flow in), `scripts/check-guardrail-drift.sh` compares each override's always-block list against the latest LiteLLM sdist from PyPI and fails listing the missing keywords; the `Guardrail Drift Check` GitHub workflow (`.github/workflows/guardrail-drift.yml`) runs it weekly, on changes to the override files, and manually via workflow_dispatch. Run it locally with `scripts/check-guardrail-drift.sh [version]` (needs `python3` + PyYAML).
 
-    **Complexity routing.** Model `auto` is `auto_router/complexity_router`. The heuristic scorer (no extra API call) maps each turn to a model already in `model_list`:
+    **Complexity routing.** Model `auto` is `auto_router/complexity_router` (rendered only when `litellm_gemini_models_enabled: true`; its tiers route only to the Gemini models, so it is gated by the same flag). The heuristic scorer (no extra API call) maps each turn to a model already in `model_list`:
 
     | Tier | Model |
     | --- | --- |
@@ -373,7 +375,7 @@ Key environment variables in `.env`:
 
     A tier with a two-model pool picks randomly, so MEDIUM traffic splits ~50/50 between `gemini-3.8-flash` and the local vLLM node. Unclassifiable turns use `gemini-3.8-flash`. `session_affinity` is off, so a short follow-up is not stuck on the model that answered a hard first turn. Open WebUI can select `auto` like any other model. Bedrock models stay direct-select only. Docs: [auto routing](https://docs.litellm.ai/docs/proxy/auto_routing). `store_model_in_db` is on, so a guardrail or router key saved in the Admin UI overrides the same key in this file after a restart.
 
-   **Adaptive routing (beta).** Model `adaptive` is `auto_router/adaptive_router`. Unlike the heuristic `auto` router, it is a Thompson-sampling bandit that learns which model wins each request type (`code_generation`, `code_understanding`, `technical_design`, `analytical_reasoning`, `writing`, `factual_lookup`, `general`) from conversation signals (user satisfaction, stagnation, misalignment). It balances quality against cost with `weights: {quality: 0.7, cost: 0.3}`:
+   **Adaptive routing (beta).** Model `adaptive` is `auto_router/adaptive_router` (rendered only when `litellm_gemini_models_enabled: true`; its `available_models` list only names the Gemini models, so it is gated by the same flag). Unlike the heuristic `auto` router, it is a Thompson-sampling bandit that learns which model wins each request type (`code_generation`, `code_understanding`, `technical_design`, `analytical_reasoning`, `writing`, `factual_lookup`, `general`) from conversation signals (user satisfaction, stagnation, misalignment). It balances quality against cost with `weights: {quality: 0.7, cost: 0.3}`:
 
     | Model | quality_tier | strengths | input $/tok |
     | --- | --- | --- | --- |

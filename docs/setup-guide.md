@@ -230,13 +230,13 @@ Follow [docs/passkey-user.md](passkey-user.md): create the user in the `platform
 ### Chatting (Open WebUI)
 
 - Sign in at https://chatbot.$DOMAIN via Keycloak.
-- Model dropdown shows everything LiteLLM serves: the Gemini models, Bedrock models, `auto`, any local llama.cpp/vLLM models you registered, and the `voice-assistant` alias.
+- Model dropdown shows everything LiteLLM serves: the Gemini models and `auto` (when `litellm_gemini_models_enabled: true`), Bedrock models, any local llama.cpp/vLLM models you registered, and the `voice-assistant` alias.
 - First local user becomes admin if you kept `ENABLE_SIGNUP` true during install; turn it off in `docker-compose.yml` afterwards.
 - RAG: upload documents and use the Qdrant-backed knowledge features; embeddings run through LiteLLM.
 
 ### Models available out of the box
 
-`litellm/config.yaml` ships (checked 2026-10-21):
+`litellm/config.yaml` ships (checked 2026-10-21). The Gemini rows (and the `auto`/`adaptive` routers plus the `voice-assistant` alias, which route only to Gemini models) render only when `litellm_gemini_models_enabled: true` (default false; they need `GEMINI_API_KEY`):
 
 | Model name | Provider | Notes |
 |---|---|---|
@@ -245,7 +245,7 @@ Follow [docs/passkey-user.md](passkey-user.md): create the user in the `platform
 | `gemini-3.1-pro` | Gemini | reasoning |
 | `gemini-4-argon` | Gemini | current flagship |
 | `auto` | complexity router | heuristic tiering to the above, no extra API call |
-| `minimax-m2.5`, `qwen3-next`, `qwen3-coder`, `kimi-k3` | AWS Bedrock | needs AWS keys |
+| `minimax-m2.5`, `qwen3-next`, `qwen3-coder`, `kimi-k3` | AWS Bedrock | render only when `litellm_bedrock_models_enabled: true`; needs AWS keys |
 | `voice-assistant` | alias → `gemini-3.5-flash-lite` | for voice key |
 
 Add a model to `model_list` in `litellm/config.yaml`, then `docker compose restart litellm` (not needed when `store_model_in_db` picked it up from the Admin UI).
@@ -363,7 +363,7 @@ docker compose --profile backup up keycloak-backup
 0 2 * * * cd /mnt/data1/openwebui-stack && docker compose --profile backup up keycloak-backup
 ```
 
-Retention is `BACKUP_RETENTION_DAYS` (default 7) in `.env`. Backups land in the `keycloak_backups` volume. For full-stack protection, also back up the Postgres data volume and `.env` off-host; `.env` holds every secret in the stack.
+Retention is `BACKUP_RETENTION_DAYS` (default 7) in `.env`. Backups land in `backups/` under the deployed tree (default `/mnt/data1/openwebui-stack/backups`, a bind mount on the host data disk, not a Docker volume). For full-stack protection, also back up the Postgres data volume and `.env` off-host; `.env` holds every secret in the stack.
 
 ## Upgrades and version pinning
 

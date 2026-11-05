@@ -13,16 +13,14 @@ BACKUP_FILE="${BACKUP_DIR}/keycloak_${DATE}.dump"
 
 echo "[$(date)] Starting Keycloak backup..."
 
-cd "$BACKUP_DIR"
+cd "$BACKUP_DIR" || exit 1
 
-pg_dump --format=custom \
+if pg_dump --format=custom \
 	--compress=9 \
 	--host="${PGHOST:-postgres}" \
 	--username="${PGUSER:-keycloak}" \
 	--dbname="${PGDATABASE:-keycloak}" \
-	--file="${BACKUP_FILE}"
-
-if [ $? -eq 0 ]; then
+	--file="${BACKUP_FILE}"; then
 	echo "[$(date)] Backup created: ${BACKUP_FILE}"
 	echo "keycloak_backup_success 1"
 else

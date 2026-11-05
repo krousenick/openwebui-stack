@@ -1,0 +1,19 @@
+---
+# Realm default groups: run after keycloak_groups.yml creates the groups.
+# Keycloak applies defaultGroups on realm update (PUT) as a full replace and
+# fails when a path does not resolve, so the groups must already exist. The
+# realm create path ignores defaultGroups entirely (Keycloak only applies it
+# on import when a groups list is present, which the Ansible module never
+# sends). Paths match the admin GET format (leading slash; the lookup also
+# accepts the bare name).
+- name: Assign realm default groups for self-registered users
+  middleware_automation.keycloak.keycloak_realm:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    default_groups: "{{ keycloak_default_groups | map('regex_replace', '^(?!/)', '/') | list if keycloak_default_groups | length > 0 else [] }}"
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost

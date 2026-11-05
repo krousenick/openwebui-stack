@@ -1,26 +1,37 @@
 import os
 import sys
 
-# 1. Force the LiteLLM license variable to pass string validation checks
-os.environ["LITELLM_LICENSE"] = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.ci_mock_payload"
-
-# 2. Monkey-patch the internal premium status tracking
-import litellm
+# CI-only entrypoint: fakes LiteLLM enterprise licensing for e2e tests in an
+# airgapped network (no license, no phone-home to litellm.ai). Wired in by
+# docker-compose.ci.yml; never used in production. Patches the LicenseCheck
+# instance and the module-level premium_user flag created at proxy_server
+# import time, plus airgapped_license_data so feature gates that read the
+# license payload (max_users, allowed_features) see an enterprise deployment.
+# Validated against ghcr.io/berriai/litellm:main-latest (digest
+# sha256:030121401c60): enterprise worker_registry config loads with this
+# entrypoint and raises "must be a LiteLLM Enterprise user" without it. A
+# newer image may rename these internals; re-run that check when bumping.
 from litellm.proxy import proxy_server
 
-def mock_premium_check(*args, **kwargs):
-    print("🛠️  [CI/CD PIPELINE] Intercepted premium check - Simulating Enterprise Mode: True")
+
+def _mock_is_premium(*args, **kwargs):
+    print("[CI] Simulating LiteLLM Enterprise Mode: True")
     return True
 
-# Override premium flags in all possible namespaces LiteLLM references
-litellm.is_premium = mock_premium_check
-if hasattr(proxy_server, "premium_user"):
-    proxy_server.premium_user = True
 
-# 3. Hand over execution to the standard LiteLLM command line application
-from litellm.proxy.proxy_cli import run_ollama_proxy
+proxy_server._license_check.is_premium = _mock_is_premium
+proxy_server.premium_user = True
+
+if proxy_server._license_check.airgapped_license_data is None:
+    from litellm.proxy._types import EnterpriseLicenseData
+
+    proxy_server._license_check.airgapped_license_data = EnterpriseLicenseData(
+        allowed_features=None,
+        max_users=None,
+        expiration_date="2099-12-31",
+    )
+
+from litellm.proxy.proxy_cli import run_server
 
 if __name__ == "__main__":
-    # Mirror the arguments passed from docker/CLI (e.g., --config config.yaml)
-    sys.argv = [sys.argv[0], "--config", "/app/config.yaml", "--port", "4000"]
-    run_ollama_proxy()
+    run_server()
