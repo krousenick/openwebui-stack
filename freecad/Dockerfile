@@ -81,26 +81,32 @@ RUN curl -L -o /tmp/freecad.AppImage \
     && /tmp/freecad.AppImage --appimage-extract \
     && mv squashfs-root /opt/freecad \
     && rm /tmp/freecad.AppImage \
-    && ln -s /opt/freecad/bin/freecadcmd /usr/local/bin/freecadcmd \
-    && chmod +x /opt/freecad/bin/freecadcmd \
+    && ln -s /opt/freecad/usr/bin/freecadcmd /usr/local/bin/freecadcmd \
+    && chmod +x /opt/freecad/usr/bin/freecadcmd \
+    && ln -s /opt/freecad/usr/bin/freecad /usr/local/bin/freecad || true \
     && freecadcmd --version || true
 
 # MCP server + bridge from the same fork commit (see version note above),
 # from the vendored tarball — no network access needed. One COPY feeds both:
-# the addon tree for the headless bridge, and the source dir for uv.
+# the addon tree for the headless bridge, and the source dir for uv. The tool
+# is installed under /opt (UV_TOOL_DIR) so the non-root runtime user can
+# execute the entrypoint without traversing /root (0700).
 COPY freecad-mcp-6f0b530.tar.gz /tmp/freecad-mcp-src.tar.gz
-RUN mkdir -p /tmp/freecad-mcp-src \
+RUN mkdir -p /tmp/freecad-mcp-src /opt/uv-tools \
     && tar -xzf /tmp/freecad-mcp-src.tar.gz -C /tmp/freecad-mcp-src --strip-components=1 \
     && mv /tmp/freecad-mcp-src/addon/FreeCADMCP /opt/FreeCADMCP \
-    && uv tool install --python 3.12 /tmp/freecad-mcp-src \
-    && ln -s /root/.local/bin/freecad-mcp /usr/local/bin/freecad-mcp \
+    && UV_TOOL_DIR=/opt/uv-tools uv tool install --python 3.12 /tmp/freecad-mcp-src \
+    && ln -s /opt/uv-tools/freecad-mcp/bin/freecad-mcp /usr/local/bin/freecad-mcp \
     && rm -rf /tmp/freecad-mcp-src /tmp/freecad-mcp-src.tar.gz
 
 # Non-root user owning /models writes and the FreeCAD config dir.
 # FREECAD_USER_HOME points FreeCAD's user data (getUserAppDataDir) at the
-# user's home so settings/parts-library writes work as this user.
+# user's home so settings/parts-library writes work as this user. The uv
+# tool env is made world-executable so the runtime user can run the
+# freecad-mcp entrypoint (uv tool installs default to 0700 under /root).
 RUN useradd --create-home --shell /usr/sbin/nologin freecad \
     && mkdir -p /home/freecad/.local \
+    && chmod -R a+rX /root/.local \
     && chown -R freecad:freecad /home/freecad /opt/freecad /opt/FreeCADMCP
 USER freecad
 ENV FREECAD_USER_HOME=/home/freecad

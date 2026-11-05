@@ -56,12 +56,15 @@ if [ "${addon_ready}" -ne 1 ]; then
 fi
 
 # stdio -> streamable HTTP bridge (--outputTransport streamableHttp serves
-# POST /mcp on :8000, the shape LiteLLM's transport:"http" expects).
-# BLENDER_HOST=127.0.0.1 (default) points the stdio server at the addon in
-# this same container. Dies with the container; the Xvfb/Blender processes
-# are cleaned up by the trap.
+# POST /mcp on :8000, the shape LiteLLM's transport:"http" expects). The
+# child is the uv tool's real entrypoint binary (installed at build time
+# under /opt/uv-tools), NOT `uvx`: this container has no internet, and uvx
+# would try to resolve mcp-for-blender from PyPI at spawn time and die with
+# a DNS error. BLENDER_HOST=127.0.0.1 (default) points the stdio server at
+# the addon in this same container. Dies with the container; the
+# Xvfb/Blender processes are cleaned up by the trap.
 exec supergateway \
-	--stdio "uvx mcp-for-blender" \
+	--stdio "/opt/uv-tools/mcp-for-blender/bin/mcp-for-blender" \
 	--outputTransport streamableHttp \
 	--host 0.0.0.0 \
 	--port 8000

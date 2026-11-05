@@ -11,8 +11,10 @@
 #   stdio; supergateway bridges that to POST /mcp on :8000.
 set -euo pipefail
 
-# Headless bridge in the background.
-freecadcmd /opt/FreeCADMCP/headless_server.py --allow-remote --port 9875 &
+# Headless bridge in the background. freecadcmd eats unknown flags itself;
+# --pass forwards everything after it to the script's argparse. (Port can
+# also come from FC_MCP_PORT; the MCP client side hardcodes 9875.)
+freecadcmd /opt/FreeCADMCP/headless_server.py --pass --allow-remote &
 BRIDGE_PID=$!
 
 cleanup() {

@@ -59,7 +59,7 @@
       - "{{ compose_project_name }}_litellm"
       - python3
       - -c
-      - >-
+      - |
         import re, sys, pathlib
         text = pathlib.Path(sys.argv[1]).read_text()
         match = re.search(r'(?ms)^---\s*\n(.*?)\n---\s*\n', text)
@@ -72,10 +72,8 @@
             sys.exit(1)
         description = ' '.join(desc.group(1).split()) if desc else ''
         if description.startswith('>-'):
-            description = ' '.join(
-                line.strip() for line in
-                re.search(r'^description:\s*>-\s*\n((?:\s+.+\n?)+)', fm, re.M).group(1).splitlines()
-            )
+            block = re.search(r'^description:\s*>-\s*\n((?:\s+.+\n?)+)', fm, re.M)
+            description = ' '.join(line.strip() for line in block.group(1).splitlines()) if block else ''
         print(name.group(1))
         print(description)
       - /app/skills/{{ item }}/SKILL.md
@@ -113,17 +111,7 @@
       - -c
       - >-
         cd /app && python3 -c
-        "import zipfile, sys, hashlib, io
-        skill = open('skills/' + sys.argv[2] + '/SKILL.md', 'rb').read()
-        info = zipfile.ZipInfo(filename='SKILL.md', date_time=(1980, 1, 1, 0, 0, 0))
-        info.create_system = 3
-        info.external_attr = 0o644 << 16
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, 'w') as z:
-            z.writestr(info, skill, compress_type=zipfile.ZIP_DEFLATED)
-        print(hashlib.sha256(buf.getvalue()).hexdigest())
-        with zipfile.ZipFile(sys.argv[1], 'w') as z:
-            z.writestr(sys.argv[2] + '/SKILL.md', skill)"
+        "import zipfile, sys, hashlib, io; skill = open('skills/' + sys.argv[2] + '/SKILL.md', 'rb').read(); info = zipfile.ZipInfo(filename='SKILL.md', date_time=(1980, 1, 1, 0, 0, 0)); info.create_system = 3; info.external_attr = 0o644 << 16; buf = io.BytesIO(); z = zipfile.ZipFile(buf, 'w'); z.writestr(info, skill, compress_type=zipfile.ZIP_DEFLATED); z.close(); print(hashlib.sha256(buf.getvalue()).hexdigest()); z = zipfile.ZipFile(sys.argv[1], 'w'); z.writestr(sys.argv[2] + '/SKILL.md', skill); z.close()"
         /tmp/{{ item.name }}.zip {{ item.package }}
   loop: "{{ skills_gateway_skills }}"
   register: skills_gateway_hashes
@@ -149,9 +137,14 @@
       - docker
       - exec
       - "{{ compose_project_name }}_litellm"
-      - curl
-      - -s
-      - "http://localhost:4000/.well-known/agent-skills/index.json"
+      - python3
+      - -c
+      - |
+        import urllib.request, urllib.error
+        try:
+            print(urllib.request.urlopen('http://localhost:4000/.well-known/agent-skills/index.json').read().decode())
+        except urllib.error.HTTPError as error:
+            print('')
   register: skills_gateway_index
   changed_when: false
   failed_when: false
@@ -180,11 +173,15 @@
       - docker
       - exec
       - "{{ compose_project_name }}_litellm"
-      - curl
-      - -sf
-      - -H
-      - "Authorization: Bearer {{ litellm_master_key }}"
-      - "http://localhost:4000/v1/skills?custom_llm_provider=litellm_proxy&limit=100"
+      - python3
+      - -c
+      - |
+        import urllib.request
+        request = urllib.request.Request(
+            'http://localhost:4000/v1/skills?custom_llm_provider=litellm_proxy&limit=100',
+            headers={'Authorization': 'Bearer {{ litellm_master_key }}'}
+        )
+        print(urllib.request.urlopen(request).read().decode())
   register: skills_gateway_current
   changed_when: false
   no_log: true
@@ -205,13 +202,15 @@
       - docker
       - exec
       - "{{ compose_project_name }}_litellm"
-      - curl
-      - -sf
-      - -X
-      - DELETE
-      - -H
-      - "Authorization: Bearer {{ litellm_master_key }}"
-      - "http://localhost:4000/v1/skills/{{ skills_gateway_current_by_title[item.name] }}?custom_llm_provider=litellm_proxy"
+      - python3
+      - -c
+      - |
+        import os, urllib.request
+        request = urllib.request.Request(
+            'http://localhost:4000/v1/skills/{{ skills_gateway_current_by_title[item.name] }}?custom_llm_provider=litellm_proxy',
+            headers={'Authorization': 'Bearer {{ litellm_master_key }}'}, method='DELETE'
+        )
+        print(urllib.request.urlopen(request).read().decode())
   loop: "{{ skills_gateway_skills }}"
   when: >-
     skills_gateway_index_available | bool
@@ -227,19 +226,32 @@
       - docker
       - exec
       - "{{ compose_project_name }}_litellm"
-      - curl
-      - -sf
-      - -X
-      - POST
-      - -H
-      - "Authorization: Bearer {{ litellm_master_key }}"
-      - -F
-      - "display_title={{ item.name }}"
-      - -F
-      - "description={{ item.description }}"
-      - -F
-      - "files[]=@/tmp/{{ item.name }}.zip"
-      - "http://localhost:4000/v1/skills?custom_llm_provider=litellm_proxy"
+      - python3
+      - -c
+      - |
+        import json, mimetypes, pathlib, urllib.request
+        boundary = '----ansible-skills-boundary'
+        fields = {
+            'display_title': '{{ item.name }}',
+            'description': {{ item.description | to_json }}
+        }
+        body = bytearray()
+        for name, value in fields.items():
+            body.extend(('--' + boundary + '\r\n').encode())
+            body.extend(('Content-Disposition: form-data; name="' + name + '"\r\n\r\n').encode())
+            body.extend(value.encode())
+            body.extend(b'\r\n')
+        body.extend(('--' + boundary + '\r\n').encode())
+        body.extend(('Content-Disposition: form-data; name="files[]"; filename="{{ item.name }}.zip"\r\n').encode())
+        body.extend(b'Content-Type: application/zip\r\n\r\n')
+        body.extend(pathlib.Path('/tmp/{{ item.name }}.zip').read_bytes())
+        body.extend(b'\r\n--' + boundary.encode() + b'--\r\n')
+        request = urllib.request.Request(
+            'http://localhost:4000/v1/skills?custom_llm_provider=litellm_proxy',
+            data=bytes(body), method='POST',
+            headers={'Authorization': 'Bearer {{ litellm_master_key }}', 'Content-Type': 'multipart/form-data; boundary=' + boundary}
+        )
+        print(urllib.request.urlopen(request).read().decode())
   loop: "{{ skills_gateway_skills }}"
   when: >-
     item.name not in skills_gateway_current_by_title
@@ -255,11 +267,15 @@
       - docker
       - exec
       - "{{ compose_project_name }}_litellm"
-      - curl
-      - -sf
-      - -H
-      - "Authorization: Bearer {{ litellm_master_key }}"
-      - "http://localhost:4000/v1/skills?custom_llm_provider=litellm_proxy&limit=100"
+      - python3
+      - -c
+      - |
+        import urllib.request
+        request = urllib.request.Request(
+            'http://localhost:4000/v1/skills?custom_llm_provider=litellm_proxy&limit=100',
+            headers={'Authorization': 'Bearer {{ litellm_master_key }}'}
+        )
+        print(urllib.request.urlopen(request).read().decode())
   register: skills_gateway_after_upload
   changed_when: false
   no_log: true
@@ -280,15 +296,19 @@
       - docker
       - exec
       - "{{ compose_project_name }}_litellm"
-      - curl
-      - -s
-      - -o
-      - /dev/null
-      - -w
-      - "%{http_code}"
-      - -H
-      - "Authorization: Bearer {{ litellm_master_key }}"
-      - "http://localhost:4000/claude-code/plugins/{{ item.name }}"
+      - python3
+      - -c
+      - |
+        import urllib.request, urllib.error
+        request = urllib.request.Request(
+            'http://localhost:4000/claude-code/plugins/{{ item.name }}',
+            headers={'Authorization': 'Bearer {{ litellm_master_key }}'}
+        )
+        try:
+            response = urllib.request.urlopen(request)
+            print(response.status)
+        except urllib.error.HTTPError as error:
+            print(error.code)
   loop: "{{ skills_gateway_skills }}"
   register: skills_gateway_registry_state
   changed_when: false
@@ -301,24 +321,24 @@
       - docker
       - exec
       - "{{ compose_project_name }}_litellm"
-      - curl
-      - -sf
-      - -X
-      - POST
-      - -H
-      - "Authorization: Bearer {{ litellm_master_key }}"
-      - -H
-      - "Content-Type: application/json"
-      - -d
-      - "{{ {'name': item.0.name,
-             'source': {'source': 'archive',
-                        'url': 'https://litellm.' ~ domain ~ '/v1/skills/' ~ skills_gateway_skill_ids[item.0.name] ~ '/archive',
-                        'sha256': skills_gateway_digests[item.0.name]},
-             'description': item.0.description,
-             'domain': 'Engineering',
-             'keywords': [item.0.name],
-             'version': '1.0.0'} | to_json }}"
-      - "http://localhost:4000/claude-code/plugins"
+      - python3
+      - -c
+      - |
+        import json, urllib.request
+        data = {{ {'name': item.0.name,
+                   'source': {'source': 'archive',
+                              'url': 'https://litellm.' ~ domain ~ '/v1/skills/' ~ skills_gateway_skill_ids[item.0.name] ~ '/archive',
+                              'sha256': skills_gateway_digests[item.0.name]},
+                   'description': item.0.description,
+                   'domain': 'Engineering',
+                   'keywords': [item.0.name],
+                   'version': '1.0.0'} | to_json }}
+        request = urllib.request.Request(
+            'http://localhost:4000/claude-code/plugins',
+            data=json.dumps(data).encode(), method='POST',
+            headers={'Authorization': 'Bearer {{ litellm_master_key }}', 'Content-Type': 'application/json'}
+        )
+        print(urllib.request.urlopen(request).read().decode())
   loop: "{{ skills_gateway_skills | zip(skills_gateway_registry_state.results) | list }}"
   when: item.1.stdout | default('') | trim == '404'
   register: skills_gateway_register_new
@@ -334,22 +354,22 @@
       - docker
       - exec
       - "{{ compose_project_name }}_litellm"
-      - curl
-      - -sf
-      - -X
-      - PUT
-      - -H
-      - "Authorization: Bearer {{ litellm_master_key }}"
-      - -H
-      - "Content-Type: application/json"
-      - -d
-      - "{{ {'source': {'source': 'archive',
-                        'url': 'https://litellm.' ~ domain ~ '/v1/skills/' ~ skills_gateway_skill_ids[item.0.name] ~ '/archive',
-                        'sha256': skills_gateway_digests[item.0.name]},
-             'description': item.0.description,
-             'domain': 'Engineering',
-             'keywords': [item.0.name]} | to_json }}"
-      - "http://localhost:4000/claude-code/plugins/{{ item.0.name }}"
+      - python3
+      - -c
+      - |
+        import json, urllib.request
+        data = {{ {'source': {'source': 'archive',
+                              'url': 'https://litellm.' ~ domain ~ '/v1/skills/' ~ skills_gateway_skill_ids[item.0.name] ~ '/archive',
+                              'sha256': skills_gateway_digests[item.0.name]},
+                     'description': item.0.description,
+                     'domain': 'Engineering',
+                     'keywords': [item.0.name]} | to_json }}
+        request = urllib.request.Request(
+            'http://localhost:4000/claude-code/plugins/{{ item.0.name }}',
+            data=json.dumps(data).encode(), method='PUT',
+            headers={'Authorization': 'Bearer {{ litellm_master_key }}', 'Content-Type': 'application/json'}
+        )
+        print(urllib.request.urlopen(request).read().decode())
   loop: "{{ skills_gateway_skills | zip(skills_gateway_registry_state.results) | list }}"
   when:
     - item.1.stdout | default('') | trim == '200'
@@ -364,11 +384,16 @@
       - docker
       - exec
       - "{{ compose_project_name }}_litellm"
-      - curl
-      - -s
-      - -H
-      - "Authorization: Bearer {{ litellm_master_key }}"
-      - "http://localhost:4000/v1/skills?custom_llm_provider=litellm_proxy&query={{ skills_gateway_skills[0].name | urlencode }}&top_k=3"
+      - python3
+      - -c
+      - |
+        import urllib.parse, urllib.request
+        query = urllib.parse.urlencode({'custom_llm_provider': 'litellm_proxy', 'query': '{{ skills_gateway_skills[0].name }}', 'top_k': '3'})
+        request = urllib.request.Request(
+            'http://localhost:4000/v1/skills?' + query,
+            headers={'Authorization': 'Bearer {{ litellm_master_key }}'}
+        )
+        print(urllib.request.urlopen(request).read().decode())
   register: skills_gateway_search
   when: skills_gateway_skills | length > 0
   changed_when: false

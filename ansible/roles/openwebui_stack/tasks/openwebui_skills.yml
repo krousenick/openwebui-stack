@@ -51,10 +51,12 @@
   args:
     stdin: |
       -- Idempotent upsert: fixed user id, fixed key id.
-      INSERT INTO "user" (id, email, name, role, created_at, updated_at)
+      INSERT INTO "user" (id, email, name, role, last_active_at, created_at, updated_at)
       VALUES ('skill-publisher', 'skill-publisher@{{ domain }}', 'Skill Publisher', 'admin',
-              (extract(epoch from now())*1000)::bigint, (extract(epoch from now())*1000)::bigint)
-      ON CONFLICT (id) DO UPDATE SET role = 'admin', updated_at = (extract(epoch from now())*1000)::bigint;
+              extract(epoch from now())::bigint, extract(epoch from now())::bigint, extract(epoch from now())::bigint)
+      ON CONFLICT (id) DO UPDATE SET role = 'admin', last_active_at = EXCLUDED.last_active_at, updated_at = EXCLUDED.updated_at
+      WHERE "user".role IS DISTINCT FROM EXCLUDED.role
+         OR "user".last_active_at IS NULL;
 
       INSERT INTO api_key (id, user_id, key, created_at, updated_at)
       VALUES ('skill-publisher-key', 'skill-publisher', '{{ openwebui_api_admin_key }}',
@@ -88,12 +90,14 @@
     argv:
       - docker
       - exec
+      - -e
+      - "OPENWEBUI_API_KEY={{ openwebui_api_admin_key }}"
       - "{{ compose_project_name }}_open-webui"
       - python3
       - -c
-      - >-
-        import json, sys, urllib.request, pathlib
-        name, desc, path, key = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+      - |
+        import json, sys, urllib.request, pathlib, urllib.error, urllib.parse, os
+        name, desc, path, key = sys.argv[1], sys.argv[2], sys.argv[3], os.environ['OPENWEBUI_API_KEY']
         content = pathlib.Path(path).read_text()
 
         def call(method, url, payload=None):
@@ -103,12 +107,21 @@
             req.add_header('Content-Type', 'application/json')
             try:
                 with urllib.request.urlopen(req) as resp:
-                    return resp.status, json.loads(resp.read() or b'null')
+                    body = resp.read()
+                    return resp.status, json.loads(body) if body else {}
             except urllib.error.HTTPError as e:
-                return e.code, json.loads(e.read() or b'null')
+                body = e.read()
+                try:
+                    return e.code, json.loads(body) if body else {}
+                except ValueError:
+                    return e.code, {'detail': body.decode(errors='replace')[:500]}
 
         base = 'http://localhost:8080/api/v1/skills'
-        status, current = call('GET', base + '/id/' + name)
+        status, current = call('GET', base + '/id/' + urllib.parse.quote(name, safe=''))
+        if status == 404:
+            status, listing = call('GET', base + '/')
+            current = next((skill for skill in listing if skill.get('id') == name), None) if status == 200 else None
+            status = 200 if current else 404
         if status == 200:
             if current.get('content') == content:
                 print('unchanged')
@@ -130,11 +143,9 @@
       - "{{ item.name }}"
       - "{{ item.description }}"
       - "/app/skills/{{ item.package }}/SKILL.md"
-      - "{{ openwebui_api_admin_key }}"
   loop: "{{ skills_gateway_skills }}"
   register: openwebui_skills_publish
   changed_when: "'created' in openwebui_skills_publish.stdout_lines or 'updated' in openwebui_skills_publish.stdout_lines"
   failed_when: >-
     openwebui_skills_publish.rc != 0
     or 'failed' in openwebui_skills_publish.stdout
-  no_log: true
