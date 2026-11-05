@@ -233,10 +233,11 @@
     body_format: json
     body:
       model_name: "{{ vllm_served_model_name }}"
-      litellm_params:
-        model: "openai/{{ vllm_served_model_name }}"
-        api_base: "http://{{ item }}:{{ vllm_port }}/v1"
-        api_key: "{{ vllm_api_key if vllm_api_key | length > 0 else 'local' }}"
+      litellm_params: "{{ {'model': 'openai/' ~ vllm_served_model_name,
+          'api_base': 'http://' ~ item ~ ':' ~ vllm_port ~ '/v1',
+          'api_key': (vllm_api_key if vllm_api_key | length > 0 else 'local')}
+        | combine({'reasoning_effort': vllm_reasoning_effort}
+            if vllm_reasoning_effort | default('') | length > 0 else {}) }}"
       # max_input_tokens/max_tokens must serialize as JSON numbers, not
       # strings: the /model/info response round-trips whatever type was
       # POSTed, and clients that gate on Number.isFinite (MAGIE's discovery
@@ -273,10 +274,11 @@
     body_format: json
     body:
       model_name: "{{ aux_pair.0.served_model_name }}"
-      litellm_params:
-        model: "openai/{{ aux_pair.0.served_model_name }}"
-        api_base: "http://{{ hostvars[aux_pair.1].vllm_host_ip }}:{{ aux_pair.0.port }}/v1"
-        api_key: "{{ aux_pair.0.api_key if aux_pair.0.api_key | length > 0 else 'local' }}"
+      litellm_params: "{{ {'model': 'openai/' ~ aux_pair.0.served_model_name,
+          'api_base': 'http://' ~ hostvars[aux_pair.1].vllm_host_ip ~ ':' ~ aux_pair.0.port ~ '/v1',
+          'api_key': (aux_pair.0.api_key if aux_pair.0.api_key | length > 0 else 'local')}
+        | combine({'reasoning_effort': aux_pair.0.reasoning_effort}
+            if aux_pair.0.reasoning_effort | default('') | length > 0 else {}) }}"
       model_info: "{{ ({'description': aux_pair.0.served_model_name ~ ' - vLLM aux on '
             ~ aux_pair.1 ~ ' (' ~ aux_pair.0.model ~ ')',
           'max_input_tokens': aux_pair.0.max_model_len | int,

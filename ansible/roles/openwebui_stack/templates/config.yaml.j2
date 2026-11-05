@@ -423,7 +423,7 @@ mcp_servers:
     transport: "http" # Connects via Streamable HTTP/SSE
     auth_type: "none"
     allow_all_keys: true
-{% if printer_mcp_enabled | default(false) | bool %}
+{% if printer_mcp_enabled | default(false) | bool and bambu_host | default('') | length > 0 %}
   printer_3d:
     # bambu-printer-mcp (slice_stl / print_3mf / get_printer_status /
     # resolve_3mf_ams_slots / camera_snapshot) for the Bambu H2C.

@@ -125,7 +125,7 @@ code_sandbox_enabled: true
 # freecad_mcp: FreeCAD 1.1.4 headless (freecadcmd) + alosslessdev bridge,
 #   first-class LiteLLM mcp_servers.freecad entry. Parametric CAD; exports
 #   STL/STEP to the shared models volume.
-printer_mcp_enabled: true
+printer_mcp_enabled: false
 blender_mcp_enabled: true
 freecad_mcp_enabled: true
 

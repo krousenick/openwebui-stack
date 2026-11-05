@@ -7,6 +7,11 @@
       model: openai/{{ vllm_served_model_name }}
       api_base: http://{{ vllm_ray_head_address }}:{{ vllm_port }}/v1
       api_key: {{ 'os.environ/VLLM_API_KEY' if vllm_api_key | length > 0 else 'local' }}
+{% if vllm_reasoning_effort | default('') | length > 0 %}
+      # Default effort for requests that send none; a request-level
+      # reasoning_effort (Open WebUI / MAGIE) overrides this default.
+      reasoning_effort: {{ vllm_reasoning_effort }}
+{% endif %}
     model_info:
       description: "{{ vllm_served_model_name }} - vLLM Ray cluster ({{ vllm_effective_tp }}xTP, {{ vllm_effective_pp }}xPP)"
       max_input_tokens: {{ vllm_max_model_len }}
@@ -23,6 +28,11 @@
       model: openai/{{ vllm_served_model_name }}
       api_base: http://{{ host }}:{{ vllm_port }}/v1
       api_key: {{ 'os.environ/VLLM_API_KEY' if vllm_api_key | length > 0 else 'local' }}
+{% if vllm_reasoning_effort | default('') | length > 0 %}
+      # Default effort for requests that send none; a request-level
+      # reasoning_effort (Open WebUI / MAGIE) overrides this default.
+      reasoning_effort: {{ vllm_reasoning_effort }}
+{% endif %}
     model_info:
       description: "{{ vllm_served_model_name }} - vLLM on {{ host }}"
       max_input_tokens: {{ vllm_max_model_len }}
@@ -70,6 +80,11 @@
       model: openai/{{ aux_pair.0.served_model_name }}
       api_base: http://{{ hostvars[aux_pair.1].vllm_host_ip }}:{{ aux_pair.0.port }}/v1
       api_key: {{ 'os.environ/VLLM_AUX_API_KEY' if aux_pair.0.api_key | length > 0 else 'local' }}
+{% if aux_pair.0.reasoning_effort | default('') | length > 0 %}
+      # Default effort for requests that send none; a request-level
+      # reasoning_effort (Open WebUI / MAGIE) overrides this default.
+      reasoning_effort: {{ aux_pair.0.reasoning_effort }}
+{% endif %}
     model_info:
       description: "{{ aux_pair.0.served_model_name }} - vLLM aux on {{ aux_pair.1 }} ({{ aux_pair.0.model }})"
       max_input_tokens: {{ aux_pair.0.max_model_len }}

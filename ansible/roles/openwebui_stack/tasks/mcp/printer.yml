@@ -21,6 +21,11 @@
       Printer MCP requires bambu_host, bambu_serial and bambu_token in
       group_vars/all/vault.local.yml, plus the LiteLLM key and Open WebUI
       database settings.
+  # The compose/config/env templates gate on credential presence too, so
+  # flipping printer_mcp_enabled before filling the vault leaves the rest
+  # of the stack deployable; this task just skips the Open WebUI wiring
+  # until the values exist.
+  when: bambu_host | default('') | length > 0 and bambu_serial | default('') | length > 0 and bambu_token | default('') | length > 0
 
 - name: Read current Open WebUI tool server connections
   ansible.builtin.command:
