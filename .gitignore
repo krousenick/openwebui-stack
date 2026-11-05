@@ -57,6 +57,9 @@ tmp/
 temp/
 *.tmp
 
+# Session tokens captured during debugging (bearer credentials)
+token.txt
+
 # Docker
 .docker/
 
