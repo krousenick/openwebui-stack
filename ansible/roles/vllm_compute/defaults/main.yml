@@ -112,6 +112,16 @@ vllm_reasoning_parser: ""
 # {"enable_thinking": false}. Empty dict omits the flag.
 vllm_chat_template_kwargs: {}
 
+# Default reasoning effort for the primary model, rendered into the
+# LiteLLM litellm_params (reasoning_effort) rather than `vllm serve`:
+# LiteLLM merges it into every request, and a request-level
+# reasoning_effort (from Open WebUI / MAGIE) overrides it. vLLM maps the
+# effort onto the chat template itself (e.g. low/medium/high turn
+# thinking on for Gemma 4, "none" turns it off). One of: none, minimal,
+# low, medium, high, xhigh, max. Empty string sends no default - clients
+# that set reasoning_effort per request still work.
+vllm_reasoning_effort: ""
+
 # Adaptive-router registration for the primary model. When non-empty, the
 # LiteLLM registration tasks (and the litellm-models.yaml.j2 snippet) add
 # this model_info block, so the model can be listed in an adaptive router's
@@ -301,6 +311,11 @@ vllm_flux_api_key: ""
 #                        --default-chat-template-kwargs (default
 #                        vllm_aux_default_chat_template_kwargs; e.g.
 #                        {thinking: true} to turn Gemma 4 thinking on)
+#   reasoning_effort     default reasoning effort rendered into the LiteLLM
+#                        litellm_params (default
+#                        vllm_aux_default_reasoning_effort; one of none,
+#                        minimal, low, medium, high, xhigh, max). A
+#                        request-level reasoning_effort overrides it
 #
 # Ports must be unique across the flux AND aux lists per node - they all
 # bind host ports in the same space.
@@ -316,6 +331,7 @@ vllm_aux_default_gpu_memory_utilization: 0.90
 vllm_aux_default_extra_args: []
 vllm_aux_default_reasoning_parser: ""
 vllm_aux_default_chat_template_kwargs: {}
+vllm_aux_default_reasoning_effort: ""
 
 # Base host port for aux servers when an entry sets none; entry i binds
 # vllm_aux_base_port + i (8010, 8011, ...). 8010 keeps them clear of the
