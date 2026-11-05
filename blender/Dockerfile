@@ -73,7 +73,9 @@ RUN npm install -g supergateway@4.2.1
 # runtime user's Blender config (~/.config/blender/5.0/scripts/addons), not
 # the build user's, because the installer and the addon auto-start both
 # resolve the config dir from $HOME at runtime.
-RUN useradd --create-home --shell /usr/sbin/nologin blender
+RUN useradd --create-home --shell /usr/sbin/nologin blender \
+    && mkdir -p /opt/uv-tools \
+    && chown blender:blender /opt/uv-tools
 
 # Blender 5.0.1 (the version the printer-mcp bridge docs verified with this
 # addon; matches the fork's worked example). The per-user config tree is
@@ -93,13 +95,22 @@ RUN mkdir -p /opt/blender \
 # <config>/5.0/scripts/addons/blender_mcp.py; `setup` enables it by module
 # name and saves userpref. The addon's own auto-start (enabled by default)
 # then starts the :9876 listener when the GUI session boots.
+#
+# The MCP server itself is installed as a uv TOOL (persistent env with a
+# real entrypoint binary), not via ephemeral `uvx`: this container is
+# backend-network-only with no internet, and `uvx mcp-for-blender` at
+# runtime would try to resolve the package from PyPI and die (DNS error)
+# the moment supergateway spawns it. UV_TOOL_DIR points at /opt so the
+# env survives and is executable regardless of HOME cache state.
 # BLENDER_MCP_SAFE_MODE=1 keeps model-authored Python from escaping (blocks
 # file/network/exec) while still allowing full bpy scene editing.
 USER blender
-ENV HOME=/home/blender
+ENV HOME=/home/blender UV_TOOL_DIR=/opt/uv-tools
 WORKDIR /home/blender
 RUN BLENDER_MCP_SAFE_MODE=1 uvx mcp-for-blender@2.2.7 install-addon \
-    && BLENDER_MCP_SAFE_MODE=1 uvx mcp-for-blender@2.2.7 setup
+    && BLENDER_MCP_SAFE_MODE=1 uvx mcp-for-blender@2.2.7 setup \
+    && UV_TOOL_DIR=/opt/uv-tools uv tool install mcp-for-blender@2.2.7 \
+    && ls /opt/uv-tools/mcp-for-blender/bin/
 
 # Configure the addon preferences: the addon refuses non-loopback binding
 # unless allow_remote_connections is set. The stdio MCP server connects from
