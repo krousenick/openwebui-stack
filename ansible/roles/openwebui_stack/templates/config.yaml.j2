@@ -84,10 +84,12 @@ litellm_settings:
 router_settings:
   routing_strategy: simple-shuffle # Prevents latency-based routing checks
   enable_pre_call_checks: false # Disables checking model health before every call
+  {% if litellm_gemini_models_enabled | default(false) | bool %}
   # Spoken replies. LiteLLM rewrites this to the target before the key allowlist
   # check, so a voice key allows gemini-3.5-flash-lite, not the alias name.
   model_group_alias:
     voice-assistant: gemini-3.5-flash-lite
+  {% endif %}
 
 # =============================================================================
 # Guardrails
@@ -200,7 +202,11 @@ guardrails:
 #   https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html
 
 model_list:
+{% if litellm_gemini_models_enabled | default(false) | bool %}
   # Google Gemini (Google AI Studio). gemini/ prefix uses GEMINI_API_KEY.
+  # Skipped unless litellm_gemini_models_enabled is true (they need
+  # GEMINI_API_KEY). The auto/adaptive routers and the voice-assistant
+  # alias route only to these models, so they are gated by the same flag.
   - model_name: gemini-3.8-flash
     litellm_params:
       model: gemini/gemini-3.8-flash
@@ -294,6 +300,7 @@ model_list:
         weights:
           quality: 0.7
           cost: 0.3
+{% endif %}
 
   {% if litellm_bedrock_models_enabled | default(false) | bool %}
   # AWS Bedrock OSS models. IDs are bedrock-runtime model IDs.

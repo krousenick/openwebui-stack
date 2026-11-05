@@ -218,8 +218,6 @@ services:
       - ./litellm/guardrail_categories/prompt_injection_malicious_code.yaml:/app/guardrail_categories/prompt_injection_malicious_code.yaml:ro
       - ./litellm/guardrail_categories/prompt_injection_data_exfiltration.yaml:/app/guardrail_categories/prompt_injection_data_exfiltration.yaml:ro
       - ./certs:/etc/ssl/certs/local:ro
-    #   - ./ci_entrypoint.py:/app/ci_entrypoint.py
-    # command: ["python", "/app/ci_entrypoint.py"]
     environment:
       # Database for LiteLLM
       DATABASE_URL: "postgresql://${LITELLM_DB_USER:-litellm}:${LITELLM_DB_PASSWORD:?error}@postgres:5432/${LITELLM_DB_NAME:-litellm}"
@@ -1088,7 +1086,9 @@ services:
       PGPASSWORD: "${KEYCLOAK_DB_PASSWORD:?error}"
       BACKUP_RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-7}"
     volumes:
-      - keycloak_backups:/backups
+      # Bind mount so dumps land on the host data disk instead of a Docker
+      # volume that dies with the host; restore is a plain host path.
+      - {{ project_root }}/backups:/backups
       - ./scripts/backup-keycloak.sh:/backup.sh:ro
     entrypoint: ["/bin/sh", "/backup.sh"]
     networks:
@@ -1127,8 +1127,6 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_lgtm_data
   keycloak_data:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak_data
-  keycloak_backups:
-    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak_backups
   chatterbox_models:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox_models
   code_sandbox_data:

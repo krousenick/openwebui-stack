@@ -49,6 +49,18 @@ keycloak_admin_user: admin
 # a passwordless credential, then sign in from the username form.
 keycloak_passkeys_enabled: true
 
+# User self-registration on the platform realm login page. When true the
+# Keycloak login page shows a Register link, and every self-registered
+# account lands in keycloak_default_groups, whose group role mappings
+# (user -> openwebui_user, internal_user) grant Open WebUI and LiteLLM
+# access. keycloak_verify_email gates the realm's verify-email flow: no
+# SMTP server is configured, so it stays false (true would strand new
+# users on the Verify Email screen). Flip both once SMTP exists.
+keycloak_registration_enabled: true
+keycloak_verify_email: false
+keycloak_default_groups:
+  - user
+
 # ---------------------------------------------------------------------------
 # TLS
 # ---------------------------------------------------------------------------
@@ -105,6 +117,12 @@ code_sandbox_enabled: true
 # unless AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are set in the vault:
 # without credentials the models provision but cannot serve.
 litellm_bedrock_models_enabled: false
+
+# Google Gemini models in the LiteLLM model_list, plus the auto/adaptive
+# routers and the voice-assistant alias that route to them. Off unless
+# GEMINI_API_KEY is set in the vault: without a key the models provision
+# but cannot serve.
+litellm_gemini_models_enabled: false
 
 # opencode (terminal AI coding agent). Host users who get an opencode
 # install pointed at the LiteLLM proxy. Empty list disables the role.

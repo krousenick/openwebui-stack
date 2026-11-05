@@ -1,0 +1,24 @@
+# =============================================================================
+# Docker Compose CI Override - Enterprise Mode LiteLLM
+# =============================================================================
+# Opt-in override for e2e CI runs that need LiteLLM's enterprise feature set
+# in an airgapped network (no license, no phone-home to litellm.ai):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d litellm
+#
+# It swaps the LiteLLM entrypoint for scripts/ci_entrypoint.py, which patches
+# the in-process LicenseCheck (premium_user=True plus airgapped license data)
+# before handing control to the stock CLI. Everything else in the service
+# (volumes, environment, networks, healthcheck) is inherited unchanged.
+#
+# Only use against the pinned LITELLM_IMAGE the entrypoint was validated
+# against (ghcr.io/berriai/litellm:main-latest): the patch reaches into
+# LiteLLM internals that can move between releases. See the header comment
+# in scripts/ci_entrypoint.py for the validation procedure.
+
+services:
+  litellm:
+    volumes:
+      - ./scripts/ci_entrypoint.py:/app/ci_entrypoint.py:ro
+    entrypoint: ["python", "/app/ci_entrypoint.py"]
+    command: ["--config", "/app/config.yaml", "--port", "4000"]

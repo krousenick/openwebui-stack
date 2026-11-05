@@ -8,12 +8,19 @@
     realm: "{{ keycloak_realm }}"
     enabled: true
     display_name: "Platform"
-    registration_allowed: false
+    registration_allowed: "{{ keycloak_registration_enabled | bool }}"
+    # Email-as-username renames provisioned users to their emails on every
+    # module update, breaking keycloak_users.yml lookups (409 duplicate
+    # email). Keep false; self-registration collects a username instead.
     registration_email_as_username: false
     duplicate_emails_allowed: false
     reset_password_allowed: true
     login_with_email_allowed: true
-    verify_email: true
+    # Email verification needs an SMTP server in Keycloak (Realm Settings →
+    # Email); without one the verification mail cannot be sent and a
+    # self-registered user is stuck on the Verify Email screen. Off until
+    # SMTP is configured.
+    verify_email: "{{ keycloak_verify_email | bool }}"
     ssl_required: external
     brute_force_protected: true
     permanent_lockout: false

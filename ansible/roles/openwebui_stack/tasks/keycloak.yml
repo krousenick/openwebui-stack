@@ -39,6 +39,11 @@
   ansible.builtin.import_tasks:
     file: keycloak_groups.yml
 
+- name: Set realm default groups for self-registered users
+  ansible.builtin.import_tasks:
+    file: keycloak_registration.yml
+  when: keycloak_registration_enabled | bool
+
 - name: Create Keycloak application users
   ansible.builtin.import_tasks:
     file: keycloak_users.yml
