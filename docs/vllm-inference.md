@@ -191,6 +191,7 @@ Per-entry keys (all optional except `model`; unset keys take the `vllm_aux_defau
 | `api_key` | `vllm_aux_api_key` (defaults to `vllm_api_key`) | API key this endpoint requires |
 | `reasoning_parser` | `""` | vLLM reasoning parser (`qwen3`, `gemma4`, `deepseek_r1`, …): renders `--reasoning-parser`, and the LiteLLM `model_info` gets `supports_reasoning: true` |
 | `chat_template_kwargs` | `{}` | Rendered as `--default-chat-template-kwargs '<json>'`: server-side thinking defaults (e.g. `{thinking: true}` for Gemma 4, `{enable_thinking: false}` to turn Qwen3 thinking off) |
+| `reasoning_effort` | `""` | Default `reasoning_effort` in the LiteLLM `litellm_params` (`none`…`max`): used when a request sends no effort; Open WebUI / MAGIE per-request effort overrides it |
 
 Behavior:
 
@@ -256,6 +257,36 @@ For models that emit reasoning traces (DeepSeek R1, Qwen3, Gemma 4 with thinking
    ```
 
 **Turning reasoning off** is the same steps in reverse: clear `vllm_reasoning_parser` (and `vllm_chat_template_kwargs`) — or the aux entry's `reasoning_parser` — and re-run; the prune + re-register cycle clears `supports_reasoning` automatically.
+
+### Controlling the reasoning effort (thinking level) from the clients
+
+The parser makes vLLM accept `reasoning_effort` on every request; effort level is a **request-time** parameter, not a server flag. Three layers control it, in precedence order (request wins):
+
+1. **Per request** — the client sends `reasoning_effort: none|minimal|low|medium|high|xhigh|max` on `/v1/chat/completions`. vLLM maps it onto the chat template itself: any of `low`/`medium`/`high` (and stronger) injects `enable_thinking: true`, `none` injects `enable_thinking: false` (docs: [vLLM reasoning outputs](https://docs.vllm.ai/en/stable/features/reasoning_outputs.html)). So a Gemma 4 served with `--reasoning-parser gemma4` **does not need** `vllm_chat_template_kwargs` when the request always carries an effort.
+2. **Per model, as a LiteLLM default** — `vllm_reasoning_effort` (primary) or an aux entry's `reasoning_effort` key (default `vllm_aux_default_reasoning_effort`). The role puts it in the LiteLLM deployment's `litellm_params` (both the `/model/new` POST and the rendered snippet), and LiteLLM merges it into requests that send no effort of their own; a request-level value overrides it ([LiteLLM reasoning docs](https://docs.litellm.ai/docs/reasoning_content)).
+3. **Server default** — `vllm_chat_template_kwargs` (e.g. `{thinking: true}`), which the request's `chat_template_kwargs` and the effort injection both override.
+
+```yaml
+# primary: default effort for requests that don't ask for one
+vllm_reasoning_effort: medium
+```
+
+How to set it per request from each client:
+
+- **Open WebUI**: Chat → message input → **Controls → Advanced Params → Reasoning Effort** (per-chat), or Workspace → Models → Edit Model → Advanced Parameters → Reasoning Effort (per-model). Values map straight through to `reasoning_effort` on the request ([docs](https://docs.openwebui.com/features/chat-conversations/chat-features/reasoning-models)). The thinking trace renders in the collapsible "Thinking" block above the answer once the parser splits it into the `reasoning` field.
+- **MAGIE Coder**: models registered through the LiteLLM provider carry the `reasoning` capability (the plugin maps `supports_reasoning` from `/v1/model/info`), and the thinking selector sends `reasoning_effort` on the request. **Auto** follows the LiteLLM default (`vllm_reasoning_effort`, or none if unset); a named level requests that effort explicitly.
+- **curl / API**: `"reasoning_effort": "high"` in the chat-completions body, or `?reasoning-effort=` where a client supports it.
+
+Verify the effort reaches the model (LiteLLM logs the merged request; with `LITELLM_LOG=INFO` the proxy prints what it sent):
+
+```bash
+curl -sk https://litellm.localhost/v1/chat/completions -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<served_model_name>","reasoning_effort":"high","messages":[{"role":"user","content":"9.11 vs 9.8?"}]}' \
+  | python3 -c "import json,sys; m=json.load(sys.stdin)['choices'][0]['message']; print('reasoning len:', len(m.get('reasoning') or m.get('reasoning_content') or ''))"
+```
+
+If the model's chat template does not recognize the effort value, vLLM's `--reasoning-effort-map` (via `vllm_extra_args`) can rewrite it to one it knows.
 
 ---
 
@@ -351,6 +382,7 @@ The models then appear in Open WebUI's model dropdown.
 | Switch the primary model | Edit `vllm_model` → re-run the playbook → merge the regenerated snippet |
 | Change adaptive-router prefs | Edit `vllm_adaptive_quality_tier`/`vllm_adaptive_strengths` in group_vars → re-run (prune + re-register is automatic) |
 | Turn reasoning on/off | Set/clear `vllm_reasoning_parser` (+ `vllm_chat_template_kwargs`) or an aux entry's `reasoning_parser` → re-run (prune + re-register is automatic) |
+| Change the default thinking level | Set `vllm_reasoning_effort` (or an aux entry's `reasoning_effort`) → re-run; per-request effort from Open WebUI / MAGIE still overrides it |
 | Change topology | Set `vllm_deployment_mode` / `vllm_cross_node_tensor_parallel` → re-run |
 | Add/remove an image model | Edit `vllm_flux_models` → re-run; removal cleans up automatically |
 | Add/remove/placement an aux model | Edit `vllm_aux_models` (add/remove hosts in its `hosts` key) → re-run; cleanup is automatic |
