@@ -28,6 +28,28 @@
     file: freecad.yml
   when: freecad_mcp_enabled | default(false) | bool
 
+# The models volume is shared by the pipeline above (and code-sandbox); it
+# must be uid-1000 writable or every export from chat fails. Runs whenever
+# any 3D-pipeline writer is enabled; printer-only setups never write.
+- name: Fix the models volume ownership for writer containers
+  ansible.builtin.import_tasks:
+    file: models_volume.yml
+  when: >-
+    blender_mcp_enabled | default(false) | bool
+    or freecad_mcp_enabled | default(false) | bool
+    or code_sandbox_enabled | default(false) | bool
+
+# Publish chat-created CAD/print artifacts (/models STL/3MF/STEP) as
+# downloadable Open WebUI files. Needs the models:ro mount the compose
+# template adds to open-webui when any 3D-pipeline service is enabled.
+- name: Configure the tool result file download filter
+  ansible.builtin.import_tasks:
+    file: tool_file_filter.yml
+  when: >-
+    blender_mcp_enabled | default(false) | bool
+    or freecad_mcp_enabled | default(false) | bool
+    or printer_mcp_enabled | default(false) | bool
+
 # Skills Gateway: register every ./skills SKILL.md package in LiteLLM's
 # skill store (semantic search) and the Claude Code marketplace. Runs
 # unconditionally: skills are plain instructions, not tied to any MCP

@@ -37,7 +37,9 @@ services:
           - grafana.${DOMAIN:-localhost}
           - litellm.${DOMAIN:-localhost}
           - voice.${DOMAIN:-localhost}
+{%- if playwright_mcp_enabled | default(true) | bool %}
           - playwright-mcp.${DOMAIN:-localhost}
+{% endif %}
       backend:
     labels:
       - "traefik.enable=true"
@@ -70,6 +72,14 @@ services:
       # pushes it through the workspace API).
       - ./skills:/app/skills:ro
       - ./certs:/etc/ssl/certs/local:ro
+{% if blender_mcp_enabled | default(false) | bool or freecad_mcp_enabled | default(false) | bool or printer_mcp_enabled | default(false) | bool %}
+      # Read-only view of the shared models volume for the
+      # tool_result_file_download filter (outlet): it reads
+      # /models/*.stl|3mf|step that blender/freecad/printer-mcp write and
+      # uploads them as real Open WebUI files so users can download them
+      # from the chat. The app itself never writes here.
+      - models:/models:ro
+{% endif %}
     environment:
       # Database configuration
       DATABASE_URL: "postgresql://${OPENWEBUI_DB_USER:-openwebui}:${OPENWEBUI_DB_PASSWORD:?error}@postgres:5432/${OPENWEBUI_DB_NAME:-openwebui}"
@@ -217,7 +227,9 @@ services:
     logging: *default-logging
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
+{% if brave_search_enabled | default(false) | bool and brave_search_api_key | default('') | length > 0 %}
       - ./litellm/brave_mcp_callback.py:/app/brave_mcp_callback.py:ro
+{% endif %}
       - ./litellm/context_compaction_callback.py:/app/context_compaction_callback.py:ro
       - ./litellm/guardrail_categories/prompt_injection_sql.yaml:/app/guardrail_categories/prompt_injection_sql.yaml:ro
       - ./litellm/guardrail_categories/prompt_injection_jailbreak.yaml:/app/guardrail_categories/prompt_injection_jailbreak.yaml:ro
@@ -260,7 +272,14 @@ services:
       REQUESTS_CA_BUNDLE: "/etc/ssl/certs/local/origin_ca_rsa_root.pem"
       SSL_CERT_FILE: "/etc/ssl/certs/local/origin_ca_rsa_root.pem"
       GLOBAL_SSL_VERIFY: "false"
+      # The Brave injector hook is only loaded when the brave-search-mcp
+      # container is deployed; without the server behind it the injected
+      # tool cannot execute. The compaction hook is always on.
+{% if brave_search_enabled | default(false) | bool and brave_search_api_key | default('') | length > 0 %}
       LITELLM_WORKER_STARTUP_HOOKS: "brave_mcp_callback:register_callback,context_compaction_callback:register_callback"
+{% else %}
+      LITELLM_WORKER_STARTUP_HOOKS: "context_compaction_callback:register_callback"
+{% endif %}
 
       # Lets the guardrail's prompt_injection_sql category_file point at the
       # /app/guardrail_categories override, which lives outside the litellm
@@ -686,6 +705,7 @@ services:
   # ===========================================================================
   # Brave Search MCP Server - Web Search for LLM
   # ===========================================================================
+{% if brave_search_enabled | default(false) | bool and brave_search_api_key | default('') | length > 0 %}
   brave-search-mcp:
     image: mcp/brave-search:latest
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_brave-search-mcp
@@ -698,6 +718,7 @@ services:
     networks:
       - backend
       - frontend
+{% endif %}
 
 {% if printer_mcp_enabled | default(false) | bool and bambu_host | default('') | length > 0 %}
   # ===========================================================================
@@ -901,6 +922,7 @@ services:
   # ===========================================================================
   # Playwright MCP Server - Web Clicking for LLM
   # ===========================================================================
+{% if playwright_mcp_enabled | default(true) | bool %}
   playwright-mcp:
     image: mcr.microsoft.com/playwright/mcp
     # No container_name: replicas must have unique names (compose rejects both).
@@ -937,6 +959,7 @@ services:
       # every request of a session on the replica that owns it (no 404s).
       - "traefik.http.services.playwright.loadbalancer.sticky.cookie=true"
       - "traefik.http.services.playwright.loadbalancer.sticky.cookie.name=pwsticky"
+{% endif %}
 
   # ===========================================================================
   # Chatterbox TTS - OpenAI-compatible voice cloning
@@ -1060,8 +1083,11 @@ services:
   # OAuth2 Proxy - Keycloak gate for voice.${DOMAIN}
   # Chatterbox has no SSO. Traefik ForwardAuth calls this before the UI or API.
   # Open WebUI still calls http://chatterbox-tts:8004 on the backend network.
+  # Rides the same chatterbox_enabled toggle as the chatterbox services:
+  # without them there is no voice.<domain> origin to gate.
   # https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/keycloak_oidc/
   # ===========================================================================
+{% if chatterbox_enabled | default(false) | bool %}
   oauth2-proxy:
     image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.1
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_oauth2-proxy
@@ -1132,6 +1158,7 @@ services:
         limits:
           memory: 128M
           cpus: "0.5"
+{% endif %}
 
   # ===========================================================================
   # NVIDIA GPU Exporter (Optional - requires NVIDIA runtime)

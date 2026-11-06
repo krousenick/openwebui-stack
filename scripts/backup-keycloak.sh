@@ -16,17 +16,17 @@ echo "[$(date)] Starting Keycloak backup..."
 cd "$BACKUP_DIR" || exit 1
 
 if pg_dump --format=custom \
-	--compress=9 \
-	--host="${PGHOST:-postgres}" \
-	--username="${PGUSER:-keycloak}" \
-	--dbname="${PGDATABASE:-keycloak}" \
-	--file="${BACKUP_FILE}"; then
-	echo "[$(date)] Backup created: ${BACKUP_FILE}"
-	echo "keycloak_backup_success 1"
+    --compress=9 \
+    --host="${PGHOST:-postgres}" \
+    --username="${PGUSER:-keycloak}" \
+    --dbname="${PGDATABASE:-keycloak}" \
+    --file="${BACKUP_FILE}"; then
+    echo "[$(date)] Backup created: ${BACKUP_FILE}"
+    echo "keycloak_backup_success 1"
 else
-	echo "[$(date)] ERROR: Backup failed!"
-	echo "keycloak_backup_success 0"
-	exit 1
+    echo "[$(date)] ERROR: Backup failed!"
+    echo "keycloak_backup_success 0"
+    exit 1
 fi
 
 echo "[$(date)] Cleaning up backups older than ${RETENTION_DAYS} days..."

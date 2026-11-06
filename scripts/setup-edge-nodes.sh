@@ -13,7 +13,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Colors
-RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
@@ -39,7 +38,7 @@ echo -e "${YELLOW}Checking prerequisites...${NC}"
 # Check if we're on Fedora Linux (for edge nodes)
 if [[ -f /etc/os-release ]]; then
 	source /etc/os-release
-	if [[ "$ID" != "fedora" ]]; then
+	if [[ $ID != "fedora" ]]; then
 		echo -e "${YELLOW}Note: This script is designed for Fedora Linux edge nodes.${NC}"
 		echo -e "${YELLOW}You can still configure remote nodes from this machine.${NC}"
 	fi
@@ -64,7 +63,6 @@ NUM_NODES=${NUM_NODES:-1}
 
 EDGE_NODES=()
 declare -A NODE_MODELS
-declare -A NODE_PORTS
 
 for ((i = 1; i <= NUM_NODES; i++)); do
 	echo ""
@@ -81,35 +79,9 @@ for ((i = 1; i <= NUM_NODES; i++)); do
 
 	EDGE_NODES+=("$NODE_HOST:$NODE_PORT")
 	NODE_MODELS["$NODE_HOST:$NODE_PORT"]="$MODEL_NAME"
-	NODE_PORTS["$NODE_HOST"]="$NODE_PORT"
 
 	echo -e "${GREEN}  ✓ Added edge node: $NODE_HOST:$NODE_PORT ($MODEL_NAME)${NC}"
 done
-
-echo ""
-echo -e "${YELLOW}Step 2: Model Configuration${NC}"
-echo "Select models available on edge nodes:"
-echo "  1) Llama 3.1 8B Instruct"
-echo "  2) Llama 3.1 70B Instruct"
-echo "  3) Llama 3.2 1B Instruct"
-echo "  4) Mistral 7B Instruct"
-echo "  5) Qwen 2.5 7B Instruct"
-echo "  6) Custom model"
-echo ""
-
-DEFAULT_MODELS=""
-for ((i = 1; i <= NUM_NODES; i++)); do
-	NODE="${EDGE_NODES[$((i - 1))]}"
-	MODEL="${NODE_MODELS[$NODE]}"
-	DEFAULT_MODELS="$DEFAULT_MODELS$MODEL,"
-done
-DEFAULT_MODELS="${DEFAULT_MODELS%,}"
-
-read -rp "Enter model names (comma-separated, default from above): " MODELS_INPUT
-MODELS=${MODELS_INPUT:-$DEFAULT_MODELS}
-
-# Convert to array
-IFS=',' read -ra MODEL_ARRAY <<<"$MODELS"
 
 echo ""
 echo -e "${YELLOW}Step 3: GPU Configuration${NC}"

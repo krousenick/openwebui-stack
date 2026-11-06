@@ -36,6 +36,20 @@ class BraveMCPInjector(CustomLogger):
         tools = data.get("tools")
         if not isinstance(tools, list):
             tools = []
+        # Injecting an mcp-type tool flips LiteLLM into gateway execution
+        # mode (acompletion_with_mcp) for the WHOLE request: with
+        # require_approval "never" it auto-executes every tool call the
+        # model returns, not just MCP ones. When the caller already sends
+        # its own function tools (Open WebUI's client-side MCP servers name
+        # them "<server_id>_<tool>", e.g. blender_blender-execute_blender_code),
+        # LiteLLM cannot resolve those names against its own registry
+        # (KeyError) and the call fails. Any function-type tool means the
+        # caller owns the tool-calling loop; do not inject then.
+        has_function_tools = any(
+            isinstance(tool, dict) and tool.get("type") == "function" for tool in tools
+        )
+        if has_function_tools:
+            return data
         # Open WebUI's direct MCP tool server already exposes Brave tools as
         # functions named "<server_id>_<tool>" (e.g. brave_search_...); skip
         # injection then so the model does not see the tool set twice.

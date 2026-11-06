@@ -20,9 +20,9 @@ env_value() {
     local key="$1"
     local line
 
-    [[ -f "$ENV_FILE" ]] || die ".env not found at $ENV_FILE"
+    [[ -f $ENV_FILE ]] || die ".env not found at $ENV_FILE"
     line="$(grep -E "^${key}=" "$ENV_FILE" | tail -n 1 || true)"
-    [[ -n "$line" ]] || die "$key is not set in $ENV_FILE"
+    [[ -n $line ]] || die "$key is not set in $ENV_FILE"
     printf '%s' "${line#*=}"
 }
 
@@ -49,11 +49,11 @@ command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
 
 MASTER_KEY="$(env_value LITELLM_MASTER_KEY)"
-[[ -n "$MASTER_KEY" && "$MASTER_KEY" != changeme_* ]] || die "LITELLM_MASTER_KEY is missing or still a placeholder"
+[[ -n $MASTER_KEY && $MASTER_KEY != changeme_* ]] || die "LITELLM_MASTER_KEY is missing or still a placeholder"
 
 EXISTING_KEY="$( (grep -E '^LITELLM_VOICE_API_KEY=' "$ENV_FILE" || true) | tail -n 1)"
 EXISTING_KEY="${EXISTING_KEY#LITELLM_VOICE_API_KEY=}"
-if [[ -n "$EXISTING_KEY" && "$EXISTING_KEY" != changeme_* ]]; then
+if [[ -n $EXISTING_KEY && $EXISTING_KEY != changeme_* ]]; then
     if ! INFO_CODE="$(curl -s -o /tmp/voice-key-info.json -w '%{http_code}' \
         -H "Authorization: Bearer ${MASTER_KEY}" \
         --get "${LITELLM_URL}/key/info" \
@@ -61,7 +61,7 @@ if [[ -n "$EXISTING_KEY" && "$EXISTING_KEY" != changeme_* ]]; then
         rm -f /tmp/voice-key-info.json
         die "Could not reach LiteLLM at ${LITELLM_URL}"
     fi
-    if [[ "$INFO_CODE" == "200" ]]; then
+    if [[ $INFO_CODE == "200" ]]; then
         rm -f /tmp/voice-key-info.json
         printf 'Voice key already exists in %s. Nothing changed.\n' "$ENV_FILE"
         exit 0
@@ -75,7 +75,7 @@ if ! LIST_CODE="$(curl -s -o /tmp/voice-key-list.json -w '%{http_code}' \
     rm -f /tmp/voice-key-list.json
     die "Could not reach LiteLLM at ${LITELLM_URL}"
 fi
-if [[ "$LIST_CODE" == "200" ]]; then
+if [[ $LIST_CODE == "200" ]]; then
     ALIAS_STATE="$(KEY_ALIAS="$KEY_ALIAS" python3 -c '
 import json
 import os
@@ -94,10 +94,10 @@ else:
     print("unknown")
 ')"
     rm -f /tmp/voice-key-list.json
-    if [[ "$ALIAS_STATE" == "taken" ]]; then
+    if [[ $ALIAS_STATE == "taken" ]]; then
         die "LiteLLM already has key alias ${KEY_ALIAS}, but ${ENV_FILE} has no working LITELLM_VOICE_API_KEY. Delete that key in LiteLLM, then rerun."
     fi
-    if [[ "$ALIAS_STATE" == "unknown" ]]; then
+    if [[ $ALIAS_STATE == "unknown" ]]; then
         die "Could not confirm key alias ${KEY_ALIAS} is unused. Refusing to create a second key."
     fi
 else
@@ -125,14 +125,14 @@ if ! HTTP_CODE="$(curl -s -o /tmp/voice-key-generate.json -w '%{http_code}' \
     die "Could not reach LiteLLM at ${LITELLM_URL}"
 fi
 
-if [[ "$HTTP_CODE" != "200" ]]; then
+if [[ $HTTP_CODE != "200" ]]; then
     python3 -c 'import pathlib; print(pathlib.Path("/tmp/voice-key-generate.json").read_text()[:500])' >&2 || true
     die "LiteLLM /key/generate returned HTTP ${HTTP_CODE}. Is the proxy healthy at ${LITELLM_URL}?"
 fi
 
 NEW_KEY="$(python3 -c 'import json; print(json.load(open("/tmp/voice-key-generate.json")).get("key", ""))')"
 rm -f /tmp/voice-key-info.json /tmp/voice-key-generate.json
-[[ -n "$NEW_KEY" ]] || die "LiteLLM did not return a key"
+[[ -n $NEW_KEY ]] || die "LiteLLM did not return a key"
 
 upsert_env "LITELLM_VOICE_API_KEY" "$NEW_KEY"
 printf 'Wrote LITELLM_VOICE_API_KEY to %s. Alias %s allows only %s.\n' "$ENV_FILE" "$KEY_ALIAS" "$VOICE_MODEL"

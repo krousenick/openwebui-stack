@@ -408,11 +408,14 @@ model_list:
 
 # MCP Servers Configuration
 mcp_servers:
+{% if brave_search_enabled | default(false) | bool and brave_search_api_key | default('') | length > 0 %}
   brave_search:
     url: "http://brave-search-mcp:8080/mcp"
     transport: "http"
     auth_type: "none"
     allow_all_keys: true
+{% endif %}
+{% if playwright_mcp_enabled | default(true) | bool %}
   playwright_cluster:
     # Route requests through Traefik's mcp entrypoint (:8082, no redirect),
     # which distributes them across the playwright-mcp replicas.
@@ -423,6 +426,7 @@ mcp_servers:
     transport: "http" # Connects via Streamable HTTP/SSE
     auth_type: "none"
     allow_all_keys: true
+{% endif %}
 {% if printer_mcp_enabled | default(false) | bool and bambu_host | default('') | length > 0 %}
   printer_3d:
     # bambu-printer-mcp (slice_stl / print_3mf / get_printer_status /

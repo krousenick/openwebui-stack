@@ -15,16 +15,16 @@ Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &
 XVFB_PID=$!
 
 cleanup() {
-	kill "${XVFB_PID}" "${BLENDER_PID}" 2>/dev/null || true
+    kill "${XVFB_PID}" "${BLENDER_PID}" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
 # Wait for Xvfb before launching Blender.
 for _ in $(seq 1 30); do
-	if [ -e /tmp/.X11-unix/X99 ]; then
-		break
-	fi
-	sleep 0.5
+    if [ -e /tmp/.X11-unix/X99 ]; then
+        break
+    fi
+    sleep 0.5
 done
 
 export DISPLAY=:99
@@ -39,20 +39,20 @@ BLENDER_PID=$!
 # probe: zero-dependency (no system python in this image).
 addon_ready=0
 for _ in $(seq 1 120); do
-	if (exec 3<>"/dev/tcp/127.0.0.1/9876") 2>/dev/null; then
-		exec 3>&- 3<&- || true
-		addon_ready=1
-		break
-	fi
-	if ! kill -0 "${BLENDER_PID}" 2>/dev/null; then
-		echo "blender exited before the addon listener came up" >&2
-		exit 1
-	fi
-	sleep 2
+    if (exec 3<>"/dev/tcp/127.0.0.1/9876") 2>/dev/null; then
+        exec 3>&- 3<&- || true
+        addon_ready=1
+        break
+    fi
+    if ! kill -0 "${BLENDER_PID}" 2>/dev/null; then
+        echo "blender exited before the addon listener came up" >&2
+        exit 1
+    fi
+    sleep 2
 done
 if [ "${addon_ready}" -ne 1 ]; then
-	echo "addon listener on :9876 never came up" >&2
-	exit 1
+    echo "addon listener on :9876 never came up" >&2
+    exit 1
 fi
 
 # stdio -> streamable HTTP bridge (--outputTransport streamableHttp serves
@@ -64,7 +64,7 @@ fi
 # the addon in this same container. Dies with the container; the
 # Xvfb/Blender processes are cleaned up by the trap.
 exec supergateway \
-	--stdio "/opt/uv-tools/mcp-for-blender/bin/mcp-for-blender" \
-	--outputTransport streamableHttp \
-	--host 0.0.0.0 \
-	--port 8000
+    --stdio "/opt/uv-tools/mcp-for-blender/bin/mcp-for-blender" \
+    --outputTransport streamableHttp \
+    --host 0.0.0.0 \
+    --port 8000

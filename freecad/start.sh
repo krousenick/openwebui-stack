@@ -18,34 +18,34 @@ freecadcmd /opt/FreeCADMCP/headless_server.py --pass --allow-remote &
 BRIDGE_PID=$!
 
 cleanup() {
-	kill "${BRIDGE_PID}" 2>/dev/null || true
+    kill "${BRIDGE_PID}" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
 # Wait for the XML-RPC bridge (bash /dev/tcp probe, zero deps).
 bridge_ready=0
 for _ in $(seq 1 120); do
-	if (exec 3<>"/dev/tcp/127.0.0.1/9875") 2>/dev/null; then
-		exec 3>&- 3<&- || true
-		bridge_ready=1
-		break
-	fi
-	if ! kill -0 "${BRIDGE_PID}" 2>/dev/null; then
-		echo "freecadcmd bridge exited before listening" >&2
-		exit 1
-	fi
-	sleep 2
+    if (exec 3<>"/dev/tcp/127.0.0.1/9875") 2>/dev/null; then
+        exec 3>&- 3<&- || true
+        bridge_ready=1
+        break
+    fi
+    if ! kill -0 "${BRIDGE_PID}" 2>/dev/null; then
+        echo "freecadcmd bridge exited before listening" >&2
+        exit 1
+    fi
+    sleep 2
 done
 if [ "${bridge_ready}" -ne 1 ]; then
-	echo "XML-RPC bridge on :9875 never came up" >&2
-	exit 1
+    echo "XML-RPC bridge on :9875 never came up" >&2
+    exit 1
 fi
 
 # stdio -> streamable HTTP. freecad-mcp's --host is the *bridge* address
 # (the bridge port is hardcoded to 9875 in the fork's client); the server
 # itself speaks stdio only.
 exec supergateway \
-	--stdio "freecad-mcp --host localhost" \
-	--outputTransport streamableHttp \
-	--host 0.0.0.0 \
-	--port 8000
+    --stdio "freecad-mcp --host localhost" \
+    --outputTransport streamableHttp \
+    --host 0.0.0.0 \
+    --port 8000

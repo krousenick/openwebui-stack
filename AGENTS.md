@@ -31,6 +31,12 @@ docker compose down
 
 # Run the setup entrypoint (installs collections once, runs the playbook)
 ./scripts/setup.sh
+
+# Complete reset on the Photon host: compose down -v (all profiles), remove
+# every project-prefixed container/volume/network/image, delete the deployed
+# stack folder only (/mnt/data1 keeps its other contents, including Docker's
+# data-root at /mnt/data1/docker). --dry-run prints the actions.
+bash scripts/reset-stack.sh --dry-run
 ```
 
 The playbook renders `.env` (`templates/env.j2`), `docker-compose.yml`
@@ -165,6 +171,7 @@ The compose template mounts `./skills` read-only into `litellm` (`/app/skills`) 
 **Critical implementation notes:**
 - LiteLLM's `/v1/chat/completions` route invokes `async_pre_call_hook` with `call_type="acompletion"`, not `"completion"`. The injector must match both or it silently never fires on proxy traffic.
 - The injector must skip `stream: true` requests. Streaming Open WebUI chats run their own function-calling loop; LiteLLM's MCP streaming iterator forwards tool-call deltas to the client, the client cannot resolve the MCP-namespaced tool name, and the resulting "Error: Tool not found" tool responses corrupt the history. The next Gemini turn then fails with "Missing corresponding tool call for tool response message".
+- The injector must also skip any request that already carries function-type tools. One `mcp`-type tool flips LiteLLM into gateway auto-execution for the WHOLE turn (`acompletion_with_mcp`): with `require_approval: "never"` it executes every tool call the model returns, including Open WebUI's client-side `blender_blender-*` names it cannot resolve (KeyError). Non-streaming chats with client-side MCP tool servers (Blender/FreeCAD/Playwright) hit this whenever the injector added the Brave tool alongside them.
 - Streaming chats get web search through Open WebUI's client-side MCP tool server: Workspace model entries for the Gemini models carry `meta.toolIds: ["server:mcp:brave_search"]`, so the frontend merges the tool server into every chat request automatically.
 
 ### Linting & Quality Checks
@@ -291,6 +298,7 @@ PROXY_BASE_URL: "https://litellm.${DOMAIN:-localhost}"
     ├── setup.sh
     ├── generate-certs.sh
     ├── backup-keycloak.sh
+    ├── reset-stack.sh
     └── sync-ollama-models.sh
 ```
 
