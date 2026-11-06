@@ -119,7 +119,7 @@ for category in "${PINNED_CATEGORIES[@]}"; do
     override_file="${OVERRIDES_DIR}/${category}.yaml"
     upstream_file="${UPSTREAM_DIR}/${category}.yaml"
 
-    if [[ ! -f "${override_file}" ]]; then
+    if [[ ! -f ${override_file} ]]; then
         echo "MISSING override: ${override_file}"
         drift=1
         continue
@@ -127,7 +127,7 @@ for category in "${PINNED_CATEGORIES[@]}"; do
 
     missing="$(python3 "${DRIFT_PY}" "${upstream_file}" "${override_file}")"
 
-    if [[ -n "${missing}" ]]; then
+    if [[ -n ${missing} ]]; then
         echo "DRIFT in ${category}: upstream keywords missing from the override:"
         while IFS= read -r keyword; do
             echo "    ${keyword}"

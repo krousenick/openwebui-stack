@@ -20,8 +20,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 ANSIBLE_DIR="$PROJECT_ROOT/ansible"
 
 error_exit() {
-	echo "ERROR: $1" >&2
-	exit 1
+    echo "ERROR: $1" >&2
+    exit 1
 }
 
 # Colors
@@ -33,20 +33,20 @@ NC='\033[0m'
 # ---------------------------------------------------------------------------
 
 if ! command -v ansible-playbook >/dev/null 2>&1; then
-	echo "ansible-playbook not found. Install Ansible (ansible-core 2.16+), then:"
-	echo "  cd ansible && ansible-galaxy collection install -r requirements.yaml"
-	echo "  ansible-playbook playbooks/site.yml"
-	exit 1
+    echo "ansible-playbook not found. Install Ansible (ansible-core 2.16+), then:"
+    echo "  cd ansible && ansible-galaxy collection install -r requirements.yaml"
+    echo "  ansible-playbook playbooks/site.yml"
+    exit 1
 fi
 
 if [ ! -d "$ANSIBLE_DIR" ]; then
-	error_exit "ansible/ directory not found at $ANSIBLE_DIR"
+    error_exit "ansible/ directory not found at $ANSIBLE_DIR"
 fi
 
 # Install collections when the required keycloak collection is absent.
 if ! ansible-galaxy collection list 2>/dev/null | grep -q "middleware_automation.keycloak"; then
-	echo -e "${BLUE}Installing Ansible collections...${NC}"
-	(cd "$ANSIBLE_DIR" && ansible-galaxy collection install -r requirements.yaml)
+    echo -e "${BLUE}Installing Ansible collections...${NC}"
+    (cd "$ANSIBLE_DIR" && ansible-galaxy collection install -r requirements.yaml)
 fi
 
 # ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ fi
 # it overrides the placeholders in hosts.yml.
 INVENTORY_ARGS=()
 if [ -f "$ANSIBLE_DIR/inventory/hosts.local.yml" ]; then
-	INVENTORY_ARGS+=(-i "$ANSIBLE_DIR/inventory/hosts.local.yml")
+    INVENTORY_ARGS+=(-i "$ANSIBLE_DIR/inventory/hosts.local.yml")
 fi
 
 echo -e "${BLUE}Running: cd ansible && ansible-playbook ${INVENTORY_ARGS[*]} playbooks/site.yml $*${NC}"

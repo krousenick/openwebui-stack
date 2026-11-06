@@ -129,7 +129,7 @@ graph TB
 
    - **`.env`** — rendered from `templates/env.j2` with every secret
    - **`docker-compose.yml`** — rendered from `templates/docker-compose.yml.j2`; the `chatterbox_enabled` toggle drops the Chatterbox services entirely
-   - **`litellm/config.yaml`** — rendered from `templates/config.yaml.j2` (the Playwright MCP `Host` header needs the deployed domain spelled out; LiteLLM does not expand `${VAR}` in config values)
+    - **`litellm/config.yaml`** — rendered from `templates/config.yaml.j2` (the Playwright MCP `Host` header needs the deployed domain spelled out; LiteLLM does not expand `${VAR}` in config values). When the rendered content changes, a handler recreates the `litellm` service so the bind-mounted config is reloaded (plain `docker compose up` does not recreate a container for bind-mount content changes)
    - **TLS certificates** — `ssl_cert_type: existing | selfsigned | traefik`; self-signed pairs are generated with `community.crypto` and wired into Traefik via `traefik/dynamic/certs.yml` (replaces `scripts/generate-certs.sh`)
    - **`/etc/hosts`** — service hostnames added on the deployment host for non-localhost domains
    - **Secrets** — explicit values in `ansible/group_vars/all/vault.yml` (tracked template with `CHANGE_ME` placeholders) and `ansible/group_vars/all/vault.local.yml` (real values, gitignored, mode 0600). Nothing reads environment variables or the deployed `.env`. A playbook run fails fast, naming exactly which secrets are still placeholders.
@@ -151,6 +151,18 @@ In `docker-compose.yml` change `ENABLE_SIGNUP` to `true` if you want to register
    - LiteLLM: https://litellm.localhost
    - Keycloak (admin): https://auth.localhost/admin
    - Chatterbox voice library: https://voice.localhost
+
+### Complete Reset (retest the playbook from scratch)
+
+`scripts/reset-stack.sh` destroys the deployed stack on the Photon host so the playbook can be validated from a clean slate. It runs `docker compose --profile '*' down -v --remove-orphans`, then sweeps every container, volume, network, and locally-built image carrying the `${COMPOSE_PROJECT_NAME:-openwebui-stack}` prefix (so leftovers the compose file no longer knows about die too), then deletes the deployed tree.
+
+```bash
+# On the Photon host, from the repo (or anywhere; the paths are absolute):
+bash scripts/reset-stack.sh --dry-run   # show every destructive action first
+bash scripts/reset-stack.sh             # wipe stack + /mnt/data1/openwebui-stack
+```
+
+Everything in the stack is destroyed: Keycloak users, Open WebUI chats and uploaded files, generated `/models` artifacts, built images. The script only deletes the stack folder itself — everything else under `/mnt/data1` (backups, stashes, old trees, and `/mnt/data1/docker`, which is Docker's data-root) is left alone, and `--dir /mnt/data1` is refused outright. The git checkout and the vault are never touched. After a reset, redeploy with `./scripts/setup.sh`. The script refuses system paths and requires an absolute target with at least two path components; run it as root on the Photon host.
 
 ### Local Domain Resolution
 
@@ -197,6 +209,8 @@ Access the Keycloak Admin Console to manage users and applications:
     | `brave_search_enabled` + `brave_search_api_key` (vault) | `mcp/brave.yml` | Open WebUI web search and the `brave_search` tool server connection |
     | `playwright_mcp_enabled` (role default `true`) | `mcp/playwright.yml` | The `playwright_cluster` tool server connection (no secret; containers run from docker-compose.yml) |
     | `playwright_mcp_enabled` (same toggle) | `mcp/tool_image_filter.yml` | The `tool_result_image_display` global outlet filter that promotes MCP tool-result images (Playwright screenshots) to chat message files so they render in the chat window |
+
+   The same toggles also gate the containers and LiteLLM wiring in the compose and config templates, so a toggle off drops every piece at once: `brave_search_enabled` (with a non-empty `brave_search_api_key`) gates the `brave-search-mcp` service, the `mcp_servers.brave_search` entry, and the Brave injector startup hook + callback mount on `litellm`; `playwright_mcp_enabled` gates the `playwright-mcp` service (and its Traefik network alias) and the `mcp_servers.playwright_cluster` entry; `chatterbox_enabled` gates the `oauth2-proxy` voice gate alongside the Chatterbox services and the `VOICE_OIDC_CLIENT_SECRET`/`OAUTH2_PROXY_COOKIE_SECRET` entries in `.env`.
 
     Both MCP tasks **merge** into the same `tool_server.connections` row (matched by `info.id`, sorted canonically), so each preserves the other's entry, and consecutive playbook runs are idempotent: the litellm and open-webui containers are recreated only when the row actually changes. The tool-image filter task is idempotent the same way (it upserts the `function` row only when content/flags differ, then recreates only `open-webui`).
 
@@ -879,12 +893,36 @@ search ranks it on demand (`litellm_settings.skill_search_embedding_model:
 text-embedding` → gemini-embedding-001), so agents describe what they need
 instead of listing the registry.
 
-**Open WebUI** gets the skill the same way as the rest of `skills/` —
-the playbook pushes it into the workspace through the Open WebUI Skills
+**Open WebUI** gets the skill the same way as the rest of `skills/` — the
+playbook pushes it into the workspace through the Open WebUI Skills
 API (`ansible/roles/openwebui_stack/tasks/openwebui_skills.yml`), after
 which you can bind it to models (Workspace → Models → Skills row) or
 `$`-mention it per chat. **The ask-before-print rule travels with the
 skill text in every store.**
+
+### Downloading generated files from chat
+
+Files the pipeline exports to `/models` are downloadable directly from the
+chat window. Open WebUI only persists image/audio tool results as real
+files; binary CAD output would otherwise stay an unreadable path in tool
+text. Two pieces close that gap (both playbook-managed):
+
+1. `open-webui` mounts the shared `models` volume **read-only** (compose
+   template, whenever any 3D-pipeline service is enabled).
+2. The `tool_result_file_download` global outlet filter
+   (`ansible/roles/openwebui_stack/files/functions/tool_result_file_download.py`,
+   published by `tasks/mcp/tool_file_filter.yml`) scans the finished
+   assistant turn for `/models/**.stl|3mf|step|stp` mentions in tool
+   results, reads each file from the read-only mount, uploads it through
+   Open WebUI's own upload handler (normal ownership/storage rules apply),
+   and emits a files event so the message renders a file card. Clicking
+   the card opens the file modal with a download link
+   (`/api/v1/files/<id>/content`, session-authenticated, served with
+   `Content-Disposition: attachment`).
+
+Verified end-to-end in the browser: a chat that exports
+`/models/ui-e2e-cube.stl` ends with a `ui-e2e-cube.stl 684.0 B` card on
+the assistant message whose link returns the binary STL.
 
 ### Enabling
 
@@ -939,8 +977,12 @@ curl -sk https://litellm.localhost/v1/chat/completions \
 | `blender` tools time out but container healthy | First boot: Blender GUI + addon auto-start race | Wait out the `start_period: 60s`; retry the tool call |
 | LiteLLM cannot reach `blender`/`freecad` MCP | supergateway not up yet | `docker compose logs blender freecad` — the entrypoints wait for the backend (:9876 / :9875) before starting the gateway |
 | `freecad` tools warn about addon version mismatch | MCP server installed from PyPI (0.1.28) instead of the fork (0.1.24) | Rebuild the image; the Dockerfile pins the fork commit for both sides of the handshake |
+| `export_mesh.stl` / `export_scene.stl` "could not be found" in Blender code | Blender 5.x ships STL I/O as the builtin `bpy.ops.wm.stl_export(filepath=...)` (and `wm.stl_import`); the legacy `export_mesh.stl` operator no longer exists | Use `bpy.ops.wm.stl_export`; note SAFE_MODE also rejects `import os` and `dir()` in exported scripts — print markers instead |
+| STL/STEP export fails "Permission denied" or "Cannot open file" under `/models` while containers are healthy | The `models` volume is created root-owned by the local driver; `blender`/`freecad`/`code-sandbox` all write as uid 1000 | The playbook chowns the volume mountpoint to 1000:1000 (`tasks/mcp/models_volume.yml`); rerun the playbook after recreating the volume |
 | Open WebUI shows `server:mcp:printer_3d` tools as dead | Server toggled off but old tool defaults remain | Toggle off in vars.yml and rerun the playbook (tool_defaults rebuilds from the enabled set) |
 | Model starts prints without asking | Prompt rules not attached | Add `docs/3d-print-pipeline-prompt.md` to the model's system prompt; the server gate does not ask |
+| Non-streaming chat with client-side MCP tools returns "Error executing tool: `blender_blender-...`" (LiteLLM KeyError) | The Brave MCP injector added an `mcp`-type tool to a request that already carried Open WebUI's client-side function tools; one `mcp` tool flips LiteLLM into gateway auto-execution for every tool call in the turn | The injector skips any request with function-type tools (`litellm/brave_mcp_callback.py`); rerun the playbook to sync it |
+| Exported STL/3MF has no file card in the chat | Outlet filter not active, or the `models:ro` mount missing on `open-webui` | Rerun the playbook; the mount renders whenever a 3D-pipeline service is enabled and `tasks/mcp/tool_file_filter.yml` upserts the filter |
 
 ## Local models
 

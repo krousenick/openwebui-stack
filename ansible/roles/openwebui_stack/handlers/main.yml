@@ -1,0 +1,18 @@
+---
+# Recreate litellm when its rendered config changes. The config is a bind
+# mount, so `docker compose up` never recreates the container on file
+# content changes; only a restart/recreate makes litellm reload it.
+# Same per-service recreate pattern as tasks/mcp/brave.yml.
+
+- name: Recreate litellm
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - litellm
+    state: present
+    recreate: always
+    wait: true
+    wait_timeout: "{{ docker_compose_wait_timeout }}"

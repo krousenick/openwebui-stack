@@ -91,3 +91,46 @@
     state: present
     validate_certs: "{{ keycloak_validate_certs }}"
   delegate_to: localhost
+
+# Keycloak 26 admin REST (/admin/realms/...) requires the token to carry the
+# kc-admin-api client scope (its admin-api-audience mapper adds the admin
+# audience to the token). The realm-management roles alone are not enough:
+# without this scope every provisioner token 401s on the admin API ("HTTP 401
+# Unauthorized") while client_credentials still succeeds, which is why the
+# keycloak_app.yml client listing fails. The realm's default scope set for
+# new clients does not include kc-admin-api, so it must be attached to this
+# client explicitly. First ensure the scope exists (it is builtin; the check
+# is idempotent), then attach it as a default scope of the provisioner.
+- name: Ensure the kc-admin-api client scope exists
+  middleware_automation.keycloak.keycloak_client_scope:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    name: kc-admin-api
+    description: "Keycloak Admin REST API audience (builtin)"
+    protocol: openid-connect
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
+
+- name: Attach the kc-admin-api scope to the provisioner client
+  middleware_automation.keycloak.keycloak_client_scope_type:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: "{{ keycloak_realm }}"
+    auth_client_id: "{{ keycloak_provisioner_client_id }}"
+    auth_client_secret: "{{ keycloak_provisioner_client_secret }}"
+    realm: "{{ keycloak_realm }}"
+    client_id: "{{ keycloak_provisioner_client_id }}"
+    default_client_scopes:
+      - web-origins
+      - service_account
+      - acr
+      - kc-admin-api
+      - profile
+      - roles
+      - basic
+      - email
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
