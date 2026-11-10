@@ -1,10 +1,11 @@
 """
 title: Tool Result File Download
-description: Makes chat-created 3D models downloadable - injects FreeCAD/Blender export rules into 3D modelling chats and uploads the /models artifacts (STL/3MF/STEP) their tool calls export as real Open WebUI files
+description: Makes chat-created 3D models downloadable - injects FreeCAD/Blender export rules into 3D modelling chats and uploads the /models artifacts (STL/3MF/STEP) their tool calls export as real Open WebUI files with a rendered STL preview image
 required_open_webui_version: 0.13.0
-version: 1.2.0
+version: 1.3.0
 """
 
+import asyncio
 import logging
 import mimetypes
 import os
@@ -211,18 +212,124 @@ Blender execute_blender_code (Blender 5.0): there is no bpy.ops.boolean.*; add a
             "content_type": meta.get("content_type"),
         }
 
-    async def _upload(self, request, path, user, metadata):
+    # STL preview. Blender's `look` tool returns a viewport screenshot, but
+    # FreeCAD runs headless (freecadcmd, no GUI) and has no view to capture,
+    # so FreeCAD exports arrived as a bare file card. Every exported STL gets
+    # a rendered preview instead, drawn here with numpy + Pillow (both ship
+    # in the open-webui image; no GPU or display needed): isometric view,
+    # flat shading, painter's-algorithm depth sort, with the bounding-box
+    # size in the caption so a wrong-unit export is visible at a glance.
+    PREVIEW_SIZE = (960, 720)
+    PREVIEW_MAX_TRIANGLES = 150000
+    PREVIEW_MAX_BYTES = 100 * 1024 * 1024
+
+    @staticmethod
+    def _read_stl_triangles(path):
+        import numpy as np
+
+        with open(path, "rb") as fh:
+            data = fh.read()
+        if len(data) >= 84:
+            count = int(np.frombuffer(data, dtype="<u4", count=1, offset=80)[0])
+            if len(data) == 84 + 50 * count and count > 0:
+                record = np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")])
+                return np.frombuffer(data, dtype=record, count=count, offset=84)["v"].astype(np.float64)
+        # ASCII STL: every facet lists exactly three "vertex x y z" lines.
+        values = re.findall(rb"vertex\s+(\S+)\s+(\S+)\s+(\S+)", data)
+        if not values or len(values) % 3:
+            return None
+        return np.array(values, dtype=np.float64).reshape(-1, 3, 3)
+
+    def _render_stl_preview(self, path):
+        import numpy as np
+        from PIL import Image, ImageDraw
+
+        if os.path.getsize(path) > self.PREVIEW_MAX_BYTES:
+            return None
+        tris = self._read_stl_triangles(path)
+        if tris is None or len(tris) == 0 or not np.isfinite(tris).all():
+            return None
+        lo, hi = tris.reshape(-1, 3).min(axis=0), tris.reshape(-1, 3).max(axis=0)
+        extents = hi - lo
+        total = len(tris)
+        if total > self.PREVIEW_MAX_TRIANGLES:
+            tris = tris[:: int(np.ceil(total / self.PREVIEW_MAX_TRIANGLES))]
+
+        # Camera looks along `forward` with Z up (the slicer's build direction).
+        forward = np.array([-1.0, 1.0, -0.75])
+        forward /= np.linalg.norm(forward)
+        right = np.cross(forward, [0.0, 0.0, 1.0])
+        right /= np.linalg.norm(right)
+        up = np.cross(right, forward)
+        light = np.array([0.35, -0.55, 0.75])
+        light /= np.linalg.norm(light)
+
+        normals = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+        lengths = np.linalg.norm(normals, axis=1)
+        keep = lengths > 0
+        tris, normals = tris[keep], normals[keep] / lengths[keep][:, None]
+        if len(tris) == 0:
+            return None
+        facing = normals @ -forward
+        # Inside faces (seen through an opening) are lit from their back side
+        # and darkened so hollow parts and through-holes read as such.
+        shade = 0.30 + 0.70 * np.clip(np.where(facing >= 0, normals @ light, -(normals @ light)), 0, 1)
+        shade = np.where(facing >= 0, shade, shade * 0.55)
+
+        scale_up = 2  # supersample, then downscale for anti-aliased edges
+        width, height = self.PREVIEW_SIZE[0] * scale_up, self.PREVIEW_SIZE[1] * scale_up
+        caption_h = 56 * scale_up
+        margin = 40 * scale_up
+        xs, ys = tris @ right, tris @ up
+        span = max(xs.max() - xs.min(), ys.max() - ys.min(), 1e-9)
+        scale = min((width - 2 * margin) / (xs.max() - xs.min() or span),
+                    (height - caption_h - 2 * margin) / (ys.max() - ys.min() or span))
+        px = (xs - (xs.max() + xs.min()) / 2) * scale + width / 2
+        py = (height - caption_h) / 2 - (ys - (ys.max() + ys.min()) / 2) * scale
+
+        image = Image.new("RGB", (width, height), (245, 246, 248))
+        draw = ImageDraw.Draw(image)
+        base = np.array([70.0, 130.0, 200.0])
+        # Painter's algorithm on triangle centroids mis-sorts long thin facets,
+        # which showed as dark inside-face streaks over the outer wall. Drawing
+        # every inside (back-facing) triangle before any outside one removes
+        # that class of error; within each pass, farthest first.
+        order = np.lexsort((-(tris @ forward).mean(axis=1), facing >= 0))
+        for idx in order:
+            colour = tuple(int(c) for c in base * shade[idx])
+            draw.polygon(
+                [(px[idx, 0], py[idx, 0]), (px[idx, 1], py[idx, 1]), (px[idx, 2], py[idx, 2])],
+                fill=colour,
+            )
+        image = image.resize(self.PREVIEW_SIZE, Image.LANCZOS)
+        draw = ImageDraw.Draw(image)
+        caption = "%s   %.1f x %.1f x %.1f mm   %s triangles" % (
+            os.path.basename(path), extents[0], extents[1], extents[2], format(total, ","),
+        )
+        try:
+            from PIL import ImageFont
+
+            font = ImageFont.load_default(size=20)
+        except Exception:
+            font = None
+        draw.text((24, self.PREVIEW_SIZE[1] - 40), caption, fill=(40, 44, 52), font=font)
+        buffer = BytesIO()
+        image.save(buffer, format="PNG", optimize=True)
+        return buffer.getvalue()
+
+    async def _upload(self, request, path, user, metadata, data=None, filename=None):
         from starlette.datastructures import UploadFile
 
         from open_webui.routers.files import upload_file_handler
 
-        size = os.path.getsize(path)
-        if size > self.MAX_FILE_SIZE:
-            log.warning("tool_result_file_download: skipping %s (%d bytes over limit)", path, size)
-            return None
-        filename = os.path.basename(path)
-        with open(path, "rb") as fh:
-            data = fh.read()
+        if data is None:
+            size = os.path.getsize(path)
+            if size > self.MAX_FILE_SIZE:
+                log.warning("tool_result_file_download: skipping %s (%d bytes over limit)", path, size)
+                return None
+            with open(path, "rb") as fh:
+                data = fh.read()
+        filename = filename or os.path.basename(path)
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         upload = UploadFile(
             file=BytesIO(data),
@@ -270,8 +377,22 @@ Blender execute_blender_code (Blender 5.0): there is no bpy.ops.boolean.*; add a
                 except Exception as e:
                     log.warning("tool_result_file_download: upload failed for %s: %s", path, e)
                     continue
-                if file_item is not None:
-                    uploaded.append(self._file_record(file_item))
+                if file_item is None:
+                    continue
+                if path.lower().endswith(".stl"):
+                    # A failed preview must never cost the user the download.
+                    try:
+                        png = await asyncio.to_thread(self._render_stl_preview, path)
+                        if png:
+                            preview_name = os.path.splitext(os.path.basename(path))[0] + "-preview.png"
+                            preview = await self._upload(
+                                __request__, path, user, __metadata__ or {}, data=png, filename=preview_name
+                            )
+                            if preview is not None:
+                                uploaded.append({"type": "image", "url": f"/api/v1/files/{preview.id}/content"})
+                    except Exception as e:
+                        log.warning("tool_result_file_download: preview failed for %s: %s", path, e)
+                uploaded.append(self._file_record(file_item))
 
         if uploaded:
             await __event_emitter__(

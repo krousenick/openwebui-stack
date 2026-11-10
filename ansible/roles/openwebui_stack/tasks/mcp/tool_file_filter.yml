@@ -82,7 +82,7 @@
         'Tool Result File Download',
         'filter',
         $filter${{ tool_file_filter_content }}$filter$,
-        '{"description": "Injects FreeCAD/Blender export rules into 3D modelling chats and publishes MCP-exported /models artifacts (STL/3MF/STEP) as downloadable Open WebUI files", "manifest": {"version": "1.2.0"}}'::jsonb,
+        '{"description": "Injects FreeCAD/Blender export rules into 3D modelling chats and publishes MCP-exported /models artifacts (STL/3MF/STEP) as downloadable Open WebUI files", "manifest": {"version": "1.3.0"}}'::jsonb,
         '{}'::jsonb,
         true,
         true,
