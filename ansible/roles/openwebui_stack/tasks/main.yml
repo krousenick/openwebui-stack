@@ -97,6 +97,15 @@
     - skills
     - openwebui-config
 
+# After skill publishing: it upserts the admin API key this sync uses.
+- name: Sync the Open WebUI Thinking switch for reasoning models
+  ansible.builtin.import_tasks:
+    file: openwebui_reasoning.yml
+  tags:
+    - skills
+    - openwebui-config
+    - openwebui-reasoning
+
 - name: Configure Keycloak SSO
   ansible.builtin.import_tasks:
     file: keycloak.yml

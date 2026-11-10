@@ -16,6 +16,9 @@
 #     model, token counts, and duration.
 #   - ~/.config/opencode/litellm.key - the user's LiteLLM virtual key
 #     (mode 0600), referenced from the config via {file:...}
+#   - ~/.config/opencode/tui.json - created once (never overwritten, it
+#     also holds the user's theme and other TUI preferences) with a key
+#     binding for the built-in reasoning-level picker
 #
 # Per-user attribution: the role asks LiteLLM /key/generate with the master
 # key for each opencode_user, storing metadata.user=<username>. Every
@@ -120,6 +123,16 @@ opencode_node_ca_cert: false
 
 # Per-user token usage log written by the local plugin.
 opencode_usage_log: "~/.local/share/opencode/usage.jsonl"
+
+# Key for opencode's built-in reasoning-level picker ("Switch model
+# variant", also /variants; ctrl+t cycles the levels). The picker has no
+# key by default, so the role binds one in ~/.config/opencode/tui.json
+# (keybinds.variant_list). The levels it lists are the model's variants,
+# which the discovery plugin builds from LiteLLM's
+# supports_<level>_reasoning_effort flags. tui.json is only written when
+# the user has none, so an existing theme or key map is never replaced;
+# add the binding by hand there. "" skips the file. <leader> is ctrl+x.
+opencode_variant_picker_keybind: "<leader>v"
 
 # Sync the stack's centralized skills (skills/*/SKILL.md, the same
 # packages registered with the LiteLLM Skills Gateway) into each user's

@@ -118,6 +118,19 @@
     group: "{{ opencode_account.group }}"
     mode: "0644"
 
+# tui.json is the user's own TUI preferences file (theme, key map), so it
+# is seeded once and never overwritten: force false leaves an existing
+# file alone even when the binding changes.
+- name: Seed tui.json with the reasoning-level picker key
+  ansible.builtin.template:
+    src: tui.json.j2
+    dest: "{{ opencode_account.home }}/.config/opencode/tui.json"
+    owner: "{{ opencode_user.username }}"
+    group: "{{ opencode_account.group }}"
+    mode: "0644"
+    force: false
+  when: opencode_variant_picker_keybind | default('') | length > 0
+
 # The origin CA root only exists in the deployed tree's gitignored
 # certs/ directory. On the stack host (Photon) point straight at it; on
 # other OSes distribute a per-user copy from the role's files/ dir.

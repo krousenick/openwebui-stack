@@ -260,6 +260,32 @@ openwebui_default_models_csv: >-
   {{ [openwebui_default_models | default('', true)] | flatten | join(',')
      | split(',') | map('trim') | reject('equalto', '') | join(',') }}
 
+# Thinking switch: the reasoning selector in the Open WebUI chat input
+# (tasks/openwebui_reasoning.yml). A "Thinking" switch appears in the
+# chat input of every reasoning-capable model; on sends the level each
+# user picks in the switch's settings (low / medium / high), off sends
+# reasoning_effort none. false removes it from every model and disables
+# both filter functions.
+openwebui_reasoning_switch_enabled: true
+
+# New chats start with the switch on, matching a LiteLLM default effort
+# that already has the model thinking. false starts them off.
+openwebui_reasoning_switch_default_on: true
+
+# Read the model list from LiteLLM: the switch goes on every model whose
+# model_info has supports_reasoning: true, and the off state (none) only
+# where it also has supports_none_reasoning_effort: true. For a vLLM model
+# both come from vllm_reasoning_parser / vllm_reasoning_efforts.
+openwebui_reasoning_discover_models: true
+
+# Hand-picked additions and removals, as LiteLLM model_names. _extra adds
+# the switch, _off_models_extra also marks a model as accepting "none"
+# (only list models that really can switch thinking off), _exclude wins
+# over both and over discovery.
+openwebui_reasoning_models_extra: []
+openwebui_reasoning_off_models_extra: []
+openwebui_reasoning_models_exclude: []
+
 # Agent Skills discovery index (litellm_settings.public_skills_index).
 # Serves every proxy-hosted skill in ./skills at
 # /.well-known/agent-skills/index.json for `npx skills add` (opencode,
