@@ -32,6 +32,38 @@
       Set it to [] to drop the adaptive model.
   when: litellm_adaptive_router_models | length > 0
 
+- name: Validate the adaptive router preferences
+  # Checks the merged defaults + group_vars entries, so a typo in
+  # litellm_adaptive_router_preferences fails here instead of reaching the
+  # router as a wrong prior or price.
+  ansible.builtin.assert:
+    that:
+      - item.value is mapping
+      - item.value.keys() | difference(['quality_tier', 'strengths', 'input_cost_per_token']) | length == 0
+      - item.value.quality_tier | default(none) is none or item.value.quality_tier | int in [1, 2, 3]
+      - item.value.strengths | default([], true) is not string
+      - item.value.strengths | default([], true) | difference(adaptive_strengths) | length == 0
+      - item.value.strengths | default([], true) | length == 0 or 'quality_tier' in item.value
+      - item.value.input_cost_per_token | default(0, true) | string is match('^[0-9]*[.]?[0-9]+([eE][-+]?[0-9]+)?$')
+    fail_msg: >-
+      litellm_adaptive_router_preferences entry '{{ item.key }}' is invalid.
+      Allowed keys: quality_tier (1, 2, or 3), strengths (a list drawn from
+      {{ adaptive_strengths | join(', ') }}; needs quality_tier), and
+      input_cost_per_token (a non-negative $/token number).
+    quiet: true
+  vars:
+    adaptive_strengths:
+      - code_generation
+      - code_understanding
+      - technical_design
+      - analytical_reasoning
+      - writing
+      - factual_lookup
+      - general
+  loop: "{{ litellm_adaptive_router_model_info | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
 - name: Validate the Anthropic API key
   # The Claude entries read ANTHROPIC_API_KEY, which env.j2 renders only
   # from a non-empty anthropic_api_key; without it every call returns 401.

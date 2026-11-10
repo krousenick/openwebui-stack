@@ -14,7 +14,18 @@
         "headerTimeout": {{ opencode_provider_header_timeout_ms }}
       },
       "models": {{ opencode_model_overrides | to_json }}
-    }
+    }{% if opencode_anthropic_enabled | bool %},
+    "anthropic": {
+      "name": "Claude via LiteLLM ({{ domain | default('localhost') }})",
+      "options": {
+        "baseURL": "{{ opencode_litellm_base_url }}/v1",
+        "apiKey": "{file:{{ opencode_account.home }}/.config/opencode/litellm.key}",
+        "timeout": {{ opencode_provider_timeout_ms }},
+        "headerTimeout": {{ opencode_provider_header_timeout_ms }}
+      },
+      "whitelist": {{ opencode_anthropic_models | to_json }}
+    }{% endif %}
+
   },
-  "enabled_providers": ["litellm"]
+  "enabled_providers": {{ (['litellm'] + (['anthropic'] if opencode_anthropic_enabled | bool else [])) | to_json }}
 }

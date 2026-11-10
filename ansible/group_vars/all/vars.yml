@@ -164,14 +164,30 @@ litellm_anthropic_models_enabled: false
 # LiteLLM `adaptive` model (beta): the pool of models its bandit picks
 # from. Unset, it follows the flags the same way as the auto tiers (Gemini
 # models, else Claude haiku/sonnet/opus, otherwise no `adaptive` model).
-# Set it to pool other models; each needs adaptive_router_preferences and
-# input_cost_per_token in its LiteLLM model_info (vLLM models get them
-# from vllm_adaptive_quality_tier / vllm_adaptive_strengths).
+# Set it to pool other models; each needs the per-model settings below
+# (vLLM models get theirs from vllm_adaptive_quality_tier /
+# vllm_adaptive_strengths).
 # litellm_adaptive_router_models:
 #   - gemini-3.5-flash-lite
 #   - gemini-3.8-flash
 #   - claude-opus-5-5
 #   - my-vllm-model
+
+# Adaptive router settings per model (Gemini, Claude, Bedrock entries),
+# keyed by LiteLLM model_name. Entries merge over the role defaults key by
+# key, so list only what changes; the defaults for the Gemini and Claude
+# models are in roles/openwebui_stack/defaults/main.yml.
+#   quality_tier: 1 (budget), 2 (mid), 3 (frontier); null removes it
+#   strengths: code_generation, code_understanding, technical_design,
+#     analytical_reasoning, writing, factual_lookup, general
+#   input_cost_per_token: $/token (0 = free)
+# litellm_adaptive_router_preferences:
+#   claude-opus-5-5:
+#     quality_tier: 2
+#   kimi-k3:
+#     quality_tier: 3
+#     strengths: [analytical_reasoning]
+#     input_cost_per_token: 0.0000006
 
 # Open WebUI default model for new chats. Unset, it is `auto` whenever the
 # auto router above exists, otherwise the UI setting is left alone. Set a

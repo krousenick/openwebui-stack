@@ -240,6 +240,24 @@ guardrails:
 #   https://docs.litellm.ai/docs/providers/anthropic
 #   https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
 #   https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html
+#
+# Adaptive router settings (input_cost_per_token, adaptive_router_preferences)
+# are not written here: each model_info below gets them from
+# litellm_adaptive_router_preferences (group_vars, merged over the role
+# defaults). A model with no entry renders none.
+{# Emits the adaptive-router model_info keys for one model_name. The price
+   is printed in fixed notation: PyYAML reads "3e-07" as a string. #}
+{% macro adaptive_model_info(name) %}
+{% set prefs = litellm_adaptive_router_model_info[name] | default({}, true) %}
+{% if prefs.input_cost_per_token | default(none) is not none %}
+      input_cost_per_token: {{ '%.12f' | format(prefs.input_cost_per_token | float) | regex_replace('0+$', '') | regex_replace('\\.$', '.0') }}
+{% endif %}
+{% if prefs.quality_tier | default(none) is not none %}
+      adaptive_router_preferences:
+        quality_tier: {{ prefs.quality_tier | int }}
+        strengths: {{ prefs.strengths | default([], true) | to_json }}
+{% endif %}
+{% endmacro %}
 
 model_list:
 {% if litellm_gemini_models_enabled | default(false) | bool %}
@@ -257,12 +275,7 @@ model_list:
         search_context_size: medium
     model_info:
       description: "Gemini 3.8 Flash - current fast model"
-      # Adaptive router pricing (input $/token, model_prices 2026-10-28)
-      input_cost_per_token: 0.00000075
-      adaptive_router_preferences:
-        quality_tier: 2
-        strengths: ["writing", "code_understanding"]
-
+{{ adaptive_model_info('gemini-3.8-flash') }}
   - model_name: gemini-3.5-flash-lite
     litellm_params:
       model: gemini/gemini-3.5-flash-lite
@@ -271,11 +284,7 @@ model_list:
         search_context_size: low
     model_info:
       description: "Gemini 3.5 Flash-Lite - current lightweight model"
-      input_cost_per_token: 0.0000003
-      adaptive_router_preferences:
-        quality_tier: 1
-        strengths: ["factual_lookup"]
-
+{{ adaptive_model_info('gemini-3.5-flash-lite') }}
   - model_name: gemini-3.1-pro
     litellm_params:
       model: gemini/gemini-3.1-pro-preview
@@ -284,11 +293,7 @@ model_list:
         search_context_size: medium
     model_info:
       description: "Gemini 3.1 Pro preview - current reasoning model"
-      input_cost_per_token: 0.000002
-      adaptive_router_preferences:
-        quality_tier: 3
-        strengths: ["analytical_reasoning"]
-
+{{ adaptive_model_info('gemini-3.1-pro') }}
   - model_name: gemini-4-argon
     litellm_params:
       model: gemini/gemini-4-argon
@@ -297,11 +302,7 @@ model_list:
         search_context_size: medium
     model_info:
       description: "Gemini 4 Argon - current Gemini model"
-      input_cost_per_token: 0.000002
-      adaptive_router_preferences:
-        quality_tier: 3
-        strengths: ["code_generation", "technical_design", "analytical_reasoning"]
-
+{{ adaptive_model_info('gemini-4-argon') }}
   # Embedding model for LiteLLM's skill search (semantic ranking over the
   # proxy-hosted skills in /v1/skills, see litellm_settings below) and any
   # RAG use. Same GEMINI_API_KEY as the chat models.
@@ -332,12 +333,7 @@ model_list:
       additional_drop_params: ["temperature", "top_p", "top_k"]
     model_info:
       description: "Claude Opus 5.5 - complex reasoning, coding, and agentic work"
-      # Adaptive router pricing (input $/token, Anthropic list price 2026-11-03)
-      input_cost_per_token: 0.000004
-      adaptive_router_preferences:
-        quality_tier: 3
-        strengths: ["code_generation", "technical_design", "analytical_reasoning"]
-
+{{ adaptive_model_info('claude-opus-5-5') }}
   - model_name: claude-sonnet-5-5
     litellm_params:
       model: anthropic/claude-sonnet-5-5
@@ -345,11 +341,7 @@ model_list:
       additional_drop_params: ["temperature", "top_p", "top_k"]
     model_info:
       description: "Claude Sonnet 5.5 - balanced speed and capability"
-      input_cost_per_token: 0.000002
-      adaptive_router_preferences:
-        quality_tier: 2
-        strengths: ["writing", "code_understanding"]
-
+{{ adaptive_model_info('claude-sonnet-5-5') }}
   - model_name: claude-haiku-5-5
     litellm_params:
       model: anthropic/claude-haiku-5-5
@@ -357,12 +349,7 @@ model_list:
       additional_drop_params: ["temperature", "top_p", "top_k"]
     model_info:
       description: "Claude Haiku 5.5 - fastest and cheapest Claude model"
-      # Prompts up to 100K tokens; $0.50/MTok beyond.
-      input_cost_per_token: 0.0000001
-      adaptive_router_preferences:
-        quality_tier: 1
-        strengths: ["factual_lookup"]
-
+{{ adaptive_model_info('claude-haiku-5-5') }}
   # Most capable and most expensive ($8 / $40 per MTok). Not available to
   # Anthropic organizations under zero data retention (400 on every call).
   - model_name: claude-fable-5-2
@@ -372,6 +359,7 @@ model_list:
       additional_drop_params: ["temperature", "top_p", "top_k"]
     model_info:
       description: "Claude Fable 5.2 - most capable Claude model"
+{{ adaptive_model_info('claude-fable-5-2') }}
 {% endif %}
 {% if litellm_auto_router_tiers | length > 0 %}
 
@@ -406,7 +394,8 @@ model_list:
   # Claude models when litellm_anthropic_models_enabled is true, otherwise
   # unset and this entry is not rendered). Cold start uses each pool model's
   # model_info: adaptive_router_preferences (quality_tier + strengths) and
-  # input_cost_per_token, declared above for the Gemini and Claude entries
+  # input_cost_per_token, rendered above from
+  # litellm_adaptive_router_preferences for the models this file declares
   # and by the vllm_compute role (vllm_adaptive_*) for vLLM models; a model
   # without them has no prior and counts as free. ~10 requests per model per
   # type before learned estimates take over. Needs the Postgres DB (state
@@ -437,7 +426,7 @@ model_list:
       aws_region_name: os.environ/AWS_REGION
     model_info:
       description: "MiniMax M2.5 via AWS Bedrock (us-east-1)"
-
+{{ adaptive_model_info('minimax-m2.5') }}
   - model_name: qwen3-next
     litellm_params:
       model: bedrock/qwen.qwen3-next-80b-a3b
@@ -446,7 +435,7 @@ model_list:
       aws_region_name: os.environ/AWS_REGION
     model_info:
       description: "Qwen3 Next 80B A3B via AWS Bedrock (us-east-1)"
-
+{{ adaptive_model_info('qwen3-next') }}
   - model_name: qwen3-coder
     litellm_params:
       model: bedrock/qwen.qwen3-coder-next
@@ -455,7 +444,7 @@ model_list:
       aws_region_name: os.environ/AWS_REGION
     model_info:
       description: "Qwen3 Coder Next via AWS Bedrock (us-east-1)"
-
+{{ adaptive_model_info('qwen3-coder') }}
   - model_name: kimi-k3
     litellm_params:
       model: bedrock/us.moonshotai.kimi-k3
@@ -464,6 +453,7 @@ model_list:
       aws_region_name: os.environ/AWS_REGION
     model_info:
       description: "Kimi K3 via AWS Bedrock US geo inference"
+{{ adaptive_model_info('kimi-k3') }}
   {% endif %}
 
   # Local llama.cpp Edge Nodes (configured via setup script)

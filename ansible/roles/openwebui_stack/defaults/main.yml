@@ -164,11 +164,9 @@ litellm_auto_router_default_model: >-
 # when litellm_gemini_models_enabled is true, else the Claude models when
 # litellm_anthropic_models_enabled is true, otherwise nothing. Override in
 # group_vars to pool whatever the deployment serves. Every pool model needs
-# adaptive_router_preferences (quality_tier + strengths) and
-# input_cost_per_token in its LiteLLM model_info: the Gemini and Claude
-# entries in templates/config.yaml.j2 carry them, and vLLM models get them
-# from the vllm_compute role (vllm_adaptive_quality_tier,
-# vllm_adaptive_strengths). The Bedrock entries have none.
+# a quality tier, strengths, and an input price: set them with
+# litellm_adaptive_router_preferences below (vLLM models get theirs from
+# the vllm_compute role: vllm_adaptive_quality_tier, vllm_adaptive_strengths).
 # claude-fable-5-2 is left out of the Claude pool: it is the most expensive
 # model and returns a 400 for organizations under zero data retention.
 litellm_adaptive_router_gemini_models:
@@ -185,6 +183,65 @@ litellm_adaptive_router_models: >-
      if litellm_gemini_models_enabled | default(false) | bool
      else (litellm_adaptive_router_anthropic_models
            if litellm_anthropic_models_enabled | default(false) | bool else []) }}
+
+# Adaptive router settings per model, keyed by LiteLLM model_name and
+# rendered into that model's model_info in templates/config.yaml.j2:
+#   quality_tier: 1 (budget), 2 (mid), 3 (frontier) - cold-start prior
+#   strengths: request types the model is strong at (code_generation,
+#     code_understanding, technical_design, analytical_reasoning, writing,
+#     factual_lookup, general)
+#   input_cost_per_token: $/token, the router's cost signal (0 = free)
+# Applies to the models that template declares: Gemini, Claude, Bedrock.
+# Set litellm_adaptive_router_preferences in group_vars to change or add
+# entries; it merges over the defaults key by key, so one field of one
+# model can be changed without restating the rest, e.g.
+#   litellm_adaptive_router_preferences:
+#     claude-opus-5-5:
+#       quality_tier: 2
+#     kimi-k3:
+#       quality_tier: 3
+#       strengths: [analytical_reasoning]
+#       input_cost_per_token: 0.0000006
+# quality_tier: null drops a model's tier and strengths. A model with no
+# entry renders none of these keys.
+# Default prices: Gemini from LiteLLM model_prices 2026-10-28; Claude from
+# Anthropic list prices 2026-11-03 (Haiku: prompts up to 100K tokens).
+litellm_adaptive_router_default_preferences:
+  gemini-3.5-flash-lite:
+    quality_tier: 1
+    strengths: [factual_lookup]
+    input_cost_per_token: 0.0000003
+  gemini-3.8-flash:
+    quality_tier: 2
+    strengths: [writing, code_understanding]
+    input_cost_per_token: 0.00000075
+  gemini-3.1-pro:
+    quality_tier: 3
+    strengths: [analytical_reasoning]
+    input_cost_per_token: 0.000002
+  gemini-4-argon:
+    quality_tier: 3
+    strengths: [code_generation, technical_design, analytical_reasoning]
+    input_cost_per_token: 0.000002
+  claude-haiku-5-5:
+    quality_tier: 1
+    strengths: [factual_lookup]
+    input_cost_per_token: 0.0000001
+  claude-sonnet-5-5:
+    quality_tier: 2
+    strengths: [writing, code_understanding]
+    input_cost_per_token: 0.000002
+  claude-opus-5-5:
+    quality_tier: 3
+    strengths: [code_generation, technical_design, analytical_reasoning]
+    input_cost_per_token: 0.000004
+litellm_adaptive_router_preferences: {}
+
+# Derived, not configured: the defaults with the group_vars entries merged
+# over them. This is what the template and the validation read.
+litellm_adaptive_router_model_info: >-
+  {{ litellm_adaptive_router_default_preferences
+     | combine(litellm_adaptive_router_preferences | default({}, true), recursive=true) }}
 
 # Open WebUI default model for new chats (admin Settings > Models >
 # Default Models). LiteLLM model_names as a list or a comma-separated

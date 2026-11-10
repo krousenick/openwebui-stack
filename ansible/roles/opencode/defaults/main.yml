@@ -56,10 +56,38 @@ opencode_manage_nodejs: true
 # Requires OpenCode >= 1.18.29.
 opencode_litellm_plugin: "opencode-plugin-litellm@latest"
 
+# Native Anthropic provider. The Claude models are already discovered
+# under the `litellm` provider (OpenAI format, translated by the proxy).
+# When true, opencode.json also overrides opencode's built-in `anthropic`
+# provider (@ai-sdk/anthropic) so it calls the proxy's Anthropic-native
+# /v1/messages endpoint with the same per-user LiteLLM key: Claude gets
+# the Messages API as-is (adaptive thinking, prompt caching, native tool
+# use) and spend still lands on the user's virtual key. Follows the
+# stack flag that renders the Claude models into the LiteLLM config.
+opencode_anthropic_enabled: "{{ litellm_anthropic_models_enabled | default(false) | bool }}"
+
+# Claude models offered under the `anthropic` provider. opencode's catalog
+# (models.dev) lists every Anthropic model; this whitelist keeps the picker
+# to the model_names the proxy serves. IDs must exist in both places.
+opencode_anthropic_models:
+  - claude-opus-5-5
+  - claude-sonnet-5-5
+  - claude-haiku-5-5
+  - claude-fable-5-2
+
 # Default model in the opencode config (<provider>/<model_name>), where
-# model_name comes from the LiteLLM model_list (auto-discovered).
-opencode_default_model: "litellm/gemini-4-argon"
-opencode_small_model: "litellm/gemini-3.5-flash-lite"
+# model_name comes from the LiteLLM model_list (auto-discovered). Gemini
+# when the Gemini models are served or nothing else is known; the native
+# Claude provider when only the Anthropic models are enabled.
+opencode_prefer_anthropic: >-
+  {{ opencode_anthropic_enabled | bool
+     and not (litellm_gemini_models_enabled | default(false) | bool) }}
+opencode_default_model: >-
+  {{ 'anthropic/claude-opus-5-5' if opencode_prefer_anthropic | bool
+     else 'litellm/gemini-4-argon' }}
+opencode_small_model: >-
+  {{ 'anthropic/claude-haiku-5-5' if opencode_prefer_anthropic | bool
+     else 'litellm/gemini-3.5-flash-lite' }}
 
 # Optional curated overrides for discovered models. Keys are LiteLLM
 # model_names; the plugin preserves these verbatim and only adds models
