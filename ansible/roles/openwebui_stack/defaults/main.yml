@@ -31,10 +31,19 @@ selfsigned_san:
   - "IP:127.0.0.1"
   - "IP:::1"
 
-# Every stack secret the .env render needs. The assert in tasks/secrets.yml
-# fails the run listing exactly which ones are missing or left as the
-# CHANGE_ME placeholder.
+# Every stack secret the .env render needs. tasks/secrets.yml generates any
+# that are unset, empty, or still a template placeholder, and persists them
+# to stack_vault_local_file.
+stack_vault_local_file: "{{ playbook_dir }}/../group_vars/all/vault.local.yml"
+stack_secret_placeholders:
+  - CHANGE_ME
+  - change-me-before-production
+# Generated with an sk- prefix (LiteLLM and Open WebUI require it).
+stack_secret_sk_prefixed:
+  - litellm_master_key
+  - openwebui_api_admin_key
 stack_secret_names:
+  - litellm_generic_client_state
   - postgres_password
   - openwebui_db_password
   - litellm_db_password
