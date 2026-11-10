@@ -11,8 +11,7 @@
   vars_files:
     - ../group_vars/all/vars.yml
     - ../group_vars/all/vault.yml
-    - - ../group_vars/all/vault.local.yml
-      - ../group_vars/all/vault.yml
+
   roles:
     # Global host checks (Docker, compose, base packages) run on every host
     # before any role touches docker compose.

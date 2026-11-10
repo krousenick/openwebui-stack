@@ -112,6 +112,13 @@ services:
 
       # Disable Ollama
       ENABLE_OLLAMA_API: "false"
+{% if openwebui_default_models_csv | length > 0 %}
+
+      # Default chat model. ConfigVar: persisted after first boot; the
+      # playbook enforces it through the API afterwards
+      # (tasks/openwebui_default_models.yml).
+      DEFAULT_MODELS: {{ openwebui_default_models_csv | to_json }}
+{% endif %}
 
       # Production settings
       ENABLE_SIGNUP: "false"
@@ -322,6 +329,7 @@ services:
       # config.yaml can reference these using its normal environment-variable
       # interpolation mechanism.
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
       AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
       AWS_REGION: "${AWS_REGION:-us-east-1}"

@@ -216,10 +216,12 @@ guardrails:
 # Models are configured via environment variables set by setup script
 # Environment variables used:
 #   - GEMINI_API_KEY: Google Gemini API key
+#   - ANTHROPIC_API_KEY: Anthropic API key
 #   - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY: AWS Bedrock credentials
 #   - AWS_REGION: AWS region (default: us-east-1)
-# Model IDs checked 2026-10-21 against:
+# Model IDs checked 2026-10-21 (Claude: 2026-11-09) against:
 #   https://docs.litellm.ai/docs/providers/gemini
+#   https://docs.litellm.ai/docs/providers/anthropic
 #   https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
 #   https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html
 
@@ -321,6 +323,44 @@ model_list:
         weights:
           quality: 0.7
           cost: 0.3
+
+  # Anthropic Claude (Anthropic API). anthropic/ prefix uses
+  # ANTHROPIC_API_KEY. Rendered from templates/config.yaml.j2 only when
+  # litellm_anthropic_models_enabled is true. model_names equal the
+  # Anthropic model IDs, so Anthropic-native clients can use /v1/messages
+  # unchanged. These models reject sampling parameters (400), hence
+  # additional_drop_params.
+  - model_name: claude-opus-5-5
+    litellm_params:
+      model: anthropic/claude-opus-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+    model_info:
+      description: "Claude Opus 5.5 - complex reasoning, coding, and agentic work"
+
+  - model_name: claude-sonnet-5-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+    model_info:
+      description: "Claude Sonnet 5.5 - balanced speed and capability"
+
+  - model_name: claude-haiku-5-5
+    litellm_params:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+    model_info:
+      description: "Claude Haiku 5.5 - fastest and cheapest Claude model"
+
+  - model_name: claude-fable-5-2
+    litellm_params:
+      model: anthropic/claude-fable-5-2
+      api_key: os.environ/ANTHROPIC_API_KEY
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+    model_info:
+      description: "Claude Fable 5.2 - most capable Claude model"
 
   # AWS Bedrock OSS models. IDs are bedrock-runtime model IDs.
   # Kimi K3 has no in-region ID; us-east-1 uses the US geo profile.

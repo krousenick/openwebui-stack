@@ -143,6 +143,43 @@ litellm_bedrock_models_enabled: false
 # but cannot serve.
 litellm_gemini_models_enabled: false
 
+# Anthropic Claude models in the LiteLLM model_list (claude-opus-5-5,
+# claude-sonnet-5-5, claude-haiku-5-5, claude-fable-5-2). Off unless
+# anthropic_api_key is set in the vault: without a key the models
+# provision but cannot serve.
+litellm_anthropic_models_enabled: false
+
+# LiteLLM `auto` model: which model answers each complexity tier. Unset,
+# it follows the flags above: the Gemini models when
+# litellm_gemini_models_enabled is true, else the Claude models when
+# litellm_anthropic_models_enabled is true, otherwise no `auto` model. Set it
+# to route over other models (Bedrock, vLLM served names, llama.cpp); a
+# tier takes one model_name or a list. All four tiers are required.
+# litellm_auto_router_tiers:
+#   SIMPLE: gemini-3.5-flash-lite
+#   MEDIUM: [gemini-3.8-flash, my-vllm-model]
+#   COMPLEX: gemini-4-argon
+#   REASONING: gemini-3.1-pro
+
+# LiteLLM `adaptive` model (beta): the pool of models its bandit picks
+# from. Unset, it follows the flags the same way as the auto tiers (Gemini
+# models, else Claude haiku/sonnet/opus, otherwise no `adaptive` model).
+# Set it to pool other models; each needs adaptive_router_preferences and
+# input_cost_per_token in its LiteLLM model_info (vLLM models get them
+# from vllm_adaptive_quality_tier / vllm_adaptive_strengths).
+# litellm_adaptive_router_models:
+#   - gemini-3.5-flash-lite
+#   - gemini-3.8-flash
+#   - claude-opus-5-5
+#   - my-vllm-model
+
+# Open WebUI default model for new chats. Unset, it is `auto` whenever the
+# auto router above exists, otherwise the UI setting is left alone. Set a
+# LiteLLM model_name (or a list for a multi-model default) to pin one, or
+# "" to never manage it. Apply with:
+#   ansible-playbook playbooks/site.yml --tags openwebui-config
+# openwebui_default_models: auto
+
 # opencode (terminal AI coding agent). Host users who get an opencode
 # install pointed at the LiteLLM proxy. Empty list disables the role.
 opencode_users: []

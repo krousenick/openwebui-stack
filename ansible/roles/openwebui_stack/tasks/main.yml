@@ -89,6 +89,14 @@
     - skills
     - openwebui-config
 
+- name: Set the Open WebUI default model
+  ansible.builtin.import_tasks:
+    file: openwebui_default_models.yml
+  when: openwebui_default_models_csv | length > 0
+  tags:
+    - skills
+    - openwebui-config
+
 - name: Configure Keycloak SSO
   ansible.builtin.import_tasks:
     file: keycloak.yml

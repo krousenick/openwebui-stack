@@ -1,0 +1,93 @@
+---
+# Enforce Open WebUI's default chat model (admin Settings > Models >
+# Default Models) from openwebui_default_models, which defaults to the
+# LiteLLM `auto` router whenever litellm_auto_router_tiers renders one.
+# DEFAULT_MODELS in the compose env only seeds a fresh database;
+# afterwards the stored value wins, so this goes through the admin API,
+# which persists the value and updates the running app without a restart:
+#
+#   GET  /api/v1/configs/models  - current models config
+#   POST /api/v1/configs/models  - replace it (the task posts the GET
+#        result back with only DEFAULT_MODELS changed, so pinned models
+#        and the model order list are preserved)
+#   GET  /api/models             - what the chat picker offers, to report
+#        a default that is not served
+#
+# A default that Open WebUI does not list yet is still set, with a
+# warning: models reach LiteLLM from several places (provider flags in
+# group_vars, vLLM names registered later by playbooks/inference.yml,
+# entries added in the LiteLLM Admin UI), and the setting starts working
+# the moment the model appears. Until then Open WebUI ignores it.
+#
+# Auth reuses the skill-publisher admin API key that openwebui_skills.yml
+# upserts from the vault value openwebui_api_admin_key; that task runs
+# first in tasks/main.yml.
+
+- name: Set the Open WebUI default model
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -e
+      - "OPENWEBUI_API_KEY={{ openwebui_api_admin_key }}"
+      - "{{ compose_project_name }}_open-webui"
+      - python3
+      - -c
+      - |
+        import json, os, sys, urllib.error, urllib.request
+        desired, key = sys.argv[1], os.environ['OPENWEBUI_API_KEY']
+        base = 'http://localhost:8080'
+
+        def call(method, path, payload=None):
+            data = json.dumps(payload).encode() if payload is not None else None
+            req = urllib.request.Request(base + path, data=data, method=method)
+            req.add_header('Authorization', 'Bearer ' + key)
+            req.add_header('Content-Type', 'application/json')
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    return resp.status, json.loads(resp.read() or b'{}')
+            except urllib.error.HTTPError as e:
+                return e.code, {'detail': e.read().decode(errors='replace')[:500]}
+            except (urllib.error.URLError, TimeoutError, ValueError) as e:
+                return 0, {'detail': str(e)}
+
+        # Report-only: a model list that cannot be read never blocks the
+        # setting itself.
+        status, listing = call('GET', '/api/models')
+        if status == 200 and isinstance(listing, dict):
+            served = {m.get('id') for m in listing.get('data', [])}
+            missing = [m for m in desired.split(',') if m not in served]
+            if missing:
+                print('missing: ' + ', '.join(missing))
+
+        status, current = call('GET', '/api/v1/configs/models')
+        if status != 200:
+            print('failed: GET ' + str(status) + ' ' + json.dumps(current)); sys.exit(1)
+        if (current.get('DEFAULT_MODELS') or '') == desired:
+            print('unchanged'); sys.exit(0)
+        current['DEFAULT_MODELS'] = desired
+        status, updated = call('POST', '/api/v1/configs/models', current)
+        if status != 200 or updated.get('DEFAULT_MODELS') != desired:
+            print('failed: POST ' + str(status) + ' ' + json.dumps(updated)); sys.exit(1)
+        print('updated')
+      - "{{ openwebui_default_models_csv }}"
+  register: openwebui_default_models_set
+  changed_when: "'updated' in openwebui_default_models_set.stdout_lines"
+  failed_when: >-
+    openwebui_default_models_set.rc != 0
+    or openwebui_default_models_set.stdout_lines | select('match', '^failed: ') | list | length > 0
+
+- name: Warn when a default model is not served yet
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: Open WebUI does not list
+      {{ openwebui_default_models_missing | first | regex_replace('^missing: ', '') }}.
+      The default is saved and applies once the model exists. For `auto`,
+      enable litellm_gemini_models_enabled or set litellm_auto_router_tiers;
+      for a vLLM model, run playbooks/inference.yml; otherwise check the
+      name against the LiteLLM model_name.
+  vars:
+    openwebui_default_models_missing: >-
+      {{ openwebui_default_models_set.stdout_lines | default([])
+         | select('match', '^missing: ') | list }}
+  when: openwebui_default_models_missing | length > 0

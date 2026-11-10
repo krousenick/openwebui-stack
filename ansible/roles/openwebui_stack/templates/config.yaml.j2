@@ -13,10 +13,10 @@ general_settings:
   otel: true
 
   # Request/Response logging
-  json_logs: false
+  json_logs: true
 
   # Background health checks
-  background_health_checks: false # Disables periodic background pings
+  background_health_checks: true # Disables periodic background pings
 
   # Open WebUI sends the logged-in user when ENABLE_FORWARD_USER_INFO_HEADERS=true.
   # The username matches the LiteLLM user_id created by SSO, so Usage attributes spend to that user.
@@ -77,7 +77,9 @@ litellm_settings:
   # double-injects when the client sets its own cache_control, and it does
   # NOT touch any other provider.
   # Every model family this stack serves, and why nothing further is set:
-  #   gemini/ (3.x)     - Google implicit caching is automatic and free; do
+  #   anthropic/        - the Claude models (litellm_anthropic_models_enabled)
+  #                       are the ones this flag injects markers for.
+  #   gemini/ (3.x)    - Google implicit caching is automatic and free; do
   #                       NOT add cache_control_injection_points (switches
   #                       to paid explicit context caching with storage).
   #   bedrock/ OSS      - MiniMax/Qwen/Kimi are absent from AWS's prompt
@@ -230,10 +232,12 @@ guardrails:
 # Models are configured via environment variables set by setup script
 # Environment variables used:
 #   - GEMINI_API_KEY: Google Gemini API key
+#   - ANTHROPIC_API_KEY: Anthropic API key
 #   - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY: AWS Bedrock credentials
 #   - AWS_REGION: AWS region (default: us-east-1)
-# Model IDs checked 2026-10-21 against:
+# Model IDs checked 2026-10-21 (Claude: 2026-11-09) against:
 #   https://docs.litellm.ai/docs/providers/gemini
+#   https://docs.litellm.ai/docs/providers/anthropic
 #   https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
 #   https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html
 
@@ -241,8 +245,10 @@ model_list:
 {% if litellm_gemini_models_enabled | default(false) | bool %}
   # Google Gemini (Google AI Studio). gemini/ prefix uses GEMINI_API_KEY.
   # Skipped unless litellm_gemini_models_enabled is true (they need
-  # GEMINI_API_KEY). The auto/adaptive routers and the voice-assistant
-  # alias route only to these models, so they are gated by the same flag.
+  # GEMINI_API_KEY). The voice-assistant alias routes only to these models,
+  # so it is gated by the same flag. The auto and adaptive routers are
+  # rendered below from litellm_auto_router_tiers and
+  # litellm_adaptive_router_models.
   - model_name: gemini-3.8-flash
     litellm_params:
       model: gemini/gemini-3.8-flash
@@ -303,30 +309,108 @@ model_list:
     litellm_params:
       model: gemini/gemini-embedding-001
       api_key: os.environ/GEMINI_API_KEY
+{% endif %}
+{% if litellm_anthropic_models_enabled | default(false) | bool %}
+
+  # Anthropic Claude (Anthropic API). anthropic/ prefix uses
+  # ANTHROPIC_API_KEY. Skipped unless litellm_anthropic_models_enabled is
+  # true. The model_names equal the Anthropic model IDs, so Anthropic-native
+  # clients (Claude Code, the Anthropic SDKs) can point at the proxy's
+  # /v1/messages endpoint unchanged, and OpenAI-format clients (Open WebUI)
+  # use /v1/chat/completions. Windows and prices come from LiteLLM's cost
+  # map (1M input / 128K output), so context compaction and spend tracking
+  # need nothing here. enable_anthropic_prompt_caching above injects the
+  # cache_control checkpoints.
+  # additional_drop_params: these models reject sampling parameters
+  # (temperature/top_p/top_k return a 400), and Open WebUI sends them
+  # whenever a user or Workspace model sets one. Thinking is adaptive by
+  # default and needs no parameter.
+  - model_name: claude-opus-5-5
+    litellm_params:
+      model: anthropic/claude-opus-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+    model_info:
+      description: "Claude Opus 5.5 - complex reasoning, coding, and agentic work"
+      # Adaptive router pricing (input $/token, Anthropic list price 2026-11-03)
+      input_cost_per_token: 0.000004
+      adaptive_router_preferences:
+        quality_tier: 3
+        strengths: ["code_generation", "technical_design", "analytical_reasoning"]
+
+  - model_name: claude-sonnet-5-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+    model_info:
+      description: "Claude Sonnet 5.5 - balanced speed and capability"
+      input_cost_per_token: 0.000002
+      adaptive_router_preferences:
+        quality_tier: 2
+        strengths: ["writing", "code_understanding"]
+
+  - model_name: claude-haiku-5-5
+    litellm_params:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+    model_info:
+      description: "Claude Haiku 5.5 - fastest and cheapest Claude model"
+      # Prompts up to 100K tokens; $0.50/MTok beyond.
+      input_cost_per_token: 0.0000001
+      adaptive_router_preferences:
+        quality_tier: 1
+        strengths: ["factual_lookup"]
+
+  # Most capable and most expensive ($8 / $40 per MTok). Not available to
+  # Anthropic organizations under zero data retention (400 on every call).
+  - model_name: claude-fable-5-2
+    litellm_params:
+      model: anthropic/claude-fable-5-2
+      api_key: os.environ/ANTHROPIC_API_KEY
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+    model_info:
+      description: "Claude Fable 5.2 - most capable Claude model"
+{% endif %}
+{% if litellm_auto_router_tiers | length > 0 %}
 
   # Complexity auto-router. Call model "auto". The heuristic scorer picks a
   # tier with no extra API call. Session affinity is off, so each turn is
-  # scored on its own. Checked against:
-  # https://docs.litellm.ai/docs/proxy/auto_routing
+  # scored on its own. Tiers come from litellm_auto_router_tiers (group_vars;
+  # defaults to the Gemini models when litellm_gemini_models_enabled is
+  # true, else the Claude models when litellm_anthropic_models_enabled is
+  # true, otherwise unset and this entry is not rendered). A tier value is
+  # one model_name or a list (random pick per request); any model_name the
+  # proxy serves works, including Bedrock and db-registered vLLM models.
+  # Checked against: https://docs.litellm.ai/docs/proxy/auto_routing
   - model_name: auto
     litellm_params:
       model: auto_router/complexity_router
-      complexity_router_default_model: gemini-3.8-flash
+      complexity_router_default_model: {{ litellm_auto_router_default_model | to_json }}
       complexity_router_config:
         tiers:
-          SIMPLE: gemini-3.5-flash-lite
-          MEDIUM: gemini-3.8-flash
-          COMPLEX: gemini-4-argon
-          REASONING: gemini-3.1-pro
+{% for tier in ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'] %}
+          {{ tier }}: {{ litellm_auto_router_tiers[tier] | to_json }}
+{% endfor %}
         classifier_type: heuristic
         session_affinity: false
+{% endif %}
+{% if litellm_adaptive_router_models | length > 0 %}
 
   # Adaptive router (beta). Call model "adaptive". A Thompson-sampling bandit
   # learns which model wins per request type (code, writing, analysis...) from
   # satisfaction/stagnation/misalignment signals, weighted quality vs cost.
-  # Cold start uses quality_tier + strengths declared above; ~10 requests per
-  # model per type before learned estimates take over. Needs the Postgres DB
-  # (state persists in LiteLLM_AdaptiveRouter* tables; already required here).
+  # The pool comes from litellm_adaptive_router_models (group_vars; defaults
+  # to the Gemini models when litellm_gemini_models_enabled is true, else the
+  # Claude models when litellm_anthropic_models_enabled is true, otherwise
+  # unset and this entry is not rendered). Cold start uses each pool model's
+  # model_info: adaptive_router_preferences (quality_tier + strengths) and
+  # input_cost_per_token, declared above for the Gemini and Claude entries
+  # and by the vllm_compute role (vllm_adaptive_*) for vLLM models; a model
+  # without them has no prior and counts as free. ~10 requests per model per
+  # type before learned estimates take over. Needs the Postgres DB (state
+  # persists in LiteLLM_AdaptiveRouter* tables; already required here).
   # Force frontier on one request: header x-litellm-min-quality-tier: 3.
   # Inspect: GET /adaptive_router/state. Weights must sum to 1.0.
   # https://docs.litellm.ai/docs/adaptive_router
@@ -334,13 +418,7 @@ model_list:
     litellm_params:
       model: auto_router/adaptive_router
       adaptive_router_config:
-        available_models:
-          [
-            "gemini-3.5-flash-lite",
-            "gemini-3.8-flash",
-            "gemini-3.1-pro",
-            "gemini-4-argon",
-          ]
+        available_models: {{ litellm_adaptive_router_models | to_json }}
         weights:
           quality: 0.7
           cost: 0.3

@@ -117,6 +117,92 @@ litellm_bedrock_models_enabled: false
 # without a key. Set true in group_vars once the Gemini key exists.
 litellm_gemini_models_enabled: false
 
+# Anthropic Claude models in the LiteLLM model_list (claude-opus-5-5,
+# claude-sonnet-5-5, claude-haiku-5-5, claude-fable-5-2). Off by default:
+# they need ANTHROPIC_API_KEY (vault: anthropic_api_key) and provision
+# nothing useful without a key. Set true in group_vars once the key exists.
+litellm_anthropic_models_enabled: false
+
+# LiteLLM `auto` model (auto_router/complexity_router): which model_name
+# answers each complexity tier. A tier value is one model_name or a list
+# (random pick per request). All four tiers are required; {} drops the
+# `auto` model. Derived from the provider flags: the Gemini models when
+# litellm_gemini_models_enabled is true, else the Claude models when
+# litellm_anthropic_models_enabled is true, otherwise nothing, because the
+# role cannot rank Bedrock, vLLM, or llama.cpp models by strength. Override
+# in group_vars to route over whatever the deployment serves, e.g.
+#   litellm_auto_router_tiers:
+#     SIMPLE: qwen3-next
+#     MEDIUM: [qwen3-next, my-vllm-model]
+#     COMPLEX: qwen3-coder
+#     REASONING: kimi-k3
+litellm_auto_router_gemini_tiers:
+  SIMPLE: gemini-3.5-flash-lite
+  MEDIUM: gemini-3.8-flash
+  COMPLEX: gemini-4-argon
+  REASONING: gemini-3.1-pro
+litellm_auto_router_anthropic_tiers:
+  SIMPLE: claude-haiku-5-5
+  MEDIUM: claude-sonnet-5-5
+  COMPLEX: claude-opus-5-5
+  REASONING: claude-opus-5-5
+litellm_auto_router_tiers: >-
+  {{ litellm_auto_router_gemini_tiers
+     if litellm_gemini_models_enabled | default(false) | bool
+     else (litellm_auto_router_anthropic_tiers
+           if litellm_anthropic_models_enabled | default(false) | bool else {}) }}
+
+# Model the auto router uses when a turn cannot be classified. Defaults to
+# the MEDIUM tier (its first entry when the tier is a list).
+litellm_auto_router_default_model: >-
+  {{ [litellm_auto_router_tiers.MEDIUM | default('')] | flatten | first | default('')
+     if litellm_auto_router_tiers | length > 0 else '' }}
+
+# LiteLLM `adaptive` model (auto_router/adaptive_router, beta): the pool of
+# model_names its bandit picks from. [] drops the `adaptive` model. Derived
+# from the provider flags the same way as the auto tiers: the Gemini models
+# when litellm_gemini_models_enabled is true, else the Claude models when
+# litellm_anthropic_models_enabled is true, otherwise nothing. Override in
+# group_vars to pool whatever the deployment serves. Every pool model needs
+# adaptive_router_preferences (quality_tier + strengths) and
+# input_cost_per_token in its LiteLLM model_info: the Gemini and Claude
+# entries in templates/config.yaml.j2 carry them, and vLLM models get them
+# from the vllm_compute role (vllm_adaptive_quality_tier,
+# vllm_adaptive_strengths). The Bedrock entries have none.
+# claude-fable-5-2 is left out of the Claude pool: it is the most expensive
+# model and returns a 400 for organizations under zero data retention.
+litellm_adaptive_router_gemini_models:
+  - gemini-3.5-flash-lite
+  - gemini-3.8-flash
+  - gemini-3.1-pro
+  - gemini-4-argon
+litellm_adaptive_router_anthropic_models:
+  - claude-haiku-5-5
+  - claude-sonnet-5-5
+  - claude-opus-5-5
+litellm_adaptive_router_models: >-
+  {{ litellm_adaptive_router_gemini_models
+     if litellm_gemini_models_enabled | default(false) | bool
+     else (litellm_adaptive_router_anthropic_models
+           if litellm_anthropic_models_enabled | default(false) | bool else []) }}
+
+# Open WebUI default model for new chats (admin Settings > Models >
+# Default Models). LiteLLM model_names as a list or a comma-separated
+# string; more than one opens new chats in multi-model mode. Defaults to
+# `auto` whenever the auto router above is rendered, otherwise empty, which
+# leaves whatever is set in the UI alone. Seeds DEFAULT_MODELS on first
+# boot and is enforced through the admin API on every run
+# (tasks/openwebui_default_models.yml), because the env var is a persisted
+# ConfigVar that Open WebUI ignores after first boot. A user's own
+# Settings > Interface default still wins for that user.
+openwebui_default_models: "{{ 'auto' if litellm_auto_router_tiers | length > 0 else '' }}"
+
+# Derived, not configured: the list or string above as the comma-separated
+# value Open WebUI stores.
+openwebui_default_models_csv: >-
+  {{ [openwebui_default_models | default('', true)] | flatten | join(',')
+     | split(',') | map('trim') | reject('equalto', '') | join(',') }}
+
 # Agent Skills discovery index (litellm_settings.public_skills_index).
 # Serves every proxy-hosted skill in ./skills at
 # /.well-known/agent-skills/index.json for `npx skills add` (opencode,

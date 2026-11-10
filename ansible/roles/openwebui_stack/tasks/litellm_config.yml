@@ -5,6 +5,44 @@
 # literally (no ${VAR} substitution), so the Host must be rendered from
 # the group_vars domain rather than left as a shell-style default.
 
+- name: Validate the auto router tiers
+  # LiteLLM fills a missing tier with its own built-in model names, which
+  # this proxy does not serve, so every tier must be set explicitly.
+  ansible.builtin.assert:
+    that:
+      - litellm_auto_router_tiers.keys() | sort == ['COMPLEX', 'MEDIUM', 'REASONING', 'SIMPLE']
+      - litellm_auto_router_tiers.values() | reject() | list | length == 0
+      - litellm_auto_router_default_model | length > 0
+    fail_msg: >-
+      litellm_auto_router_tiers must map SIMPLE, MEDIUM, COMPLEX, and
+      REASONING each to a LiteLLM model_name (or a non-empty list of them).
+      Set it to {} to drop the auto model.
+  when: litellm_auto_router_tiers | length > 0
+
+- name: Validate the adaptive router pool
+  # A comma string would render as one model name and an empty entry as a
+  # model the proxy does not serve; either breaks every `adaptive` call.
+  ansible.builtin.assert:
+    that:
+      - litellm_adaptive_router_models is not string
+      - litellm_adaptive_router_models | select('string') | list | length == litellm_adaptive_router_models | length
+      - litellm_adaptive_router_models | reject() | list | length == 0
+    fail_msg: >-
+      litellm_adaptive_router_models must be a list of LiteLLM model_names.
+      Set it to [] to drop the adaptive model.
+  when: litellm_adaptive_router_models | length > 0
+
+- name: Validate the Anthropic API key
+  # The Claude entries read ANTHROPIC_API_KEY, which env.j2 renders only
+  # from a non-empty anthropic_api_key; without it every call returns 401.
+  ansible.builtin.assert:
+    that:
+      - anthropic_api_key | default('') | length > 0
+    fail_msg: >-
+      litellm_anthropic_models_enabled is true but anthropic_api_key is
+      empty. Set it in ansible/group_vars/all/vault.local.yml (or vault.yml).
+  when: litellm_anthropic_models_enabled | default(false) | bool
+
 - name: Render the LiteLLM config
   ansible.builtin.template:
     src: config.yaml.j2
