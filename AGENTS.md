@@ -156,13 +156,13 @@ Pieces: `brave-search-mcp` container (`BRAVE_SEARCH_API_KEY` required), `mcp_ser
 
 ### Centralized Skills (LiteLLM Skills Gateway)
 
-Agent know-how lives in `skills/<name>/SKILL.md` (Claude/Anthropic Agent Skills format): `3d-print-pipeline`, `stack-ops`, `sso-troubleshooting`, `guardrail-tuning`, `web-search-verify`. The playbook publishes every skill to three consumers (no MCP server needs to be enabled):
+Agent know-how lives in `skills/<name>/SKILL.md` (Claude/Anthropic Agent Skills format): `3d-print-pipeline`, `stack-ops`, `sso-troubleshooting`, `guardrail-tuning`, `web-search-verify`, `deep-research`. The playbook publishes every skill to three consumers (no MCP server needs to be enabled):
 
 1. `ansible/roles/openwebui_stack/tasks/mcp/skills_gateway.yml` uploads each skill's zip to the proxy-hosted store (`POST /v1/skills`, `custom_llm_provider=litellm_proxy`, stored in the proxy's Postgres) and registers a Claude Code marketplace entry (`POST`/`PUT /claude-code/plugins/<name>`; the archive source must be https, so it points at `https://litellm.<domain>/v1/skills/<id>/archive`). Idempotent by deterministic archive digest (the discovery index publishes the sha256 of LiteLLM's repack; the task recomputes it byte-identically — root SKILL.md, 1980 mtimes, mode 0644, DEFLATE): the store has no update endpoint, so drift = delete + re-upload. `litellm_settings.public_skills_index: true` (toggle `skills_public_index_enabled`) serves the Agent Skills discovery index at `/.well-known/agent-skills/index.json` for `npx skills add`. Semantic skill search needs `litellm_settings.skill_search_embedding_model: text-embedding` (gemini-embedding-001).
 2. `ansible/roles/openwebui_stack/tasks/openwebui_skills.yml` pushes each SKILL.md into Open WebUI's workspace through its Skills API (`/api/v1/skills/create`, `/id/<name>/update` with `expected_version_id`), authenticated by a `skill-publisher` admin api key upserted into the `user`/`api_key` tables from the vault's `openwebui_api_admin_key`. Users then `$`-mention skills or bind them to models.
 3. The opencode role (`opencode_sync_skills: true`) copies `skills/*` into each user's `~/.config/opencode/skills/` for opencode's native `skill` tool.
 
-The compose template mounts `./skills` read-only into `litellm` (`/app/skills`) and `open-webui` (`/app/skills`). Frontmatter rules: `name` must equal the directory name and be a valid slug; `description` 1–1024 chars drives discovery. Full flow and consume commands in README "Centralized Skills".
+The compose template mounts `./skills` read-only into `litellm` (`/app/skills`) and `open-webui` (`/app/skills`). Frontmatter rules (asserted in `skills_gateway.yml`): `name` must equal the directory name and be a valid slug; `description` 1–1024 chars drives discovery. Only `SKILL.md` reaches the proxy store and Open WebUI, so keep each skill in that one file (`deep-research` inlines its researcher and report-writer briefs for this reason). Full flow and consume commands in README "Centralized Skills".
 
 ### Context Compaction (oversized histories)
 

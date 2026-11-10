@@ -792,13 +792,18 @@ Agent Skills format, agentskills.io). One checkout, three consumers:
 | `sso-troubleshooting` | Keycloak OIDC failures across Open WebUI/LiteLLM/Grafana: symptom → cause → fix |
 | `guardrail-tuning` | Editing the content-filter category overrides without losing injection defenses |
 | `web-search-verify` | End-to-end Brave MCP verification: container, startup hook, injected tools, streaming path |
+| `deep-research` | Multi-source research into a cited narrative report: decompose the question, research each subtopic into sourced notes, write the report from the notes. Parallel subagents in Claude Code and opencode; the same stages in sequence in Open WebUI chats (Brave and Playwright MCP tools) |
 
 ### How it works
 
 Each `skills/<name>/SKILL.md` (frontmatter `name` must match the directory,
 `description` drives discovery) is published to three places by the
 playbook — no MCP server needs to be enabled, skills are plain
-instructions:
+instructions. The playbook stops on a `name` that is not the directory
+name as a lowercase hyphenated slug, or a `description` outside 1–1024
+characters. Only `SKILL.md` is published to the proxy store and Open
+WebUI, so a skill must be self-contained: files beside it (`references/`,
+`scripts/`) reach opencode only.
 
 1. **LiteLLM proxy skill store** (`tasks/mcp/skills_gateway.yml`): the
    zip is uploaded to `POST /v1/skills` with `custom_llm_provider=

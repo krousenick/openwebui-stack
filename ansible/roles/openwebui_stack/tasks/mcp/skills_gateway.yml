@@ -25,6 +25,11 @@
 # drift triggers delete + re-upload + registry PUT. Digest comparison
 # needs the discovery index (public_skills_index); without it, stored
 # skills are assumed unchanged and only missing ones are uploaded.
+#
+# Only SKILL.md is published: the upload zip and the digest hold that one
+# file, and Open WebUI stores a skill as a single document. A skill must
+# therefore be self-contained; files beside SKILL.md (references/,
+# scripts/) reach opencode only, through its directory copy.
 
 - name: Require Skills Gateway settings
   ansible.builtin.assert:
@@ -66,15 +71,15 @@
         if not match:
             sys.exit(1)
         fm = match.group(1)
-        name = re.search(r'^name:\s*(\S+)', fm, re.M)
+        name = re.search(r'^name:[ \t]*(.*?)[ \t\r]*$', fm, re.M)
         desc = re.search(r'^description:\s*(.+)$', fm, re.M)
-        if not name:
+        if not name or not name.group(1):
             sys.exit(1)
         description = ' '.join(desc.group(1).split()) if desc else ''
         if description.startswith('>-'):
             block = re.search(r'^description:\s*>-\s*\n((?:\s+.+\n?)+)', fm, re.M)
             description = ' '.join(line.strip() for line in block.group(1).splitlines()) if block else ''
-        print(name.group(1))
+        print(name.group(1).strip('"').strip("'"))
         print(description)
       - /app/skills/{{ item }}/SKILL.md
   loop: "{{ skills_gateway_desired }}"
@@ -91,6 +96,29 @@
              'description': ((item.1.stdout_lines[1:] | default([])) | join(' '))}] }}
   loop: "{{ skills_gateway_desired | zip(skills_gateway_frontmatter.results) | list }}"
   no_log: true
+
+- name: Validate each skill's frontmatter
+  # The frontmatter name is the key in every consumer: the store's
+  # display_title, the marketplace entry, the discovery index, and the
+  # Open WebUI skill id. It must be the package directory name; a display
+  # title such as "Deep Research Protocol (DRP)" would register a second,
+  # differently named skill and never match the index digest.
+  ansible.builtin.assert:
+    that:
+      - item.name == item.package
+      - item.name is match('^[a-z0-9]+(-[a-z0-9]+)*$')
+      - item.name | length <= 64
+      - item.description | length > 0
+      - item.description | length <= 1024
+    fail_msg: >-
+      skills/{{ item.package }}/SKILL.md: frontmatter name
+      '{{ item.name }}' must equal the directory name as a lowercase
+      hyphenated slug (64 characters at most), and description must be
+      1-1024 characters (found {{ item.description | length }}).
+    quiet: true
+  loop: "{{ skills_gateway_skills }}"
+  loop_control:
+    label: "{{ item.package }}"
 
 - name: Compute each skill archive's deterministic sha256
   # Two artifacts per skill:
