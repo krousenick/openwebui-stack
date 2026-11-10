@@ -190,8 +190,9 @@ Per-entry keys (all optional except `model`; unset keys take the `vllm_aux_defau
 | `extra_args` | `[]` | Raw vLLM CLI flags appended to `vllm serve` |
 | `api_key` | `vllm_aux_api_key` (defaults to `vllm_api_key`) | API key this endpoint requires |
 | `reasoning_parser` | `""` | vLLM reasoning parser (`qwen3`, `gemma4`, `deepseek_r1`, …): renders `--reasoning-parser`, and the LiteLLM `model_info` gets `supports_reasoning: true` |
-| `chat_template_kwargs` | `{}` | Rendered as `--default-chat-template-kwargs '<json>'`: server-side thinking defaults (e.g. `{thinking: true}` for Gemma 4, `{enable_thinking: false}` to turn Qwen3 thinking off) |
+| `chat_template_kwargs` | `{}` | Rendered as `--default-chat-template-kwargs '<json>'`: server-side thinking defaults (e.g. `{enable_thinking: true}` for Gemma 4, `{enable_thinking: false}` to turn Qwen3 thinking off) |
 | `reasoning_effort` | `""` | Default `reasoning_effort` in the LiteLLM `litellm_params` (`none`…`max`): used when a request sends no effort; Open WebUI / MAGIE per-request effort overrides it |
+| `reasoning_efforts` | `[]` | Levels the opencode / MAGIE thinking picker offers: each renders `supports_<level>_reasoning_effort: true` in the LiteLLM `model_info` (same as `vllm_reasoning_efforts` on the primary) |
 | `repetition_detection` | `{max_pattern_size: 20, min_pattern_size: 3, min_count: 4}` | Default vLLM N-gram loop detection in LiteLLM `litellm_params`; detects 3–20-token phrases repeated four times and terminates generation |
 
 Behavior:
@@ -217,7 +218,7 @@ For models that emit reasoning traces (DeepSeek R1, Qwen3, Gemma 4 with thinking
    |---|---|---|---|
    | `deepseek_r1` | DeepSeek R1, R1-Distill, QwQ | yes | — |
    | `qwen3` | Qwen3 | yes | `{enable_thinking: false}` to **disable** |
-   | `gemma4` | Gemma 4 | **no** | `{thinking: true}` to **enable** |
+   | `gemma4` | Gemma 4 | **no** | `{enable_thinking: true}` to **enable** (the template ignores `thinking`) |
    | `deepseek_v3` | DeepSeek-V3.1 | **no** | see vLLM docs (`thinking: true`) |
    | `glm45` | GLM-4.5 | yes | — |
    | `granite` | IBM Granite 3.2 | **no** | `{thinking: true}` to **enable** |
@@ -229,7 +230,9 @@ For models that emit reasoning traces (DeepSeek R1, Qwen3, Gemma 4 with thinking
    # primary (Gemma 4: parser + thinking is off by default)
    vllm_reasoning_parser: gemma4
    vllm_chat_template_kwargs:
-     thinking: true
+     enable_thinking: true
+   # levels the opencode / MAGIE thinking picker offers
+   vllm_reasoning_efforts: [none, low, medium, high]
 
    # aux (Qwen3 thinks by default; no kwargs needed)
    vllm_aux_models:
@@ -265,7 +268,7 @@ The parser makes vLLM accept `reasoning_effort` on every request; effort level i
 
 1. **Per request** — the client sends `reasoning_effort: none|minimal|low|medium|high|xhigh|max` on `/v1/chat/completions`. vLLM maps it onto the chat template itself: any of `low`/`medium`/`high` (and stronger) injects `enable_thinking: true`, `none` injects `enable_thinking: false` (docs: [vLLM reasoning outputs](https://docs.vllm.ai/en/stable/features/reasoning_outputs.html)). So a Gemma 4 served with `--reasoning-parser gemma4` **does not need** `vllm_chat_template_kwargs` when the request always carries an effort.
 2. **Per model, as a LiteLLM default** — `vllm_reasoning_effort` (primary) or an aux entry's `reasoning_effort` key (default `vllm_aux_default_reasoning_effort`). The role puts it in the LiteLLM deployment's `litellm_params` (both the `/model/new` POST and the rendered snippet), and LiteLLM merges it into requests that send no effort of their own; a request-level value overrides it ([LiteLLM reasoning docs](https://docs.litellm.ai/docs/reasoning_content)).
-3. **Server default** — `vllm_chat_template_kwargs` (e.g. `{thinking: true}`), which the request's `chat_template_kwargs` and the effort injection both override.
+3. **Server default** — `vllm_chat_template_kwargs` (e.g. `{enable_thinking: true}` for Gemma 4), which the request's `chat_template_kwargs` and the effort injection both override.
 
 ```yaml
 # primary: default effort for requests that don't ask for one

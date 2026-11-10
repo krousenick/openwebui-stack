@@ -108,7 +108,7 @@ vllm_reasoning_parser: ""
 # --default-chat-template-kwargs '<json>' on `vllm serve` and merged with
 # request-level chat_template_kwargs (request values win). This is how a
 # model whose reasoning is off by default thinks: Gemma 4 needs
-# {"thinking": true}; Qwen3 thinks by default and can be turned off with
+# {"enable_thinking": true}; Qwen3 thinks by default and can be turned off with
 # {"enable_thinking": false}. Empty dict omits the flag.
 vllm_chat_template_kwargs: {}
 
@@ -121,6 +121,16 @@ vllm_chat_template_kwargs: {}
 # low, medium, high, xhigh, max. Empty string sends no default - clients
 # that set reasoning_effort per request still work.
 vllm_reasoning_effort: ""
+
+# Reasoning-effort levels the clients offer for the primary model. Each
+# entry becomes a supports_<level>_reasoning_effort: true flag in the
+# LiteLLM model_info; the opencode/MAGIE LiteLLM plugin turns those flags
+# into the model's thinking-level picker (variants) and shows none when
+# the list is empty, even with supports_reasoning: true. Only meaningful
+# with vllm_reasoning_parser set. Gemma 4 thinking is on/off: none turns
+# it off and every other level turns it on with about the same depth.
+#   vllm_reasoning_efforts: [none, low, medium, high]
+vllm_reasoning_efforts: []
 
 vllm_repetition_detection:
   max_pattern_size: 20
@@ -315,12 +325,17 @@ vllm_flux_api_key: ""
 #   chat_template_kwargs default chat-template kwargs rendered as
 #                        --default-chat-template-kwargs (default
 #                        vllm_aux_default_chat_template_kwargs; e.g.
-#                        {thinking: true} to turn Gemma 4 thinking on)
+#                        {enable_thinking: true} to turn Gemma 4 thinking on)
 #   reasoning_effort     default reasoning effort rendered into the LiteLLM
 #                        litellm_params (default
 #                        vllm_aux_default_reasoning_effort; one of none,
 #                        minimal, low, medium, high, xhigh, max). A
 #                        request-level reasoning_effort overrides it
+#   reasoning_efforts    levels the clients offer, rendered as
+#                        supports_<level>_reasoning_effort flags in the
+#                        LiteLLM model_info (default
+#                        vllm_aux_default_reasoning_efforts; see
+#                        vllm_reasoning_efforts)
 #   repetition_detection default repetition-loop detection rendered into the
 #                        LiteLLM litellm_params (default
 #                        vllm_aux_default_repetition_detection); vLLM ends
@@ -342,6 +357,7 @@ vllm_aux_default_extra_args: []
 vllm_aux_default_reasoning_parser: ""
 vllm_aux_default_chat_template_kwargs: {}
 vllm_aux_default_reasoning_effort: ""
+vllm_aux_default_reasoning_efforts: []
 vllm_aux_default_repetition_detection:
   max_pattern_size: 20
   min_pattern_size: 3
@@ -429,4 +445,3 @@ vllm_controller_host: "{{ hostvars[groups['openwebui'] | first]['ansible_host']
   if (groups['openwebui'] | default([]) | length > 0) else '127.0.0.1' }}"
 vllm_loki_push_port: 3100
 vllm_loki_push_url: "http://{{ vllm_controller_host }}:{{ vllm_loki_push_port }}/loki/api/v1/push"
-

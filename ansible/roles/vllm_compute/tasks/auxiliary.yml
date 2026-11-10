@@ -50,6 +50,7 @@
       reasoning_parser: "{{ item.reasoning_parser | default(vllm_aux_default_reasoning_parser) }}"
       chat_template_kwargs: "{{ item.chat_template_kwargs | default(vllm_aux_default_chat_template_kwargs) }}"
       reasoning_effort: "{{ item.reasoning_effort | default(vllm_aux_default_reasoning_effort) }}"
+      reasoning_efforts: "{{ item.reasoning_efforts | default(vllm_aux_default_reasoning_efforts) }}"
       repetition_detection: "{{ item.repetition_detection | default(vllm_aux_default_repetition_detection) }}"
   loop: "{{ vllm_aux_models | default([]) }}"
   loop_control:

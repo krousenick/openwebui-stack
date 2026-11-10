@@ -162,7 +162,7 @@
   # each entry's hosts key. Same unconditional-import + cleanup pattern
   # as flux. Also runs before the LiteLLM render.
   ansible.builtin.import_tasks:
-    file: aux.yml
+    file: auxiliary.yml
 
 - name: Render LiteLLM registration snippet
   ansible.builtin.import_tasks:

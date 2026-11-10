@@ -97,7 +97,11 @@
     #      run sets a reasoning parser (vllm_reasoning_parser /
     #      aux reasoning_parser), or
     #   5. its stored repetition_detection no longer matches the effective
-    #      model setting - same delete + re-register refresh path.
+    #      model setting - same delete + re-register refresh path, or
+    #   6. its stored default reasoning_effort (litellm_params) no longer
+    #      matches vllm_reasoning_effort / the aux entry's reasoning_effort, or
+    #   7. its stored supports_<level>_reasoning_effort flags no longer
+    #      match vllm_reasoning_efforts / the aux entry's reasoning_efforts.
    # int()-normalized: LiteLLM stores the primary's value as int and
    # older registrations may hold a string. Only db models whose api_base
    # points at a vLLM endpoint (http(s)://<host>:<port>/v1) are considered;
@@ -152,6 +156,26 @@
           ((vllm_aux_endpoint_pairs | default([])
             | map(attribute='0.repetition_detection') | list)
            + [vllm_repetition_detection | default({})]))) }}
+    # Default reasoning_effort lives in litellm_params like
+    # repetition_detection; '' on both sides means "no default".
+    vllm_expected_reasoning_effort: >-
+      {{ dict((vllm_aux_endpoint_pairs | default([])
+          | map(attribute='0.served_model_name') | list
+          + [vllm_served_model_name])
+        | zip(
+          (vllm_aux_endpoint_pairs | default([])
+            | map(attribute='0.reasoning_effort') | map('default', '') | list
+           + [vllm_reasoning_effort | default('')]))) }}
+    # Offered effort levels, compared as sorted level names against the
+    # stored supports_<level>_reasoning_effort: true keys.
+    vllm_expected_reasoning_efforts: >-
+      {{ dict((vllm_aux_endpoint_pairs | default([])
+          | map(attribute='0.served_model_name') | list
+          + [vllm_served_model_name])
+        | zip(
+          (vllm_aux_endpoint_pairs | default([])
+            | map(attribute='0.reasoning_efforts') | map('default', []) | list
+           + [vllm_reasoning_efforts | default([])]))) }}
   loop: "{{ vllm_litellm_model_info.json.data | default([])
     | selectattr('litellm_params.api_base', 'defined')
     | selectattr('litellm_params.api_base', 'match', '^https?://[0-9.]+:[0-9]+/v1$')
@@ -175,6 +199,16 @@
           | to_json(sort_keys=true))
         != ((vllm_expected_repetition_detection[candidate_item.model_name] | default({}))
           | to_json(sort_keys=true))
+      or (candidate_item.litellm_params.reasoning_effort | default('', true) | string)
+        != (vllm_expected_reasoning_effort[candidate_item.model_name] | default('', true) | string)
+      or (candidate_item.model_info | dict2items
+          | selectattr('key', 'match', '^supports_[a-z]+_reasoning_effort$')
+          | selectattr('value', 'equalto', true)
+          | map(attribute='key')
+          | map('regex_replace', '^supports_', '')
+          | map('regex_replace', '_reasoning_effort$', '')
+          | sort | list)
+        != (vllm_expected_reasoning_efforts[candidate_item.model_name] | default([]) | sort | list)
   delegate_to: localhost
   run_once: true
   become: false
@@ -265,7 +299,11 @@
             'max_input_tokens': vllm_max_model_len | int,
             'max_tokens': vllm_max_model_len | int}
            | combine(vllm_adaptive_model_info | default({})))
-        | combine({'supports_reasoning': true} if vllm_reasoning_parser | default('') | length > 0 else {}) }}"
+        | combine({'supports_reasoning': true} if vllm_reasoning_parser | default('') | length > 0 else {})
+        | combine(dict(vllm_reasoning_efforts | default([])
+            | map('regex_replace', '^', 'supports_')
+            | map('regex_replace', '$', '_reasoning_effort')
+            | zip([true] * (vllm_reasoning_efforts | default([]) | length)))) }}"
     status_code: [200]
   register: vllm_litellm_register
   changed_when: vllm_litellm_register.status == 200
@@ -303,7 +341,11 @@
             ~ aux_pair.1 ~ ' (' ~ aux_pair.0.model ~ ')',
           'max_input_tokens': aux_pair.0.max_model_len | int,
           'max_tokens': aux_pair.0.max_model_len | int})
-        | combine({'supports_reasoning': true} if aux_pair.0.reasoning_parser | default('') | length > 0 else {}) }}"
+        | combine({'supports_reasoning': true} if aux_pair.0.reasoning_parser | default('') | length > 0 else {})
+        | combine(dict(aux_pair.0.reasoning_efforts | default([])
+            | map('regex_replace', '^', 'supports_')
+            | map('regex_replace', '$', '_reasoning_effort')
+            | zip([true] * (aux_pair.0.reasoning_efforts | default([]) | length)))) }}"
     status_code: [200]
   register: vllm_aux_litellm_register
   changed_when: vllm_aux_litellm_register.status == 200

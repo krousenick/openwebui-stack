@@ -51,6 +51,41 @@ volume, slice it, and start the print on the Bambu H2C — after asking.
    before proposing a print and to report progress afterward.
    `camera_snapshot` (RTSP) works while printing.
 
+## FreeCAD `execute_code` that works
+
+Headless FreeCAD 1.1 (no GUI, no `FreeCADGui`). Vectors come from
+`FreeCAD`, not `Part`. Print the result so the tool output proves the
+export, and never report a file you did not see confirmed there.
+
+```python
+import FreeCAD, Part, Mesh, MeshPart, os
+V = FreeCAD.Vector
+
+doc = FreeCAD.newDocument("Part")
+# Solids: makeBox(l, w, h), makeCylinder(r, h, base, direction),
+# makeCone(r_bottom, r_top, h, base, direction)
+outer = Part.makeCone(28.6, 41.3, 76.2)
+inner = Part.makeCone(25.6, 38.3, 76.2)
+hole = Part.makeCylinder(3.2, 200, V(-100, 0, 63.5), V(1, 0, 0))
+shape = outer.cut(inner).cut(hole)          # booleans: cut / fuse / common
+
+# Move/rotate with translate() and rotate(center, axis, degrees) on the
+# shape itself; FreeCAD.Matrix has move(), not translate().
+shape.translate(V(0, 0, 0))
+
+path = "/models/snoot-cone.stl"
+mesh = MeshPart.meshFromShape(Shape=shape, LinearDeflection=0.05, AngularDeflection=0.3)
+mesh.write(path)
+bb = shape.BoundBox
+print("EXPORTED", path, os.path.getsize(path), "bytes",
+      "valid=", shape.isValid(), "mm=", round(bb.XLength, 2), round(bb.YLength, 2), round(bb.ZLength, 2))
+```
+
+A tool result that starts with `Failed to execute code` means nothing was
+exported: fix the code and call again. Do not tell the user a file exists,
+and do not invent download links (`sandbox:/...`); Open WebUI attaches the
+exported `/models` file to the reply automatically.
+
 ## Gotchas
 
 - Print starts refused with HMS `0500-0500-0001-0007` → the printer's

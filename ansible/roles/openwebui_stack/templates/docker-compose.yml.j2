@@ -799,6 +799,10 @@ services:
       dockerfile: Dockerfile
     image: ${BLENDER_MCP_IMAGE:-openwebui-stack/blender-mcp:latest}
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_blender
+    # Relative export paths ("part.stl") resolve against the process cwd;
+    # start in the shared volume so they land where the download filter and
+    # the slicer look, not in the container's home directory.
+    working_dir: /models
     restart: unless-stopped
     logging: *default-logging
     security_opt:
@@ -842,6 +846,10 @@ services:
       dockerfile: Dockerfile
     image: ${FREECAD_MCP_IMAGE:-openwebui-stack/freecad-mcp:latest}
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_freecad
+    # Relative export paths ("part.stl") resolve against the process cwd;
+    # start in the shared volume so they land where the download filter and
+    # the slicer look, not in the container's home directory.
+    working_dir: /models
     restart: unless-stopped
     logging: *default-logging
     security_opt:

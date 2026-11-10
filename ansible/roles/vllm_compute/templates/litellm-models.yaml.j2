@@ -25,6 +25,9 @@
 {% if vllm_reasoning_parser | default('') | length > 0 %}
       supports_reasoning: true
 {% endif %}
+{% for effort in vllm_reasoning_efforts | default([]) %}
+      supports_{{ effort }}_reasoning_effort: true
+{% endfor %}
 {% else %}
 # Managed by Ansible (role: vllm_compute). Standalone replicas; LiteLLM
 # load balances across these endpoints.
@@ -52,6 +55,9 @@
 {% if vllm_reasoning_parser | default('') | length > 0 %}
       supports_reasoning: true
 {% endif %}
+{% for effort in vllm_reasoning_efforts | default([]) %}
+      supports_{{ effort }}_reasoning_effort: true
+{% endfor %}
 {% if vllm_adaptive_quality_tier | default('') | string | length > 0 %}
       adaptive_router_preferences:
         quality_tier: {{ vllm_adaptive_quality_tier }}
@@ -110,5 +116,8 @@
 {% if aux_pair.0.reasoning_parser | default('') | length > 0 %}
       supports_reasoning: true
 {% endif %}
+{% for effort in aux_pair.0.reasoning_efforts | default([]) %}
+      supports_{{ effort }}_reasoning_effort: true
+{% endfor %}
 {% endfor %}
 {% endif %}

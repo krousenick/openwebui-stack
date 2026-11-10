@@ -101,10 +101,18 @@ vllm_extra_args:
 # field instead of inline in content, and the LiteLLM model_info gets
 # supports_reasoning: true. Gemma 4 thinking is off by default, so the
 # chat-template kwargs turn it on server-side (request-level kwargs still
-# win per the vLLM docs).
+# win per the vLLM docs). The template variable is enable_thinking
+# (default false); a {thinking: true} kwarg is silently ignored.
 vllm_reasoning_parser: gemma4
 vllm_chat_template_kwargs:
-  thinking: true
+  enable_thinking: true
+# Default thinking level LiteLLM merges into requests that send none;
+# a per-request reasoning_effort from a client overrides it.
+vllm_reasoning_effort: medium
+# Levels the opencode/MAGIE thinking picker offers. Gemma 4 thinking is
+# on/off: none disables it; low/medium/high all enable it at about the
+# same depth (measured 239-318 completion tokens on one prompt, 2026-11-09).
+vllm_reasoning_efforts: [none, low, medium, high]
 
 vllm_repetition_detection:
   max_pattern_size: 20
