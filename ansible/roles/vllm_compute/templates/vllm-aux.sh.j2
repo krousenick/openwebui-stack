@@ -49,6 +49,12 @@ exec {{ vllm_container_cli }} run \
 {% if aux_item.api_key | length > 0 %}
   -e VLLM_API_KEY="{{ aux_item.api_key }}" \
 {% endif %}
+{% if aux_item.chat_template_kwargs | default({}) | length > 0 %}
+{# The JSON must survive two shell parses (this script, then bash -lc), so
+   it travels through the environment. Written into the -lc string below,
+   its double quotes would end that string and vllm would get invalid JSON. #}
+  -e VLLM_CHAT_TEMPLATE_KWARGS={{ aux_item.chat_template_kwargs | to_json | quote }} \
+{% endif %}
   -e VLLM_LOGGING_LEVEL=INFO \
   "$IMAGE" \
   -lc "vllm serve {{ aux_item.model }} \
@@ -64,6 +70,6 @@ exec {{ vllm_container_cli }} run \
     --reasoning-parser {{ aux_item.reasoning_parser }} \
 {% endif %}
 {% if aux_item.chat_template_kwargs | default({}) | length > 0 %}
-    --default-chat-template-kwargs {{ aux_item.chat_template_kwargs | to_json | quote }} \
+    --default-chat-template-kwargs \"\$VLLM_CHAT_TEMPLATE_KWARGS\" \
 {% endif %}
     {{ aux_item.extra_args | join(' ') }}"
