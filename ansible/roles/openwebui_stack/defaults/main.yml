@@ -355,6 +355,17 @@ skills_public_index_enabled: true
 #     tool tests and model health checks from the UI keep working.
 litellm_ui_chat_enabled: false
 
+# Source of the freecad-mcp fork the freecad image is built from.
+# tasks/freecad_source.yml downloads the archive into the build context
+# (freecad/) on the stack host and checks it against the sha256; the repo
+# does not carry it. The ref, the file name and the checksum belong
+# together, and freecad/Dockerfile repeats the ref (FREECAD_MCP_REF) and
+# the file name (its COPY line): change all of them in one go.
+freecad_mcp_source_ref: 6f0b530b3e562cb9b7fd79709d84191413fbd17d
+freecad_mcp_source_url: "https://github.com/alosslessdev/freecad-mcp/archive/{{ freecad_mcp_source_ref }}.tar.gz"
+freecad_mcp_source_file: "freecad-mcp-{{ freecad_mcp_source_ref[:7] }}.tar.gz"
+freecad_mcp_source_sha256: 5f94c3087b73501fe63b93abdf1fd9478cb531a8ecc6bba09cb49d26cdb9a0d7
+
 # Where the compose template mounts ./container-scripts (read-only) in the
 # litellm and open-webui containers. tasks/container_script.yml runs the
 # scripts from this path with the container's own Python.

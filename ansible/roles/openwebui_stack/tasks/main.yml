@@ -35,6 +35,17 @@
   tags:
     - always
 
+# After the sync (it creates freecad/ in the deployed tree) and before the
+# compose step, which builds the image from that directory. Tagged compose
+# so a `--tags compose` run has the archive too.
+- name: Fetch the freecad-mcp source for the FreeCAD image build
+  ansible.builtin.import_tasks:
+    file: freecad_source.yml
+  when: freecad_mcp_enabled | default(false) | bool
+  tags:
+    - compose
+    - freecad
+
 # After the sync: it creates traefik/dynamic in the deployed tree.
 - name: Publish the LLM Launcher portals through Traefik
   ansible.builtin.import_tasks:

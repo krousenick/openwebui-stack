@@ -1027,7 +1027,13 @@ streaming chats and server-side injection share one gateway:
   `6f0b530`, freecad-mcp `0.1.24` — the PyPI `0.1.28` is upstream's and
   would handshake-warn against the fork's addon), and supergateway
   stdio→streamable-HTTP `:8000/mcp`. No GUI, no display, no docker socket.
-  The XML-RPC bridge (`:9875`) is unauthenticated: backend-only.
+  The XML-RPC bridge (`:9875`) is unauthenticated: backend-only. The fork
+  source is not in the repo: before the image is built the playbook
+  downloads the commit archive from GitHub into `freecad/` on the stack host
+  and checks its sha256 (`tasks/freecad_source.yml`, `freecad_mcp_source_*`
+  in the role defaults). A file already there with the right checksum is
+  used as is, so a host without GitHub access can be given the archive by
+  hand.
 
 A shared named volume `models` is mounted at `/models`: writable in
 `blender`, `freecad`, and `code-sandbox` (trimesh post-processing), read-only

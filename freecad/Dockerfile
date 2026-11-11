@@ -30,10 +30,16 @@ ARG FREECAD_APPIMAGE=FreeCAD_1.1.4-Linux-x86_64-py311.AppImage
 ARG FREECAD_SHA256=f6dc6ba676e5ac96a565ebc8d657232f94c6158e85b4352141bd1a46f6b43434
 ARG FREECAD_MCP_REF=6f0b530b3e562cb9b7fd79709d84191413fbd17d
 
-# The fork source is vendored into the build context (fetched from
-# https://github.com/alosslessdev/freecad-mcp/archive/<ref>.tar.gz) because
-# the deployment network's DNS for github.com is unreliable from inside
-# build containers; the build never needs the network for this source.
+# The fork source comes from the build context, not from the network: the
+# deployment network's DNS for github.com is unreliable from inside build
+# containers. The archive is not in the repo. The playbook downloads it into
+# this directory on the stack host and checks its sha256 before the image is
+# built (ansible/roles/openwebui_stack/tasks/freecad_source.yml; the ref,
+# file name and checksum are the freecad_mcp_source_* role defaults, which
+# must change together with FREECAD_MCP_REF above and the COPY line below).
+# For a build by hand, save
+# https://github.com/alosslessdev/freecad-mcp/archive/<FREECAD_MCP_REF>.tar.gz
+# here as freecad-mcp-<first 7 characters of the ref>.tar.gz.
 
 # The deployment network 403s plain HTTP; switch apt to https.
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list \
