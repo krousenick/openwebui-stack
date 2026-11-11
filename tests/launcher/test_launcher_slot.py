@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import shlex
 import sys
 import threading
 from typing import Any
@@ -101,7 +102,11 @@ class FakeServers:
     def build_spec(self, engine_mode, model, config, llamacpp_binary=None, vllm_binary=None):
         if config.get("extra_args") == "--broken '":
             raise ValueError("Extra arguments have invalid quoting")
-        return {"argv": ["vllm", "serve", model["repo_id"]], "port": config["port"]}
+        argv = ["vllm", "serve", model["repo_id"]]
+        if config.get("tool_call_parser"):
+            argv += ["--tool-call-parser", config["tool_call_parser"]]
+        argv += shlex.split(config.get("extra_args") or "")
+        return {"argv": argv, "port": config["port"]}
 
 
 class LaunchRequest:
@@ -323,9 +328,9 @@ def test_a_launch_stops_the_running_model_and_takes_the_slot_port(env):
     assert env.servers.launches[-1] == (
         "vllm-native",
         QWEN,
-        {"port": 8000, "max_model_len": 32768, "served_model_name": "Qwen3-8B"},
+        {"port": 8000, "max_model_len": 32768, "served_model_name": "Qwen3-8B", "tool_call_parser": "hermes"},
     )
-    assert server.notes == [f"stack: replaced gemma-4-26b-a4b (server {gemma.server_id}) on port 8000"]
+    assert server.notes[-1] == f"stack: replaced gemma-4-26b-a4b (server {gemma.server_id}) on port 8000"
     assert len(env.spawned) == 1
     assert env.api._hw_cache["data"] is None
     assert env.logs == []  # the GPU memory came back before the new model started
@@ -334,6 +339,54 @@ def test_a_launch_stops_the_running_model_and_takes_the_slot_port(env):
 def test_the_configured_model_keeps_its_configured_name(env):
     env.slot.launch("vllm-native", {"repo_id": GEMMA}, {})
     assert env.servers.launches[-1][2]["served_model_name"] == "gemma-4-26b-a4b"
+
+
+# -------------------------------------------------------------- tool calling
+
+
+@pytest.mark.parametrize(
+    ("repo", "parser"),
+    [
+        ("QuantTrio/Qwen3-Coder-30B-A3B-Instruct-AWQ", "qwen3_coder"),
+        ("Qwen/Qwen3-0.6B", "hermes"),
+        ("Qwen/Qwen2.5-7B-Instruct", "hermes"),
+        ("RedHatAI/Qwen3.8-27B-INT4", "hermes"),
+        (GEMMA, "gemma4"),
+        ("meta-llama/Llama-3.1-8B-Instruct", "llama3_json"),
+        ("mistralai/Devstral-Small-2505", "mistral"),
+        ("microsoft/phi-4", None),
+    ],
+)
+def test_tool_formats_follow_the_model_family(repo, parser):
+    assert stack_slot.tool_parser_for(repo) == parser
+
+
+def test_a_launch_without_a_tool_format_gets_the_family_one_and_auto_tool_choice(env):
+    server = env.slot.launch("vllm-native", {"repo_id": QWEN}, {})
+    config = env.servers.launches[-1][2]
+    assert config["tool_call_parser"] == "hermes"
+    assert server.notes[0].startswith("stack: tool-calling format hermes chosen")
+    spec = env.api.servers.build_spec("vllm-native", {"repo_id": QWEN}, config)
+    assert spec["argv"][-3:] == ["--tool-call-parser", "hermes", "--enable-auto-tool-choice"]
+
+
+def test_a_chosen_tool_format_is_kept_and_auto_tool_choice_not_repeated(env):
+    config = {"tool_call_parser": "mistral", "extra_args": "--enable-auto-tool-choice"}
+    env.slot.launch("vllm-native", {"repo_id": QWEN}, config)
+    launched = env.servers.launches[-1][2]
+    assert launched["tool_call_parser"] == "mistral"
+    argv = env.api.servers.build_spec("vllm-native", {"repo_id": QWEN}, launched)["argv"]
+    assert argv.count("--enable-auto-tool-choice") == 1
+
+
+def test_advice_names_the_tool_format_or_warns_without_one(env):
+    known = env.slot.advise("vllm", {"repo_id": QWEN}, {}, env.api.get_hardware())
+    assert known["flags"]["tool_call_parser"]["level"] == "green"
+    assert "'hermes'" in known["flags"]["tool_call_parser"]["message"]
+    unknown = env.slot.advise("vllm", {"repo_id": "microsoft/phi-4"}, {}, env.api.get_hardware())
+    assert unknown["flags"]["tool_call_parser"]["level"] == "yellow"
+    chosen = env.slot.advise("vllm", {"repo_id": QWEN}, {"tool_call_parser": "hermes"}, env.api.get_hardware())
+    assert "tool_call_parser" not in chosen["flags"]
 
 
 @pytest.mark.parametrize(

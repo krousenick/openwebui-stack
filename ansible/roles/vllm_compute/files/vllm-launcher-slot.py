@@ -12,6 +12,12 @@ GPU then holds one model at a time, on the port LiteLLM routes to:
                     server on the primary port.
   Rollback          When the new server exits before it answers /health,
                     the settings it replaced are started again.
+  Tool calling      This stack sends tools with every chat (LiteLLM's web
+                    search, Open WebUI's MCP tool servers), and vLLM refuses
+                    such a request unless the server runs with a tool parser
+                    and --enable-auto-tool-choice. A launch that leaves the
+                    tool-calling format empty gets the one for the model's
+                    family, and any launch with a format gets the flag.
   Whole-GPU fit     The fit advice and the Models page badges count the
                     memory the launcher's own server holds as free, because
                     a launch frees it first. Memory other programs hold
@@ -38,6 +44,7 @@ import dataclasses
 import hmac
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -64,6 +71,23 @@ UNSAMPLED_RESERVE_MB = 512
 RELEASE_SLACK_MB = 1024
 EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 BUSY = "Another launch is replacing the model right now. Wait until it finishes, then try again."
+AUTO_TOOL_CHOICE = "--enable-auto-tool-choice"
+# The launch form's tool-calling formats, by model family, for launches that
+# leave the format empty. First match wins, so Qwen3-Coder comes before Qwen.
+TOOL_PARSERS = (
+    (re.compile(r"qwen3[-_.]?coder", re.IGNORECASE), "qwen3_coder"),
+    (re.compile(r"qwen|qwq", re.IGNORECASE), "hermes"),
+    (re.compile(r"gemma[-_]?4", re.IGNORECASE), "gemma4"),
+    (re.compile(r"llama[-_]?3", re.IGNORECASE), "llama3_json"),
+    (re.compile(r"mistral|mixtral|ministral|devstral|magistral", re.IGNORECASE), "mistral"),
+)
+TOOLS_SENT = "Open WebUI and LiteLLM's web search send tools with every chat"
+
+
+def tool_parser_for(repo_id: str) -> str | None:
+    """The tool-calling format for a model family, or None when the family is not known."""
+    name = repo_id.rsplit("/", 1)[-1]
+    return next((parser for pattern, parser in TOOL_PARSERS if pattern.search(name)), None)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -289,6 +313,7 @@ class Slot:
         self._launch = servers.launch
         self._stop = servers.stop
         self._remove = servers.remove
+        self._build_spec = servers.build_spec
         self._get_hardware = api.get_hardware
         self._installed_models = api.installed_models
         self._advise = advisor.advise
@@ -302,6 +327,9 @@ class Slot:
         servers.launch = self.launch
         servers.stop = self.stop
         servers.remove = self.remove
+        # The launcher's own launch() calls self.build_spec(), so the
+        # instance attribute reaches it too.
+        servers.build_spec = self.build_spec
         # api.py looks these up as module globals at call time, so replacing
         # the module attributes reaches every caller (advise, presets,
         # launch, models, favorites).
@@ -359,6 +387,22 @@ class Slot:
         overall = report.get("overall")
         if running and isinstance(overall, dict):
             overall.setdefault("details", []).insert(0, self._replace_note(model, running))
+        if engine == "vllm" and not (config or {}).get("tool_call_parser"):
+            parser = tool_parser_for(str(model.get("repo_id") or ""))
+            report.setdefault("flags", {})["tool_call_parser"] = (
+                {
+                    "level": "green",
+                    "message": f"Left empty, the launch uses '{parser}' with {AUTO_TOOL_CHOICE}: {TOOLS_SENT}.",
+                }
+                if parser
+                else {
+                    "level": "yellow",
+                    "message": (
+                        f"{TOOLS_SENT}, and vLLM refuses them from a server without a tool-calling format. "
+                        "Pick the one for this model's family, or every chat with it fails."
+                    ),
+                }
+            )
         requested = (config or {}).get("port")
         if requested not in (None, "") and str(requested) != str(self.settings.port):
             report.setdefault("flags", {})["port"] = {
@@ -416,6 +460,21 @@ class Slot:
         if self.settings.configured_served_name and repo_id == self.settings.configured_repo_id:
             return self.settings.configured_served_name
         return repo_id.rstrip("/").split("/")[-1]
+
+    def build_spec(
+        self,
+        engine_mode: str,
+        model: dict[str, Any],
+        config: dict[str, Any],
+        llamacpp_binary: str | None = None,
+        vllm_binary: str | None = None,
+    ) -> dict[str, Any]:
+        """The launcher's command line, plus --enable-auto-tool-choice whenever a tool parser is set."""
+        spec = self._build_spec(engine_mode, model, config, llamacpp_binary, vllm_binary)
+        argv = list(spec.get("argv") or [])
+        if engine_mode.startswith("vllm") and config.get("tool_call_parser") and AUTO_TOOL_CHOICE not in argv:
+            spec = {**spec, "argv": [*argv, AUTO_TOOL_CHOICE]}
+        return spec
 
     def launch(
         self,
@@ -493,8 +552,15 @@ class Slot:
         port = self.settings.port
         config = dict(config or {})
         config["port"] = port
-        if engine_mode.startswith("vllm") and not str(config.get("served_model_name") or "").strip():
-            config["served_model_name"] = self.default_served_name(model["repo_id"])
+        tool_note = ""
+        if engine_mode.startswith("vllm"):
+            if not str(config.get("served_model_name") or "").strip():
+                config["served_model_name"] = self.default_served_name(model["repo_id"])
+            if not config.get("tool_call_parser"):
+                parser = tool_parser_for(model["repo_id"])
+                if parser:
+                    config["tool_call_parser"] = parser
+                    tool_note = f"stack: tool-calling format {parser} chosen for this model family ({TOOLS_SENT})"
         self._precheck(engine_mode, model, config, llamacpp_binary, vllm_binary, hardware)
 
         running = self.running()
@@ -527,6 +593,8 @@ class Slot:
         finally:
             self._forget_hardware()
 
+        if tool_note:
+            server.note(tool_note)
         if previous is not None:
             server.note(f"stack: replaced {previous.label} (server {previous.server_id}) on port {port}")
             if self.settings.rollback:
