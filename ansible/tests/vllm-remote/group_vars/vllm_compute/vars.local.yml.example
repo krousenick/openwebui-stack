@@ -8,7 +8,7 @@ vllm_hf_cache_dir: /home/you/vllm/huggingface
 
 # The compute segment the controller reaches the node on. The vllm-cluster
 # firewalld zone binds this as its source.
-vllm_firewall_zone_source: "10.0.105.0/24"
+vllm_firewall_zone_source: "192.0.2.0/24"
 
 # Controller (stack host) address for the Loki push API.
 vllm_controller_host: 192.0.2.10

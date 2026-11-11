@@ -1317,7 +1317,7 @@ services:
       - backend
       # The backend network is internal:true, which gives containers no
       # route to the LAN; the remote-node / remote-nvidia-gpu / remote-vllm
-      # scrape targets (compute nodes on 10.0.108.0/24) need frontend to
+      # scrape targets (the compute nodes, on another subnet) need frontend to
       # reach them.
       - frontend
     depends_on:

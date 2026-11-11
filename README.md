@@ -134,7 +134,7 @@ graph TB
    - **`/etc/hosts`** — service hostnames added on the deployment host for non-localhost domains
    - **Secrets** — explicit values in `ansible/group_vars/all/vault.yml` (tracked template with `CHANGE_ME` placeholders) and `ansible/group_vars/all/vault.local.yml` (real values, gitignored, mode 0600). Nothing reads environment variables or the deployed `.env`. Any stack secret that is unset or still a placeholder (`CHANGE_ME`, `change-me-before-production`) is generated (32 alphanumeric chars; `sk-` prefix for `litellm_master_key` and `openwebui_api_admin_key`) and written to `vault.local.yml`, which is created if missing, so later runs reuse it. An ansible-vault encrypted `vault.local.yml` is never rewritten; the run fails listing the secrets to set by hand.
 
-   Edit `ansible/group_vars/all/vars.yml` before the first run to set `domain`, `ssl_cert_type`, `docker_compose_profiles`, and `chatterbox_device`/`chatterbox_enabled`. Set any secret you want to pin (and the optional API keys) in `vault.local.yml`; the rest are generated. Keep `vault.local.yml` out of git. On an existing deployment whose data volumes already hold passwords, make sure `vault.local.yml` carries those values before running, or the generated database passwords will not match the volumes.
+   Edit `ansible/group_vars/all/vars.yml` before the first run to set `ssl_cert_type`, `docker_compose_profiles`, and `chatterbox_device`/`chatterbox_enabled`. Put the settings that belong to your site and should stay out of git, starting with the real `domain`, in `ansible/group_vars/all/vars.local.yml` (copy `vars.local.yml.example`): it is gitignored and loaded after `vars.yml`, so its values win. The tracked `vars.yml` keeps `domain: localhost`. Set any secret you want to pin (and the optional API keys) in `vault.local.yml`; the rest are generated. Keep `vault.local.yml` out of git. On an existing deployment whose data volumes already hold passwords, make sure `vault.local.yml` carries those values before running, or the generated database passwords will not match the volumes.
 
 In `docker-compose.yml` change `ENABLE_SIGNUP` to `true` if you want to register the first admin user via Open WebUI. You can disable it again after the first user is created.
 
@@ -325,7 +325,7 @@ The `opencode` Ansible role installs [OpenCode](https://opencode.ai) on the targ
 ```yaml
 # ansible/group_vars/all/vars.yml
 opencode_users:
-  - username: nicholas.krouse
+  - username: jane.doe
 ```
 
 Then run the playbook (tag `opencode` limits the run to this role):

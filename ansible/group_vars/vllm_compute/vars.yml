@@ -41,8 +41,10 @@ vllm_cross_node_tensor_parallel: false
 
 # Ray cluster networking. The zone source should be the 10/25GbE compute
 # segment; Ray traffic is unauthenticated and can execute arbitrary code,
-# so restrict it to these hosts.
-vllm_firewall_zone_source: "10.0.108.0/24"
+# so restrict it to these hosts. 192.0.2.0/24 is a placeholder (a range
+# reserved for documentation): set the real segment as a vllm_compute group
+# var in inventory/hosts.local.yml, which is gitignored.
+vllm_firewall_zone_source: "192.0.2.0/24"
 
 # Compute nodes run GPU containers; the global prerequisites role checks the
 # NVIDIA driver before the vllm_compute role deploys.

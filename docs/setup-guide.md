@@ -89,7 +89,7 @@ chmod +x scripts/*.sh
 |---|---|
 | Secrets | Resolves every stack secret in order: `vault_<name>` in `ansible/group_vars/all/vault.yml` → environment variable → value in the deployed `.env` → generated once and persisted back into the vault file. Existing deployments keep their secrets |
 | Environment file | Renders `.env` from `templates/env.j2` (mode 0600); includes the `$$`-escaped Traefik dashboard apr1 hash |
-| Domain | `domain` in `ansible/group_vars/all/vars.yml` (tiering: `DOMAIN` env var → deployed `.env` → `localhost`). For a non-localhost domain the playbook adds the service hostnames to `/etc/hosts` on the deployment host |
+| Domain | `domain`: `localhost` in the tracked `ansible/group_vars/all/vars.yml`; set the real one in `ansible/group_vars/all/vars.local.yml` (gitignored, loaded after `vars.yml`; copy `vars.local.yml.example`). For a non-localhost domain the playbook adds the service hostnames to `/etc/hosts` on the deployment host |
 | SSL certificates | `ssl_cert_type` in `group_vars/all/vars.yml`: `existing` (use `certs/<ssl_cert_file>` + `certs/<ssl_key_file>`), `selfsigned` (generate a persistent pair with `community.crypto`, replacing `scripts/generate-certs.sh`), or `traefik` (built-in default). Custom modes render `traefik/dynamic/certs.yml` |
 | Compose file | Renders `docker-compose.yml` from `templates/docker-compose.yml.j2`; `chatterbox_enabled: false` drops the Chatterbox services entirely |
 | Start Docker stack | Pulls images, brings up the stack with `docker_compose_profiles` (group_vars; the chatterbox role appends `chatterbox-gpu`/`chatterbox-cpu`), waits for health |

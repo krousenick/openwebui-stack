@@ -7,7 +7,7 @@ This is a Docker Compose stack for Open WebUI with LiteLLM, Keycloak SSO, observ
 
 ## Photon VM
 
-The stack runs on VMware Photon OS, not on the Mac and not in the OrbStack Fedora VM. The deployed tree is `/mnt/data1/openwebui-stack`. Run `docker compose` checks there. The stack host's address and SSH user live in `ansible/inventory/hosts.local.yml` (gitignored; see `hosts.yml` for the placeholder version). See `.magie-coder/skills/photon-vm/SKILL.md`.
+The stack runs on VMware Photon OS, not on the Mac and not in the OrbStack Fedora VM. The deployed tree is `/mnt/data1/openwebui-stack`. Run `docker compose` checks there. The stack host's address and SSH user live in `ansible/inventory/hosts.local.yml` (gitignored; see `hosts.yml` for the placeholder version). The site's domain and other settings that stay out of git live in `ansible/group_vars/all/vars.local.yml` (gitignored; see `vars.local.yml.example`): the playbooks load it after `vars.yml`, and `tasks/keycloak.yml` loads it again after its `include_vars` of `vars.yml`, which would otherwise put `domain: localhost` back for the Keycloak clients. Keep real domains, addresses and subnets out of tracked files. See `.magie-coder/skills/photon-vm/SKILL.md`.
 
 ## Commands
 

@@ -9,7 +9,7 @@ Written 2026-11-05. Research citations inline; re-verify versions before executi
 
 ## 1. Goal
 
-Expose this stack (chatbot/litellm/grafana/auth at `*.krouse.io`) to the public
+Expose this stack (chatbot/litellm/grafana/auth at `*.example.com`) to the public
 internet, restricted to **US source IPs only**, with request-level WAF
 protection (SQLi/XSS/RCE/virtual patching) and per-IP ban capability.
 
@@ -21,8 +21,8 @@ not undo the internal-only conveniences (Loki log pipeline, admin access).
 ## 2. Stack context (for a session with no prior context)
 
 - Repo: `openwebui-stack`, Docker Compose on VMware Photon OS. Deployed tree:
-  `/mnt/data1/openwebui-stack` on host `10.0.105.14` (SSH as root with key
-  `~/.ssh/id_rsa_10.0.105.14`). All work happens through the OrbStack Fedora VM
+  `/mnt/data1/openwebui-stack` on the stack host (SSH as root with the key and address from
+  `ansible/inventory/hosts.local.yml`). All work happens through the OrbStack Fedora VM
   (`orb -m fedora ...`), never on the Mac and never inside the Photon VM's OS
   directly except via SSH.
 - Compose/env/Traefik config are **Ansible-templated**: edit
@@ -40,7 +40,7 @@ not undo the internal-only conveniences (Loki log pipeline, admin access).
 - All routers use the `websecure` entrypoint via compose labels
   (`traefik.http.routers.<name>.entrypoints=websecure`). Traefik dashboard is on
   websecure with basicauth (`dashboard-auth` middleware). Keycloak admin console
-  is reachable at `https://auth.krouse.io/admin` through the public keycloak
+  is reachable at `https://auth.example.com/admin` through the public keycloak
   router. A commented-out `ipwhitelist` middleware scaffold for
   `keycloak-admin` exists in the compose template around line 520
   (`KEYCLOAK_ADMIN_IP_RANGE` in `.env`).
@@ -52,7 +52,7 @@ not undo the internal-only conveniences (Loki log pipeline, admin access).
   enterprise license — `litellm_license` vault knob already wired).
 - Firewall: Photon `iptables -L INPUT` is policy DROP with an accept-all rule
   (rule 1), established/related, and SSH. The Photon host is behind NAT on
-  `10.0.105.0/24` — public exposure additionally requires port-forward
+  a private LAN segment — public exposure additionally requires port-forward
   80+443 on the upstream router, OR Cloudflare Tunnel (see decisions).
 
 ## 3. Architecture decision (already made, with rationale)
@@ -110,7 +110,7 @@ not undo the internal-only conveniences (Loki log pipeline, admin access).
 
 | # | Decision | Options | Impact |
 |---|---|---|---|
-| D1 | DNS/edge | (a) Direct: A records `*.krouse.io` → public IP, port-forward 80/443 on router. (b) Cloudflare-proxied: CF in front, origin behind CF. | **(b) changes the whole design**: CrowdSec sees CF IPs — must set `forwardedHeadersTrustedIPs` to CF ranges and geo must come from CF's `CF-IPCountry` header (or use CF WAF geo rule directly, simpler); TLS becomes CF edge certs + origin cert. **(a) keeps this plan as-is.** |
+| D1 | DNS/edge | (a) Direct: A records `*.example.com` → public IP, port-forward 80/443 on router. (b) Cloudflare-proxied: CF in front, origin behind CF. | **(b) changes the whole design**: CrowdSec sees CF IPs — must set `forwardedHeadersTrustedIPs` to CF ranges and geo must come from CF's `CF-IPCountry` header (or use CF WAF geo rule directly, simpler); TLS becomes CF edge certs + origin cert. **(a) keeps this plan as-is.** |
 | D2 | Keycloak admin console (`/admin`) | (a) IP-whitelist via the commented `ipwhitelist` middleware. (b) `KC_HOSTNAME_ADMIN` on a separate unpublished hostname. | Public `/admin` with only basicauth-less Keycloak login is the highest-value target. |
 | D3 | Self-registration | (a) Keep open (CrowdSec captcha remediation for flagged IPs; no email verify until SMTP exists). (b) `keycloak_registration_enabled: false` until SMTP. | Open signup + no email verification = spam-account magnet on the public internet. |
 | D4 | Travel fallback | (a) VPN endpoint (WireGuard on Photon or router) (b) add a second allowed country to the geo list. (c) accept lockout risk. | US-only geo drops the owner when traveling. |
@@ -196,7 +196,7 @@ Do not start implementation until D1 is answered; D2–D4 can be defaulted
          crowdsecAppsecFailureBlock: true   # fail-open vs fail-closed: choose
          forwardedHeadersTrustedIPs: []     # only for CF case (D1b)
          clientTrustedIPs:
-           - "10.0.105.0/24"               # LAN bypass: never ban the owner
+           - "<lan-cidr>"                  # LAN bypass: never ban the owner
    ```
    (FoxxMD pattern for the env-key indirection.)
 8. Attach the middleware at the **websecure entrypoint** so every router
@@ -246,7 +246,7 @@ Do not start implementation until D1 is answered; D2–D4 can be defaulted
     `cscli appsec-rules inspect crowdsecurity/...` and check
     `docker compose logs crowdsec | grep -i "Forbidden Country"` after
     exposing. A US VPN exit node is the practical test.
-16. Injection test: `curl -sk "https://chatbot.krouse.io/?id=1%27%20OR%20%271%27=%271"` →
+16. Injection test: `curl -sk "https://chatbot.example.com/?id=1%27%20OR%20%271%27=%271"` →
     expect 403 from the bouncer + an AppSec alert (`cscli alerts list`).
 17. Normal flows unaffected: Open WebUI SSO login, LiteLLM SSO login
     (`/sso/key/generate`), Grafana SSO, chat completion through LiteLLM,

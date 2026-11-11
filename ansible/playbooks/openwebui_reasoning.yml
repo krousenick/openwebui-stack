@@ -15,6 +15,9 @@
   become: true
   vars_files:
     - ../group_vars/all/vars.yml
+    # This site's own settings; optional, as in site.yml.
+    - - ../group_vars/all/vars.local.yml
+      - ../group_vars/all/vars.yml
     - ../group_vars/all/vault.yml
     - ../group_vars/all/vault.local.yml
   tasks:

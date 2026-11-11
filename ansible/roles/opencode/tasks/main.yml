@@ -6,7 +6,7 @@
       - opencode_users | map(attribute='username') | select('defined') | list | length == opencode_users | length
     fail_msg: >-
       opencode_users must be a non-empty list of entries with a username key,
-      e.g. opencode_users: [{username: nicholas.krouse}].
+      e.g. opencode_users: [{username: jane.doe}].
   when: opencode_users | length > 0
 
 - name: Skip opencode role when no users are configured

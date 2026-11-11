@@ -7,6 +7,7 @@
 *.env.local
 *.env.*.local
 ansible/group_vars/all/vault.local.yml
+ansible/group_vars/all/vars.local.yml
 
 # Model eval results (vllm_eval role; per-run JSON, kept local)
 ansible/tests/eval-results/

@@ -25,6 +25,19 @@
   ansible.builtin.include_vars:
     file: "{{ playbook_dir }}/../group_vars/all/vars.yml"
 
+# include_vars outranks the play's vars_files. The reload above therefore
+# puts the tracked defaults (domain: localhost) back on top of this site's
+# values for every task that follows, and the clients below would be created
+# for the wrong domain. Load the site file again after it; without one the
+# lookup falls back to vars.yml, which changes nothing.
+- name: Reapply this site's settings over the reloaded defaults
+  ansible.builtin.include_vars:
+    file: "{{ lookup('ansible.builtin.first_found', keycloak_site_vars_candidates) }}"
+  vars:
+    keycloak_site_vars_candidates:
+      - "{{ playbook_dir }}/../group_vars/all/vars.local.yml"
+      - "{{ playbook_dir }}/../group_vars/all/vars.yml"
+
 - name: Configure Keycloak applications
   ansible.builtin.include_tasks:
     file: keycloak_app.yml

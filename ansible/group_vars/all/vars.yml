@@ -2,12 +2,19 @@
 # ---------------------------------------------------------------------------
 # Deployment configuration. Every value is explicit; nothing reads from the
 # environment or from the deployed .env. Secrets live in vault.yml.
+#
+# Settings that belong to one site and should stay out of git (the real
+# domain, which model providers are on) go in vars.local.yml next to this
+# file. It is gitignored and loaded after this file, so a value there wins.
+# Copy vars.local.yml.example to start one.
 # ---------------------------------------------------------------------------
 
 project_root: /mnt/data1/openwebui-stack
 compose_project_name: openwebui-stack
 
-domain: krouse.io
+# Services are published as chatbot.<domain>, auth.<domain>, and so on.
+# localhost works for a local trial; set the real domain in vars.local.yml.
+domain: localhost
 
 timezone: UTC
 

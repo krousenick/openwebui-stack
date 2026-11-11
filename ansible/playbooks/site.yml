@@ -10,6 +10,11 @@
   # file does not exist yet).
   vars_files:
     - ../group_vars/all/vars.yml
+    # This site's own settings (the real domain, provider toggles), kept out
+    # of git. Optional: the inner list falls back to vars.yml when the file
+    # does not exist. tasks/keycloak.yml loads it a second time, see there.
+    - - ../group_vars/all/vars.local.yml
+      - ../group_vars/all/vars.yml
     - ../group_vars/all/vault.yml
     # Do not remove: without this entry the real secrets are never loaded,
     # every one of them still reads as a placeholder, and tasks/secrets.yml

@@ -1,0 +1,14 @@
+---
+# Copy to vars.local.yml (gitignored) on the machine the playbook runs from
+# and set this site's values. The playbooks load it after vars.yml, so
+# anything here overrides the tracked default. Secrets do not belong here:
+# they go in vault.local.yml.
+
+# Services are published as chatbot.<domain>, auth.<domain>, litellm.<domain>,
+# grafana.<domain> and voice.<domain>.
+domain: example.com
+
+# Turn a provider's models on once its key is in vault.local.yml.
+# litellm_gemini_models_enabled: true
+# litellm_anthropic_models_enabled: true
+# litellm_bedrock_models_enabled: true
