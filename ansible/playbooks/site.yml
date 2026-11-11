@@ -11,6 +11,11 @@
   vars_files:
     - ../group_vars/all/vars.yml
     - ../group_vars/all/vault.yml
+    # Do not remove: without this entry the real secrets are never loaded,
+    # every one of them still reads as a placeholder, and tasks/secrets.yml
+    # generates new values over the ones in vault.local.yml.
+    - - ../group_vars/all/vault.local.yml
+      - ../group_vars/all/vault.yml
 
   roles:
     # Global host checks (Docker, compose, base packages) run on every host
