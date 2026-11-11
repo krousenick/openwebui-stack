@@ -1361,7 +1361,9 @@ The stack includes several pre-configured dashboards:
    - Error tracking
 
 7. **nvidia-dcgm-dashboard.json** - Local GPU metrics (Tesla P4 on the Photon host)
-   - Requires the `gpu` profile (`docker compose --profile gpu up -d nvidia-gpu-exporter`), which runs `nvidia/dcgm-exporter` with the NVIDIA runtime, and the `nvidia-gpu` scrape job in `otel/config.yaml` (enabled)
+   - Requires the `gpu` profile, which runs `nvidia/dcgm-exporter` with the NVIDIA runtime, and the `nvidia-gpu` scrape job in `otel/config.yaml` (enabled). The playbook starts the profile when `gpu` is listed in `docker_compose_profiles` (`ansible/group_vars/all/vars.yml`, on in this deployment); by hand it is `docker compose --profile gpu up -d nvidia-gpu-exporter`. Without the exporter the `nvidia-gpu` target shows as down and the dashboard is empty
+   - The playbook checks the host first (`tasks/gpu_profile.yml`): when `nvidia-smi` cannot reach a driver, or Docker has no `nvidia` runtime, it leaves the `gpu` profile out of that run with a warning instead of failing the deploy. That covers a host with no GPU and a host whose kernel was updated without rebuilding the NVIDIA module; the exporter returns on the next run once `nvidia-smi` works
+   - The exporter's log starts with `ERROR: init 250 result=11`. It is printed before the exporter's own first line and does not stop it: the lines that follow report DCGM initialised and the metrics endpoint listening
    - GPU memory usage, compute utilization, temperature, power, energy, SM clocks, tensor-core utilization
    - Panels filter on the lowercase `hostname` label that dcgm-exporter emits; the `host` and `gpu` variables resolve from `DCGM_FI_DEV_GPU_TEMP`
    - Remote compute nodes have their own GPU panels in `vllm-nodes-dashboard.json` (flavor-correct: DCGM or nvidia_smi)

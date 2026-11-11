@@ -77,8 +77,19 @@ ssl_key_file: "cf-origin.key"
 # Docker
 # ---------------------------------------------------------------------------
 
+# Compose profiles the playbook starts (tasks/compose.yml).
+#   monitoring  the exporters, the OTel collector and Alloy
+#   gpu         nvidia-gpu-exporter (DCGM) for the stack host's own GPU. It
+#               feeds the nvidia-gpu scrape job and the NVIDIA DCGM
+#               dashboard, and needs the NVIDIA driver and container
+#               runtime on the host. When nvidia-smi or the runtime is
+#               missing, tasks/gpu_profile.yml leaves the profile out of
+#               that run with a warning instead of failing the deploy;
+#               remove it here on a host that has no GPU at all.
+# The chatterbox role adds its own profile (chatterbox_device below).
 docker_compose_profiles:
   - monitoring
+  - gpu
 
 # gpu -> Dockerfile (CUDA). cpu -> Dockerfile.cpu. Selects the chatterbox profile.
 chatterbox_device: gpu

@@ -7,6 +7,15 @@
 # file are rendered; Keycloak must be up before its realm is provisioned,
 # which the keycloak task handles by waiting on the endpoint.
 
+# First, and on every run: every compose call below reads
+# docker_compose_profiles, and this drops the gpu profile from it when the
+# host cannot run the GPU exporter.
+- name: Check that the host can run the gpu compose profile
+  ansible.builtin.import_tasks:
+    file: gpu_profile.yml
+  tags:
+    - always
+
 - name: Resolve stack secrets
   ansible.builtin.import_tasks:
     file: secrets.yml
