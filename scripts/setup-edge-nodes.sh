@@ -20,11 +20,11 @@ NC='\033[0m'
 
 # Cross-platform sed in-place editing (macOS BSD sed vs GNU sed)
 sed_inplace() {
-	if [[ $OSTYPE == "darwin"* ]]; then
-		sed -i '' "$@"
-	else
-		sed -i "$@"
-	fi
+    if [[ $OSTYPE == "darwin"* ]]; then
+        sed -i '' "$@"
+    else
+        sed -i "$@"
+    fi
 }
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -37,19 +37,19 @@ echo -e "${YELLOW}Checking prerequisites...${NC}"
 
 # Check if we're on Fedora Linux (for edge nodes)
 if [[ -f /etc/os-release ]]; then
-	source /etc/os-release
-	if [[ $ID != "fedora" ]]; then
-		echo -e "${YELLOW}Note: This script is designed for Fedora Linux edge nodes.${NC}"
-		echo -e "${YELLOW}You can still configure remote nodes from this machine.${NC}"
-	fi
+    source /etc/os-release
+    if [[ $ID != "fedora" ]]; then
+        echo -e "${YELLOW}Note: This script is designed for Fedora Linux edge nodes.${NC}"
+        echo -e "${YELLOW}You can still configure remote nodes from this machine.${NC}"
+    fi
 fi
 
 # Check for NVIDIA GPU
 if command -v nvidia-smi &>/dev/null; then
-	echo -e "${GREEN}✓ NVIDIA GPU detected:${NC}"
-	nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -1
+    echo -e "${GREEN}✓ NVIDIA GPU detected:${NC}"
+    nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -1
 else
-	echo -e "${YELLOW}⚠ nvidia-smi not found. If this is an edge node, ensure NVIDIA drivers are installed.${NC}"
+    echo -e "${YELLOW}⚠ nvidia-smi not found. If this is an edge node, ensure NVIDIA drivers are installed.${NC}"
 fi
 
 echo ""
@@ -65,22 +65,22 @@ EDGE_NODES=()
 declare -A NODE_MODELS
 
 for ((i = 1; i <= NUM_NODES; i++)); do
-	echo ""
-	echo -e "${BLUE}Edge Node $i Configuration:${NC}"
+    echo ""
+    echo -e "${BLUE}Edge Node $i Configuration:${NC}"
 
-	read -rp "  Hostname or IP address: " NODE_HOST
-	NODE_HOST=${NODE_HOST:-localhost}
+    read -rp "  Hostname or IP address: " NODE_HOST
+    NODE_HOST=${NODE_HOST:-localhost}
 
-	read -rp "  Port (default: 8080): " NODE_PORT
-	NODE_PORT=${NODE_PORT:-8080}
+    read -rp "  Port (default: 8080): " NODE_PORT
+    NODE_PORT=${NODE_PORT:-8080}
 
-	read -rp "  Model name (e.g., llama-3.1-8b-instruct): " MODEL_NAME
-	MODEL_NAME=${MODEL_NAME:-llama-3.1-8b-instruct}
+    read -rp "  Model name (e.g., llama-3.1-8b-instruct): " MODEL_NAME
+    MODEL_NAME=${MODEL_NAME:-llama-3.1-8b-instruct}
 
-	EDGE_NODES+=("$NODE_HOST:$NODE_PORT")
-	NODE_MODELS["$NODE_HOST:$NODE_PORT"]="$MODEL_NAME"
+    EDGE_NODES+=("$NODE_HOST:$NODE_PORT")
+    NODE_MODELS["$NODE_HOST:$NODE_PORT"]="$MODEL_NAME"
 
-	echo -e "${GREEN}  ✓ Added edge node: $NODE_HOST:$NODE_PORT ($MODEL_NAME)${NC}"
+    echo -e "${GREEN}  ✓ Added edge node: $NODE_HOST:$NODE_PORT ($MODEL_NAME)${NC}"
 done
 
 echo ""
@@ -163,17 +163,17 @@ echo -e "${GREEN}✓ Created systemd service template: $SERVICE_FILE${NC}"
 
 # Create edge node specific service files
 for NODE in "${EDGE_NODES[@]}"; do
-	NODE_HOST="${NODE%%:*}"
-	NODE_PORT="${NODE##*:}"
-	MODEL="${NODE_MODELS[$NODE]}"
+    NODE_HOST="${NODE%%:*}"
+    NODE_PORT="${NODE##*:}"
+    MODEL="${NODE_MODELS[$NODE]}"
 
-	SERVICE_NAME="llama-server-${NODE_HOST}.service"
-	SERVICE_FILE="$PROJECT_ROOT/edge-nodes/$SERVICE_NAME"
+    SERVICE_NAME="llama-server-${NODE_HOST}.service"
+    SERVICE_FILE="$PROJECT_ROOT/edge-nodes/$SERVICE_NAME"
 
-	sed "s|MODEL_FILE|$MODEL.gguf|g; s|GPU_LAYERS|$GPU_LAYERS|g; s|CTX_SIZE|$CTX_SIZE|g; s|N_SLOTS|$N_SLOTS|g; s|8080|$NODE_PORT|g" \
-		"$PROJECT_ROOT/edge-nodes/llama-server.service" >"$SERVICE_FILE"
+    sed "s|MODEL_FILE|$MODEL.gguf|g; s|GPU_LAYERS|$GPU_LAYERS|g; s|CTX_SIZE|$CTX_SIZE|g; s|N_SLOTS|$N_SLOTS|g; s|8080|$NODE_PORT|g" \
+        "$PROJECT_ROOT/edge-nodes/llama-server.service" >"$SERVICE_FILE"
 
-	echo -e "${GREEN}  ✓ Created: $SERVICE_NAME${NC}"
+    echo -e "${GREEN}  ✓ Created: $SERVICE_NAME${NC}"
 done
 
 # Create setup script for edge nodes
@@ -223,29 +223,29 @@ echo -e "${GREEN}✓ Created edge node setup script: $SETUP_SCRIPT${NC}"
 
 # Generate model environment variable for LiteLLM
 EDGE_NODES_VAR=$(
-	IFS=','
-	echo "${EDGE_NODES[*]}"
+    IFS=','
+    echo "${EDGE_NODES[*]}"
 )
 echo ""
 echo -e "${YELLOW}Step 5: Update Open WebUI Stack Configuration${NC}"
 
 # Update .env file with edge nodes
 if [ -f "$PROJECT_ROOT/.env" ]; then
-	echo -e "${BLUE}Updating .env with edge nodes...${NC}"
+    echo -e "${BLUE}Updating .env with edge nodes...${NC}"
 
-	# Add LLAMA_CPP_EDGE_NODES if it doesn't exist
-	if ! grep -q "^LLAMA_CPP_EDGE_NODES=" "$PROJECT_ROOT/.env" 2>/dev/null; then
-		echo -e "\n# -----------------------------------------------------------------------------\n# llama.cpp Edge Nodes Configuration\n# -----------------------------------------------------------------------------\nLLAMA_CPP_EDGE_NODES=$EDGE_NODES_VAR" >>"$PROJECT_ROOT/.env"
-		echo -e "${GREEN}✓ Added LLAMA_CPP_EDGE_NODES to .env${NC}"
-	else
-		sed_inplace "s|^LLAMA_CPP_EDGE_NODES=.*|LLAMA_CPP_EDGE_NODES=$EDGE_NODES_VAR|" "$PROJECT_ROOT/.env"
-		echo -e "${GREEN}✓ Updated LLAMA_CPP_EDGE_NODES in .env${NC}"
-	fi
+    # Add LLAMA_CPP_EDGE_NODES if it doesn't exist
+    if ! grep -q "^LLAMA_CPP_EDGE_NODES=" "$PROJECT_ROOT/.env" 2>/dev/null; then
+        echo -e "\n# -----------------------------------------------------------------------------\n# llama.cpp Edge Nodes Configuration\n# -----------------------------------------------------------------------------\nLLAMA_CPP_EDGE_NODES=$EDGE_NODES_VAR" >>"$PROJECT_ROOT/.env"
+        echo -e "${GREEN}✓ Added LLAMA_CPP_EDGE_NODES to .env${NC}"
+    else
+        sed_inplace "s|^LLAMA_CPP_EDGE_NODES=.*|LLAMA_CPP_EDGE_NODES=$EDGE_NODES_VAR|" "$PROJECT_ROOT/.env"
+        echo -e "${GREEN}✓ Updated LLAMA_CPP_EDGE_NODES in .env${NC}"
+    fi
 else
-	echo -e "${YELLOW}.env file not found. Add this to your .env file:${NC}"
-	echo ""
-	echo "LLAMA_CPP_EDGE_NODES=$EDGE_NODES_VAR"
-	echo ""
+    echo -e "${YELLOW}.env file not found. Add this to your .env file:${NC}"
+    echo ""
+    echo "LLAMA_CPP_EDGE_NODES=$EDGE_NODES_VAR"
+    echo ""
 fi
 
 # Generate LiteLLM model config snippet
@@ -256,11 +256,11 @@ echo ""
 echo ""
 
 for NODE in "${EDGE_NODES[@]}"; do
-	NODE_HOST="${NODE%%:*}"
-	NODE_PORT="${NODE##*:}"
-	MODEL="${NODE_MODELS[$NODE]}"
+    NODE_HOST="${NODE%%:*}"
+    NODE_PORT="${NODE##*:}"
+    MODEL="${NODE_MODELS[$NODE]}"
 
-	cat <<MODELEOF
+    cat <<MODELEOF
   - model_name: ${MODEL}
     litellm_params:
       model: openai/${MODEL}
@@ -312,7 +312,7 @@ echo ""
 echo "Summary:"
 echo "  • Edge nodes configured: ${#EDGE_NODES[@]}"
 for NODE in "${EDGE_NODES[@]}"; do
-	echo "    - $NODE (${NODE_MODELS[$NODE]})"
+    echo "    - $NODE (${NODE_MODELS[$NODE]})"
 done
 echo ""
 echo "Next steps:"
