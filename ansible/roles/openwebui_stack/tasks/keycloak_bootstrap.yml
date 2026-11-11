@@ -116,11 +116,15 @@
   delegate_to: localhost
 
 - name: Attach the kc-admin-api scope to the provisioner client
+  # Authenticates as the admin user, not as the provisioner. Until this task
+  # has run, a provisioner token lacks the scope and the admin API answers
+  # 401, so on a new realm the provisioner cannot attach the scope itself
+  # (found on a from-scratch deploy, 2026-11-10).
   middleware_automation.keycloak.keycloak_client_scope_type:
     auth_keycloak_url: "{{ keycloak_url }}"
-    auth_realm: "{{ keycloak_realm }}"
-    auth_client_id: "{{ keycloak_provisioner_client_id }}"
-    auth_client_secret: "{{ keycloak_provisioner_client_secret }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
     realm: "{{ keycloak_realm }}"
     client_id: "{{ keycloak_provisioner_client_id }}"
     default_client_scopes:
