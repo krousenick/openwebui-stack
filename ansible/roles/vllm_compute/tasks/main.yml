@@ -38,6 +38,9 @@
       ansible.builtin.command:
         cmd: nvidia-smi --list-gpus
       register: vllm_gpu_list
+      # Read-only, and the assert below needs the count in a dry run too:
+      # skipped under --check, the count read as 0 and the dry run failed.
+      check_mode: false
       changed_when: false
       failed_when: false
 
