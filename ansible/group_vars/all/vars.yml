@@ -56,6 +56,13 @@ keycloak_admin_user: admin
 # a passwordless credential, then sign in from the username form.
 keycloak_passkeys_enabled: true
 
+# Name of a Keycloak theme under keycloak/themes/ in the deployed tree, used
+# as the default for every realm that has not chosen its own (login,
+# account console, admin console and emails). Empty keeps Keycloak's stock
+# theme. A site's own theme belongs in vars.local.yml: the theme files are
+# not part of this repository.
+keycloak_default_theme: ""
+
 # User self-registration on the platform realm login page. When true the
 # Keycloak login page shows a Register link, and every self-registered
 # account lands in keycloak_default_groups, whose group role mappings

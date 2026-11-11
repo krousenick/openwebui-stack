@@ -1,0 +1,82 @@
+---
+# ===========================================================================
+# nvidia_driver: make sure a host's NVIDIA GPU has a working driver.
+#
+# The role looks at the host first and then does the smallest thing that
+# makes `nvidia-smi` work:
+#
+#   no NVIDIA GPU                          nothing
+#   nvidia-smi works                       nothing
+#   module built but not loaded            modprobe
+#   driver installed, no kernel module     rebuild the module for the
+#   for the running kernel (the state a    running kernel; the installed
+#   kernel update leaves behind)           libraries and tools are kept
+#   no driver at all                       install it
+#
+# It never reboots a host. When a reboot is what is missing (a first
+# install while nouveau holds the GPU), the role says so and stops there.
+# It does not restart containers either: a container that failed to get
+# the GPU is started again by whatever manages it (the stack's compose
+# step, the vLLM units).
+# ===========================================================================
+
+# Run the role at all. false skips even the detection.
+nvidia_driver_enabled: true
+
+# Repair or install when a GPU is present and nvidia-smi does not work.
+# false: detect and report only.
+nvidia_driver_install: true
+
+# Fail the play when the host still has no working driver at the end.
+# false where the GPU is optional (the stack host: the gpu compose profile
+# is then left out of the run). true where the host cannot do its job
+# without one (the vLLM compute nodes).
+nvidia_driver_required: false
+
+# How the driver gets onto the host. auto picks:
+#   runfile  NVIDIA's .run installer. VMware Photon OS, and any host whose
+#            driver was installed that way before (it leaves
+#            /usr/bin/nvidia-uninstall behind).
+#   dnf      NVIDIA's package repository with DKMS kernel modules. Fedora
+#            and the RHEL family.
+# Other systems are reported as unsupported; install the driver there by
+# hand and the role only checks it.
+nvidia_driver_method: auto
+
+# Driver version for a first install with the .run installer, e.g.
+# "580.196.07". Leave empty when a driver is already installed: to rebuild
+# a kernel module the role reads the installed version from the host, so
+# the module always matches the libraries.
+nvidia_driver_version: ""
+
+# --- .run installer ---------------------------------------------------------
+# Installers are kept here so a later rebuild needs no download.
+nvidia_driver_runfile_dir: /root/nvidia
+nvidia_driver_runfile_url: >-
+  https://us.download.nvidia.com/XFree86/Linux-x86_64/{{ nvidia_driver_target_version }}/NVIDIA-Linux-x86_64-{{ nvidia_driver_target_version }}.run
+# Optional pin for the download, hex sha256. Empty skips the check; the
+# installer verifies its own archive either way before it runs.
+nvidia_driver_runfile_sha256: ""
+# Passed on every run. --kernel-module-only and --kernel-source-path are
+# added by the role.
+nvidia_driver_runfile_options:
+  - --silent
+  - --no-questions
+  - --accept-license
+  - --no-x-check
+  - --no-nouveau-check
+
+# --- dnf (Fedora, RHEL family) ----------------------------------------------
+nvidia_driver_dnf_distro: "{{ 'fedora' if ansible_facts.distribution == 'Fedora' else 'rhel' }}"
+nvidia_driver_dnf_repo_url: >-
+  https://developer.download.nvidia.com/compute/cuda/repos/{{ nvidia_driver_dnf_distro }}{{ ansible_facts.distribution_major_version }}/x86_64/cuda-{{ nvidia_driver_dnf_distro }}{{ ansible_facts.distribution_major_version }}.repo
+# The open kernel modules through DKMS, the driver, and nvidia-smi.
+nvidia_driver_dnf_packages:
+  - kmod-nvidia-open-dkms
+  - nvidia-driver
+  - nvidia-driver-cuda
+
+# Container device specification refreshed after a repair, when the NVIDIA
+# container toolkit is installed (podman and docker read it for
+# `--device nvidia.com/gpu=...`).
+nvidia_driver_cdi_spec: /var/run/cdi/nvidia.yaml

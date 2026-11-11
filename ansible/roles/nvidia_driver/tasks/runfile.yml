@@ -1,0 +1,117 @@
+---
+# NVIDIA's .run installer. Two uses:
+#
+#   module_missing  the driver is installed and the running kernel has no
+#                   module for it. `--kernel-module-only` builds and installs
+#                   just the module, from the installer of the version that
+#                   is already on the host, and leaves the libraries alone.
+#   not_installed   a full install of nvidia_driver_version.
+#
+# The installer needs the running kernel's headers and a compiler. It is
+# kept in nvidia_driver_runfile_dir, so the rebuild after the next kernel
+# update needs no download.
+
+- name: Require a version to install
+  ansible.builtin.assert:
+    that:
+      - nvidia_driver_target_version | length > 0
+    fail_msg: >-
+      {{ inventory_hostname }} has an NVIDIA GPU and no driver. Set
+      nvidia_driver_version (for example "580.196.07") so the role knows
+      which .run installer to fetch.
+    quiet: true
+
+- name: Find the build directory of the running kernel
+  ansible.builtin.stat:
+    path: "/lib/modules/{{ nvidia_driver_probe.kernel }}/build/Makefile"
+  register: nvidia_driver_kbuild
+
+- name: Install the kernel headers and build tools (Photon OS)
+  # Photon names the headers after the kernel flavor: uname -r
+  # 6.12.115-1.ph5-esx is package linux-esx-devel-6.12.115-1.ph5, and the
+  # generic 6.12.115-1.ph5 is linux-devel-6.12.115-1.ph5. The version is
+  # pinned so tdnf cannot pick headers for a newer kernel than the one
+  # that is running.
+  vars:
+    nvidia_driver_photon_kernel_version: "{{ nvidia_driver_probe.kernel | regex_replace('^(.+\\.ph[0-9]+)(-[a-z]+)?$', '\\1') }}"
+    nvidia_driver_photon_kernel_flavor: "{{ nvidia_driver_probe.kernel | regex_replace('^.+\\.ph[0-9]+(-[a-z]+)?$', '\\1') }}"
+    nvidia_driver_photon_packages: >-
+      {{ (['linux' ~ nvidia_driver_photon_kernel_flavor ~ '-devel-' ~ nvidia_driver_photon_kernel_version]
+          if not nvidia_driver_kbuild.stat.exists else [])
+         + (['build-essential']
+            if (nvidia_driver_probe.gcc == 'no' or nvidia_driver_probe.make == 'no') else []) }}
+  ansible.builtin.command:
+    argv: "{{ ['tdnf', 'install', '-y'] + nvidia_driver_photon_packages }}"
+  changed_when: true
+  when:
+    - ansible_facts.distribution == 'VMware Photon OS'
+    - nvidia_driver_photon_packages | length > 0
+
+- name: Install the kernel headers and build tools (Fedora, RHEL family)
+  ansible.builtin.package:
+    name:
+      - "kernel-devel-{{ nvidia_driver_probe.kernel }}"
+      - gcc
+      - make
+    state: present
+  when:
+    - ansible_facts.os_family == 'RedHat'
+    - ansible_facts.distribution != 'VMware Photon OS'
+    - not nvidia_driver_kbuild.stat.exists or nvidia_driver_probe.gcc == 'no' or nvidia_driver_probe.make == 'no'
+
+- name: Create the installer directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ nvidia_driver_runfile_dir }}"
+    - "{{ nvidia_driver_runfile_dir }}/tmp"
+
+- name: Fetch the installer when it is not kept on the host
+  # An installer that is already there is used as it is: get_url does not
+  # download again when the file exists and no checksum is pinned.
+  ansible.builtin.get_url:
+    url: "{{ nvidia_driver_runfile_url }}"
+    dest: "{{ nvidia_driver_runfile_dir }}/NVIDIA-Linux-x86_64-{{ nvidia_driver_target_version }}.run"
+    checksum: "{{ ('sha256:' ~ nvidia_driver_runfile_sha256) if nvidia_driver_runfile_sha256 | length > 0 else omit }}"
+    owner: root
+    group: root
+    mode: "0700"
+    timeout: 600
+    force: false
+  register: nvidia_driver_runfile_fetch
+  until: nvidia_driver_runfile_fetch is succeeded
+  retries: 3
+  delay: 10
+
+- name: Run the installer
+  # /lib/modules/<kernel>/build is the headers directory on every
+  # distribution, so the path needs no per-system knowledge. The temporary
+  # directory is set because /tmp is mounted noexec on hardened hosts.
+  ansible.builtin.command:
+    argv: >-
+      {{ ['sh', nvidia_driver_runfile_dir ~ '/NVIDIA-Linux-x86_64-' ~ nvidia_driver_target_version ~ '.run']
+         + nvidia_driver_runfile_options
+         + (['--kernel-module-only'] if nvidia_driver_state == 'module_missing' else [])
+         + ['--kernel-source-path=/lib/modules/' ~ nvidia_driver_probe.kernel ~ '/build',
+            '--tmpdir=' ~ nvidia_driver_runfile_dir ~ '/tmp'] }}
+  environment:
+    TMPDIR: "{{ nvidia_driver_runfile_dir }}/tmp"
+  register: nvidia_driver_runfile_install
+  changed_when: true
+
+- name: Register the new modules with the kernel
+  ansible.builtin.command:
+    argv:
+      - depmod
+      - -a
+      - "{{ nvidia_driver_probe.kernel }}"
+  changed_when: true
+
+- name: Remove the installer's temporary directory
+  ansible.builtin.file:
+    path: "{{ nvidia_driver_runfile_dir }}/tmp"
+    state: absent

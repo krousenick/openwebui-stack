@@ -23,6 +23,14 @@
       - ../group_vars/all/vault.yml
 
   roles:
+    # The GPU driver first: when the stack host has an NVIDIA GPU whose
+    # driver does not work (typically after a kernel update), this rebuilds
+    # it before anything that uses the GPU is started. A host without a GPU
+    # is left alone, and a host whose driver cannot be repaired still
+    # deploys: tasks/gpu_profile.yml then leaves the GPU exporter out.
+    - role: ../roles/nvidia_driver
+      tags:
+        - nvidia_driver
     # Global host checks (Docker, compose, base packages) run on every host
     # before any role touches docker compose.
     - role: ../roles/prerequisites

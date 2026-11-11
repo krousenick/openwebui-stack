@@ -8,6 +8,15 @@
 # grafana.<domain> and voice.<domain>.
 domain: example.com
 
+# A Keycloak theme of your own: put it in keycloak/themes/<name>/ in the
+# deployed tree (the directory is mounted into the container) and name it
+# here. It becomes the default for every realm that has not chosen one.
+# keycloak_default_theme: mytheme
+
+# LLM Launcher portals (docs/vllm-inference.md "LLM Launcher"). The node
+# names and addresses go in inventory/hosts.local.yml.
+# launcher_enabled: true
+
 # Turn a provider's models on once its key is in vault.local.yml.
 # litellm_gemini_models_enabled: true
 # litellm_anthropic_models_enabled: true

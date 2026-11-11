@@ -11,6 +11,10 @@ Requires=docker.service
 Wants=user@{{ vllm_run_uid }}.service
 After=user@{{ vllm_run_uid }}.service
 {% endif %}
+# Start rate limit. These belong in [Unit]: in [Service] systemd ignores
+# StartLimitIntervalSec and falls back to its default interval.
+StartLimitIntervalSec=600
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -41,8 +45,6 @@ TimeoutStartSec=0
 TimeoutStopSec=120
 KillMode=control-group
 # Model download and CUDA init are slow. Wait before marking failed.
-StartLimitIntervalSec=600
-StartLimitBurst=10
 
 # Security
 {% if vllm_rootless | bool %}

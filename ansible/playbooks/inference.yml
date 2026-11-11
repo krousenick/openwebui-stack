@@ -30,6 +30,15 @@
   gather_facts: true
 
   roles:
+    # A compute node is useless without its GPU, so here a driver that
+    # cannot be made to work stops the play. The role repairs what it can
+    # (a module that is not loaded, or missing for the running kernel) and
+    # installs a driver on a node that has none.
+    - role: ../roles/nvidia_driver
+      vars:
+        nvidia_driver_required: true
+      tags:
+        - nvidia_driver
     - role: ../roles/prerequisites
       # Override container CLI detection for WSL2: WSL2 Fedora
       # uses docker but ansible_facts may detect as Windows at inventory

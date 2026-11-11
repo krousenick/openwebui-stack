@@ -1,0 +1,151 @@
+---
+# Detect, repair when needed, look again, report. See defaults/main.yml for
+# what each state means and what the role does about it.
+
+- name: Detect the NVIDIA GPU and its driver
+  ansible.builtin.import_tasks:
+    file: detect.yml
+  when: nvidia_driver_enabled | bool
+
+- name: Remember what the host looked like before any repair
+  ansible.builtin.set_fact:
+    nvidia_driver_state_before: "{{ nvidia_driver_state }}"
+    nvidia_driver_action: none
+    # runfile for Photon and for a driver that was installed with the .run
+    # installer; dnf for the Fedora and RHEL family; anything else is left
+    # to the administrator.
+    nvidia_driver_resolved_method: >-
+      {{ nvidia_driver_method if nvidia_driver_method != 'auto'
+         else 'runfile' if (nvidia_driver_probe.runfile_install == 'yes'
+                            or ansible_facts.distribution == 'VMware Photon OS')
+         else 'dnf' if ansible_facts.os_family == 'RedHat'
+         else 'unsupported' }}
+    # A rebuild must match the installed libraries; a first install uses
+    # the configured version.
+    nvidia_driver_target_version: >-
+      {{ nvidia_driver_probe.userspace_version
+         if nvidia_driver_state == 'module_missing'
+         else nvidia_driver_version }}
+  when: nvidia_driver_enabled | bool
+
+- name: Repair the NVIDIA driver
+  when:
+    - nvidia_driver_enabled | bool
+    - nvidia_driver_install | bool
+    - nvidia_driver_state in ['module_not_loaded', 'module_missing', 'not_installed']
+  block:
+    - name: Say what will be done
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: an NVIDIA GPU is present and nvidia-smi
+          does not work
+          ({{ nvidia_driver_probe.smi_error | default('no answer', true) }}).
+          {{ {'module_not_loaded': 'The kernel module is built for kernel ' ~ nvidia_driver_probe.kernel ~ ' but not loaded: loading it.',
+              'module_missing': 'Driver ' ~ nvidia_driver_probe.userspace_version ~ ' is installed but has no kernel module for the running kernel ' ~ nvidia_driver_probe.kernel ~ ' (the state a kernel update leaves): rebuilding the module (' ~ nvidia_driver_resolved_method ~ ').',
+              'not_installed': 'No driver is installed: installing it (' ~ nvidia_driver_resolved_method ~ ').'}[nvidia_driver_state] }}
+          {{ '(check mode: nothing is changed)' if ansible_check_mode else '' }}
+
+    - name: Stop on a system the role cannot install on
+      ansible.builtin.fail:
+        msg: >-
+          {{ inventory_hostname }} needs an NVIDIA driver
+          ({{ nvidia_driver_state }}) and this role installs one only on
+          VMware Photon OS (.run installer) and the Fedora/RHEL family
+          (NVIDIA's dnf repository); this host is
+          {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}.
+          Install the driver by hand, or set nvidia_driver_method to runfile
+          with nvidia_driver_version to use NVIDIA's installer here.
+      when:
+        - nvidia_driver_state in ['module_missing', 'not_installed']
+        - nvidia_driver_resolved_method == 'unsupported'
+
+    - name: Rebuild or install with NVIDIA's .run installer
+      ansible.builtin.include_tasks:
+        file: runfile.yml
+      when:
+        - nvidia_driver_state in ['module_missing', 'not_installed']
+        - nvidia_driver_resolved_method == 'runfile'
+
+    - name: Rebuild or install from NVIDIA's package repository
+      ansible.builtin.include_tasks:
+        file: dnf.yml
+      when:
+        - nvidia_driver_state in ['module_missing', 'not_installed']
+        - nvidia_driver_resolved_method == 'dnf'
+
+    - name: Load the NVIDIA kernel modules
+      # nvidia_uvm is what CUDA needs; nvidia-smi alone loads only nvidia.
+      ansible.builtin.command:
+        cmd: "modprobe {{ item }}"
+      loop:
+        - nvidia
+        - nvidia_uvm
+      register: nvidia_driver_modprobe
+      changed_when: true
+      # Reported below with the nvidia-smi answer, which says more.
+      failed_when: false
+
+    - name: Record the repair
+      ansible.builtin.set_fact:
+        nvidia_driver_action: >-
+          {{ {'module_not_loaded': 'loaded the kernel module',
+              'module_missing': 'rebuilt the kernel module for ' ~ nvidia_driver_probe.kernel,
+              'not_installed': 'installed driver ' ~ nvidia_driver_target_version}[nvidia_driver_state] }}
+      # A dry run repairs nothing, so it must not claim it did.
+      when: not ansible_check_mode
+
+    - name: Look at the driver again
+      ansible.builtin.import_tasks:
+        file: detect.yml
+
+# Outside the block above on purpose: a block's condition is checked again
+# for every task in it, and once the driver works that condition is false,
+# so a task placed after the second look would never run.
+- name: Refresh the container device specification after a repair
+  # Containers get the GPU through this file (CDI). It lists the driver's
+  # libraries by version, so it is regenerated when the driver was repaired.
+  ansible.builtin.command:
+    argv:
+      - nvidia-ctk
+      - cdi
+      - generate
+      - "--output={{ nvidia_driver_cdi_spec }}"
+  changed_when: true
+  when:
+    - nvidia_driver_enabled | bool
+    - nvidia_driver_state_before != 'ok'
+    - nvidia_driver_state == 'ok'
+    - nvidia_driver_probe.nvidia_ctk == 'yes'
+
+- name: Report the NVIDIA driver state
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}:
+      {{ {'no_gpu': 'no NVIDIA GPU found, nothing to do',
+          'ok': 'NVIDIA driver ' ~ nvidia_driver_probe.smi_version ~ ' works on kernel ' ~ nvidia_driver_probe.kernel,
+          'module_not_loaded': 'the NVIDIA kernel module is installed but nvidia-smi does not work: ' ~ nvidia_driver_probe.smi_error,
+          'module_missing': 'driver ' ~ nvidia_driver_probe.userspace_version ~ ' has no kernel module for the running kernel ' ~ nvidia_driver_probe.kernel,
+          'not_installed': 'an NVIDIA GPU is present and no driver is installed'}[nvidia_driver_state] }}
+      {{ '(' ~ nvidia_driver_action ~ ')' if nvidia_driver_action != 'none' else '' }}
+      {{ 'A reboot is needed before the driver can load: nouveau holds the GPU.'
+         if (nvidia_driver_state != 'ok' and nvidia_driver_probe.nouveau_loaded == 'yes') else '' }}
+  when: nvidia_driver_enabled | bool
+
+- name: Require a working NVIDIA driver
+  ansible.builtin.assert:
+    that:
+      - nvidia_driver_state == 'ok'
+    fail_msg: >-
+      {{ inventory_hostname }} needs a working NVIDIA driver and has none
+      (state: {{ nvidia_driver_state }};
+      nvidia-smi: {{ nvidia_driver_probe.smi_error | default('not found', true) }}).
+      {{ 'nvidia_driver_install is false, so nothing was attempted.'
+         if not (nvidia_driver_install | bool) else '' }}
+      {{ 'Reboot the host so nouveau lets go of the GPU, then run again.'
+         if nvidia_driver_probe.nouveau_loaded == 'yes' else '' }}
+    quiet: true
+  when:
+    - nvidia_driver_enabled | bool
+    - nvidia_driver_required | bool
+    # A dry run reports the pending repair above; it cannot have happened.
+    - not (ansible_check_mode and nvidia_driver_state_before != 'ok' and nvidia_driver_install | bool)

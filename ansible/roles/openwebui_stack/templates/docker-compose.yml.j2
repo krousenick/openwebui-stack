@@ -564,6 +564,12 @@ services:
       # Cache configuration (standalone)
       KC_CACHE: local
 
+{% if keycloak_default_theme | default('') | length > 0 %}
+      # Default theme for every realm that has not chosen its own
+      # (login, account console, admin console and emails)
+      KC_SPI_THEME__DEFAULT: {{ keycloak_default_theme }}
+
+{% endif %}
       JAVA_OPTS_KC_HEAP: "-XX:MaxRAMPercentage=70.0"
       # Import realm on startup (if files exist in ./keycloak/import/)
       KC_IMPORT: "/opt/keycloak/data/import/realm-export.json"

@@ -143,15 +143,20 @@ vllm_repetition_detection:
 # inventory/hosts.local.yml), run playbooks/site.yml, then set this true and
 # run `run.sh inference`. The runner sources the deployed .env, which is
 # where the gate gets DOMAIN, KEYCLOAK_REALM and LAUNCHER_OIDC_CLIENT_SECRET.
-vllm_launcher_enabled: false
-
+#
 # One 4090 at 0.90 leaves no room for a second model, so the GUI can only
-# start something once it owns the primary slot: true keeps vllm-serve
-# installed but stopped, freeing the GPU and port 8000 for the GUI. Launch
-# there with served model name gemma-4-26b-a4b and LiteLLM keeps routing to
-# it. Nothing serves until a model is launched, and nothing relaunches it
-# after a reboot or a vllm-launcher restart.
-vllm_launcher_owns_primary: false
+# start something once it owns the primary slot: vllm_launcher_owns_primary
+# true keeps vllm-serve installed but stopped, freeing the GPU and port 8000
+# for the GUI. Launch there with served model name gemma-4-26b-a4b and
+# LiteLLM keeps routing to it. Nothing serves until a model is launched, and
+# nothing relaunches it after a reboot or a vllm-launcher restart.
+#
+# Both switches are off (the role defaults) and are deliberately not set in
+# this file: set them in vars.local.yml. A variable set here wins over the
+# same variable in vars.local.yml, because Ansible reads the files of this
+# directory in alphabetical order and vars.local.yml comes first.
+#   vllm_launcher_enabled: true
+#   vllm_launcher_owns_primary: true
 
 # The compute segment the controller reaches the node on (set in
 # vars.local.yml). The API port opens in the vllm-cluster zone for LiteLLM;
