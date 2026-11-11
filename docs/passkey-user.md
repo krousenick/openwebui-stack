@@ -4,6 +4,8 @@ Passkeys are enabled on the `platform` realm by `ansible/roles/openwebui_stack/t
 
 Use the realm `platform`, not `master`. Replace `auth.example.com` with `auth.$DOMAIN`.
 
+For everything else about accounts (groups, self-registration, password reset, the account console), see [keycloak-users.md](keycloak-users.md).
+
 ## 1. Create the user
 
 1. Open `https://auth.example.com/admin` and select the `platform` realm.

@@ -223,7 +223,9 @@ Users must be in a group to receive application roles. Add more users in the Key
 
 ## Adding users and passkeys
 
-Follow [docs/passkey-user.md](passkey-user.md): create the user in the `platform` realm, have them sign in once with a password, register a passkey from the account console (`https://auth.$DOMAIN/realms/platform/account` → Account security → Signing in → Passwordless → Set up a Passkey), then sign in to any app with **Sign in with Passkey**. Disable this by setting `keycloak_passkeys_enabled: false` in `ansible/group_vars/all/vars.yml`.
+[keycloak-users.md](keycloak-users.md) covers accounts end to end: the three ways to create a user, which group grants what, the URLs for the account console, password reset and registration, and how to disable or remove a user. An account created in the admin console needs a password set on its **Credentials** tab before it can sign in.
+
+For passkeys, follow [docs/passkey-user.md](passkey-user.md): create the user in the `platform` realm, have them sign in once with a password, register a passkey from the account console (`https://auth.$DOMAIN/realms/platform/account` → Account security → Signing in → Passwordless → Set up a Passkey), then sign in to any app with **Sign in with Passkey**. Disable this by setting `keycloak_passkeys_enabled: false` in `ansible/group_vars/all/vars.yml`.
 
 ## Using the platform
 

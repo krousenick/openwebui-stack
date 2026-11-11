@@ -238,8 +238,10 @@ Role names are the values in the `roles` token claim. Grafana maps them with the
 
 1. Go to Keycloak Admin Console → Users → Add user
 2. Fill in user details and save
-3. Go to Credentials tab → Set password (uncheck "Temporary")
+3. Go to Credentials tab → Set password (uncheck "Temporary"). An account without a password cannot sign in, and with no mail server configured Keycloak cannot send the user a link to set one.
 4. Go to Groups tab → Join one of the groups in the table
+
+[docs/keycloak-users.md](docs/keycloak-users.md) is the full guide: the URLs users and administrators need (account console, password reset, registration, admin console), what users can change themselves, password reset with and without a mail server, and disabling or removing a user.
 
 To register a passkey for that user, follow [docs/passkey-user.md](docs/passkey-user.md).
 
@@ -1458,6 +1460,7 @@ docker compose restart lgtm
 ## Additional Resources
 
 - [Complete setup and usage guide](docs/setup-guide.md) - end-to-end install, SSO, usage, local inference, monitoring, backups, upgrades, and troubleshooting
+- [Users, sign-in and account self-service](docs/keycloak-users.md)
 - [Passkey user guide](docs/passkey-user.md)
 - [Open WebUI Documentation](https://docs.openwebui.com/)
 - [LiteLLM Proxy Docs](https://docs.litellm.ai/docs/proxy/configs)

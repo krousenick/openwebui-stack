@@ -81,6 +81,7 @@ curl -sk "https://auth.localhost/realms/master/.well-known/openid-configuration"
 - **Groups Mapper**: Automatically added by the Ansible playbook (`keycloak_app.yml` dedicated scope mappers) to include group membership in tokens
 - **Required**: Add `auth.localhost` to `/etc/hosts` for browser access
 - **User Assignment**: Users must be assigned to groups in Keycloak for role mapping to work (admin group → Admin role)
+- **User management**: `docs/keycloak-users.md` has the URLs for users and administrators, the group table, the three ways to create a user, and password reset. An account created in the admin console cannot sign in until a password is set on its Credentials tab. No SMTP server is configured in the realm, so Keycloak cannot mail reset or verification links; an administrator resets passwords
 - **Single Logout**: Every client in `keycloak_apps` (vars.yml) lists `post_logout_redirect_uris`; the app side is `WEBUI_AUTH_SIGNOUT_REDIRECT_URL` (Open WebUI), `GF_AUTH_GENERIC_OAUTH_SIGNOUT_REDIRECT_URL` (Grafana), `PROXY_LOGOUT_URL` (LiteLLM), and the `/oauth2/sign_out?rd=` link (voice, `roles/chatterbox/tasks/ui_auth.yml`). Keycloak matches the URL exactly, so change both sides together. Open WebUI also receives Keycloak back-channel logout (`backchannel_logout_url` on the client, `ENABLE_OAUTH_BACKCHANNEL_LOGOUT`)
 
 ### Troubleshooting SSO Issues
