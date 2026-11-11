@@ -134,6 +134,16 @@
     - openwebui-config
     - openwebui-reasoning
 
+# Also tagged openwebui-reasoning: showInputSelections is what shows an
+# enabled Thinking switch as a chip beside the + menu.
+- name: Set the Open WebUI default interface settings
+  ansible.builtin.import_tasks:
+    file: openwebui_interface_defaults.yml
+  tags:
+    - skills
+    - openwebui-config
+    - openwebui-reasoning
+
 - name: Configure Keycloak SSO
   ansible.builtin.import_tasks:
     file: keycloak.yml

@@ -194,12 +194,32 @@ class FakeLiteLLM(FakeService):
         return sorted(skill["display_title"] for skill in self.skills.values())
 
 
+# Open WebUI 0.13.3 MfaConfigForm fields; written from its source, not
+# imported from the script under test.
+MFA_FIELDS = ("ENABLE_MFA", "MFA_ALLOW_OAUTH_BYPASS", "MFA_ALLOW_TRUSTED_HEADER_BYPASS")
+
+
 class FakeOpenWebUI(FakeService):
     def __init__(self, port: int = 0) -> None:
         super().__init__(port)
         self.served: list[dict[str, Any]] = []
         self.config: dict[str, Any] = {"DEFAULT_MODELS": "", "MODEL_ORDER_LIST": ["kept"]}
         self.ignore_config_writes = False
+        # GET /api/v1/auths/admin/config as 0.13.3 returns it (a subset).
+        self.admin_config: dict[str, Any] = {
+            "ENABLE_MFA": False,
+            "MFA_ALLOW_OAUTH_BYPASS": False,
+            "MFA_ALLOW_TRUSTED_HEADER_BYPASS": False,
+            "WEBUI_URL": "https://chat.example.test",
+            "ENABLE_SIGNUP": False,
+            "DEFAULT_USER_ROLE": "user",
+            "DEFAULT_GROUP_ID": "",
+            "JWT_EXPIRES_IN": "4w",
+            "I18N": {},
+            "SKILL_CONTENT_MAX_CHARS": None,
+            "DEFAULT_INTERFACE_SETTINGS": {"chatBubble": False},
+        }
+        self.sessions_revoked_on_save = False
         self.skills: dict[str, dict[str, Any]] = {}
         self.skill_lookup_by_id = True
         self.functions: dict[str, dict[str, Any]] = {}
@@ -215,6 +235,8 @@ class FakeOpenWebUI(FakeService):
             if method == "POST" and not self.ignore_config_writes:
                 self.config = request.json()
             return 200, self.config
+        if path == "/api/v1/auths/admin/config":
+            return self.handle_admin_config(method, request)
         if path.startswith("/api/v1/skills"):
             return self.handle_skills(method, path.removeprefix("/api/v1/skills"), request)
         if path.startswith("/api/v1/functions"):
@@ -230,6 +252,21 @@ class FakeOpenWebUI(FakeService):
             self.model_rows[form["id"]].update(name=form["name"], meta=form["meta"], params=form["params"])
             return 200, self.model_rows[form["id"]]
         return 404, {"detail": f"no route for {method} {path}"}
+
+    def handle_admin_config(self, method: str, request: Request) -> tuple[int, Any]:
+        """The admin config as 0.13.3 saves it: a form, with its MFA guard and I18N rule."""
+        if method != "POST":
+            return 200, self.admin_config
+        form = request.json()
+        if any(field in form for field in MFA_FIELDS):
+            # An API key is not a human admin session; Open WebUI refuses
+            # the MFA fields from it even when they are unchanged.
+            return 403, {"detail": "A human administrator session is required to change MFA settings."}
+        if "I18N" in form and form["I18N"] is None:
+            return 422, {"detail": "I18N must be a dictionary"}
+        if not self.ignore_config_writes:
+            self.admin_config.update(form)
+        return 200, {**self.admin_config, "sessions_revoked": self.sessions_revoked_on_save}
 
     def handle_skills(self, method: str, path: str, request: Request) -> tuple[int, Any]:
         if path == "/":

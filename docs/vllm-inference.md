@@ -280,7 +280,7 @@ vllm_reasoning_effort: medium
 
 How to set it per request from each client:
 
-- **Open WebUI**: the **Thinking** switch in the chat input (Integrations menu, the icon next to `+`). On sends the level picked in the switch's settings (the Valves button on its row: low / medium / high, per user); off sends `reasoning_effort: none`. The playbook puts the switch only on models LiteLLM reports as reasoning-capable (`tasks/openwebui_reasoning.yml`, details in the next section). **Controls → Advanced Params → Reasoning Effort** (per chat) still works and overrides the switch; Workspace → Models → Edit Model → Advanced Parameters → Reasoning Effort (per model) overrides both. Values map straight through to `reasoning_effort` on the request ([docs](https://docs.openwebui.com/features/chat-conversations/chat-features/reasoning-models)). The thinking trace renders in the collapsible "Thinking" block above the answer once the parser splits it into the `reasoning` field.
+- **Open WebUI**: the **Thinking** switch in the chat input's `+` menu, also shown as a chip beside `+` while it is on. On sends the level picked in the switch's settings (click the chip, or the sliders icon on its row in the `+` menu: low / medium / high, per user); off (the chip's x, or the switch in the menu) sends `reasoning_effort: none`. The playbook puts the switch only on models LiteLLM reports as reasoning-capable (`tasks/openwebui_reasoning.yml`, details in the next section). **Controls → Advanced Params → Reasoning Effort** (per chat) still works and overrides the switch; Workspace → Models → Edit Model → Advanced Parameters → Reasoning Effort (per model) overrides both. Values map straight through to `reasoning_effort` on the request ([docs](https://docs.openwebui.com/features/chat-conversations/chat-features/reasoning-models)). The thinking trace renders in the collapsible "Thinking" block above the answer once the parser splits it into the `reasoning` field.
 - **opencode**: the built-in variant picker. `/variants` (or `ctrl+x v`, bound by the opencode role) opens "Select variant" with the model's levels; `ctrl+t` cycles them. The levels are the variants the LiteLLM discovery plugin builds from the `supports_<level>_reasoning_effort` flags, so a model with an empty `vllm_reasoning_efforts` shows no picker at all. No extra plugin is involved.
 - **MAGIE Coder**: models registered through the LiteLLM provider carry the `reasoning` capability (the plugin maps `supports_reasoning` from `/v1/model/info`), and the thinking selector sends `reasoning_effort` on the request. **Auto** follows the LiteLLM default (`vllm_reasoning_effort`, or none if unset); a named level requests that effort explicitly.
 - **curl / API**: `"reasoning_effort": "high"` in the chat-completions body, or `?reasoning-effort=` where a client supports it.
@@ -305,10 +305,13 @@ Open WebUI 0.13 has no dropdown slot in the chat input, only switches (toggle fi
 | `reasoning_switch` ("Thinking") | The switch. On: `reasoning_effort` = the user's level from the switch's settings (`low` / `medium` / `high`, default `medium`). |
 | `reasoning_off` ("Thinking Off State") | Always on for the same models. Off: `reasoning_effort: none`. Open WebUI does not run a toggle filter while its switch is off, so the off state needs its own filter; without it an off switch would fall through to the LiteLLM default effort and the model would keep thinking. |
 
+Where it shows (Open WebUI 0.13.3): the switch is a row in the chat input's `+` menu, with a sliders icon that opens the level setting. While it is on it is also a **Thinking** chip beside `+`: click the chip for the level, its x turns thinking off for the chat. The chip needs the per-user interface setting **Show Input Selections** (Settings → Interface), which 0.13.3 added switched off. The role turns it on for everyone through Open WebUI's default interface settings (`openwebui_default_interface_settings`, `tasks/openwebui_interface_defaults.yml`); a user who switches it off keeps their choice. With it on, the chat's selected tools and skills show as chips too.
+
 Which models get it is read from LiteLLM on every run, not listed by hand:
 
 - `model_info.supports_reasoning: true` → the switch is attached (the model's Workspace entry gets it in `meta.filterIds`, and in `meta.defaultFilterIds` so new chats start with it on).
 - `model_info.supports_none_reasoning_effort: true` as well → the off-state companion is attached too. A model that cannot switch thinking off never receives `none`; there an off switch sends no effort and the provider default applies.
+- A router (`auto`, `adaptive`) has no capability flags of its own, so it takes them from the models it can route to: it gets the switch when every one of them is reasoning-capable, and the off-state companion when every one of them accepts `none`. With Gemini models in the pool, an off switch on a router therefore sends no effort and each model's own default applies. A router with a target that cannot reason, or that LiteLLM does not serve, gets nothing.
 
 For a vLLM model both flags come from `vllm_reasoning_parser` and `vllm_reasoning_efforts` (include `none` in the list). After `playbooks/inference.yml` registers or retires a reasoning model, rerun the sync:
 
@@ -329,6 +332,7 @@ Knobs (`ansible/roles/openwebui_stack/defaults/main.yml`):
 | `openwebui_reasoning_models_extra` | `[]` | Extra `model_name`s that get the switch |
 | `openwebui_reasoning_off_models_extra` | `[]` | Extra `model_name`s that accept `none` |
 | `openwebui_reasoning_models_exclude` | `[]` | Never attach, whatever LiteLLM reports |
+| `openwebui_default_interface_settings` | `{showInputSelections: true}` | Site-wide defaults for Settings → Interface; `showInputSelections` shows the Thinking chip beside `+`. Only the listed keys are set, and a user's own choice wins |
 
 Behavior to know:
 

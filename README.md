@@ -961,7 +961,7 @@ curl -sk "https://litellm.<domain>/v1/skills?custom_llm_provider=litellm_proxy&q
 ```
 
 Open WebUI users: type `$` in the chat input and pick the skill, or enable
-it per chat from the + Integrations menu.
+it per chat from the chat input's + menu (Skills).
 
 ### Adding a skill
 

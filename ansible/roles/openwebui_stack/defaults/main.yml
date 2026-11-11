@@ -309,6 +309,21 @@ openwebui_default_models_csv: >-
   {{ [openwebui_default_models | default('', true)] | flatten | join(',')
      | split(',') | map('trim') | reject('equalto', '') | join(',') }}
 
+# Site-wide defaults for every user's Settings > Interface (Open WebUI's
+# default interface settings, set through the admin API by
+# tasks/openwebui_interface_defaults.yml). A user's own choice still wins.
+# Only the keys listed here are set on each run; other keys, for example
+# ones set in the admin UI, are kept. Removing a key here does not remove
+# it from Open WebUI: set the value you want instead. {} skips the task.
+#
+# showInputSelections shows what is on for a chat (the Thinking switch,
+# selected tools and skills) as chips beside the + menu. Open WebUI 0.13.3
+# added the setting, off by default, which left the Thinking switch visible
+# only inside the + menu. Clicking the Thinking chip opens its level
+# setting; its x turns thinking off for the chat.
+openwebui_default_interface_settings:
+  showInputSelections: true
+
 # Thinking switch: the reasoning selector in the Open WebUI chat input
 # (tasks/openwebui_reasoning.yml). A "Thinking" switch appears in the
 # chat input of every reasoning-capable model; on sends the level each
@@ -324,7 +339,9 @@ openwebui_reasoning_switch_default_on: true
 # Read the model list from LiteLLM: the switch goes on every model whose
 # model_info has supports_reasoning: true, and the off state (none) only
 # where it also has supports_none_reasoning_effort: true. For a vLLM model
-# both come from vllm_reasoning_parser / vllm_reasoning_efforts.
+# both come from vllm_reasoning_parser / vllm_reasoning_efforts. A router
+# (auto, adaptive) counts as reasoning-capable when every model it can
+# route to is, and as accepting "none" when every one of them does.
 openwebui_reasoning_discover_models: true
 
 # Hand-picked additions and removals, as LiteLLM model_names. _extra adds

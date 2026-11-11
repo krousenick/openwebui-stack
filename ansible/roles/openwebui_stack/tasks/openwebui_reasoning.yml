@@ -20,7 +20,9 @@
 # where it does nothing. The off-state companion is attached only where
 # LiteLLM also reports supports_none_reasoning_effort: sending "none" to a
 # model that cannot switch thinking off would fail the request, so there an
-# off switch means "send no effort" and the provider default applies.
+# off switch means "send no effort" and the provider default applies. A
+# router (auto, adaptive) takes both answers from the models it can route
+# to: every one of them has to reason, or accept "none".
 #
 # Everything goes through the admin API (container-scripts/
 # openwebui_reasoning_sync.py), which loads the functions into the running

@@ -66,7 +66,73 @@ def test_reasoning_models_are_read_from_model_info(litellm):
         "actions": [],
         "reasoning": ["gemma", "qwen"],
         "can_disable": ["gemma"],
+        "routers": [],
     }
+
+
+def router(name: str, **params) -> dict:
+    """A router entry as /model/info returns it: no capability flags of its own."""
+    return {
+        "model_name": name,
+        "model_info": {"litellm_provider": "auto_router"},
+        "litellm_params": {"model": "auto_router/" + params.pop("kind", "complexity_router"), **params},
+    }
+
+
+def complexity_router(name: str, default: str, **tiers: str) -> dict:
+    return router(name, complexity_router_default_model=default, complexity_router_config={"tiers": tiers})
+
+
+def adaptive_router(name: str, *pool: str) -> dict:
+    return router(name, kind="adaptive_router", adaptive_router_config={"available_models": list(pool)})
+
+
+REASONING_MODELS = [
+    {"model_name": "gemma", "model_info": {"supports_reasoning": True, "supports_none_reasoning_effort": True}},
+    {"model_name": "qwen", "model_info": {"supports_reasoning": True, "supports_none_reasoning_effort": True}},
+    {"model_name": "gemini", "model_info": {"supports_reasoning": True}},
+    {"model_name": "plain", "model_info": {"supports_reasoning": False}},
+]
+
+
+def discover(litellm, *routers: dict) -> dict:
+    litellm.models = [*REASONING_MODELS, *routers]
+    return litellm_reasoning_models.main(["--url", litellm.url])
+
+
+def test_a_router_reasons_when_every_model_it_routes_to_does(litellm):
+    report = discover(
+        litellm,
+        complexity_router("auto", "gemini", SIMPLE="gemma", COMPLEX="gemini"),
+        adaptive_router("adaptive", "gemma", "qwen"),
+    )
+    assert report["routers"] == ["adaptive", "auto"]
+    assert report["reasoning"] == ["adaptive", "auto", "gemini", "gemma", "qwen"]
+    # auto can land on gemini, which cannot switch thinking off; adaptive cannot.
+    assert report["can_disable"] == ["adaptive", "gemma", "qwen"]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param(complexity_router("auto", "gemma", SIMPLE="plain"), id="a tier cannot reason"),
+        pytest.param(complexity_router("auto", "plain", SIMPLE="gemma"), id="the default model cannot reason"),
+        pytest.param(adaptive_router("auto", "gemma", "retired"), id="a pool model is not served"),
+        pytest.param(adaptive_router("auto"), id="empty pool"),
+        pytest.param(router("auto", kind="some_future_router"), id="no target list this script reads"),
+        pytest.param(adaptive_router("auto", "gemma", "nested"), id="routes to another router"),
+    ],
+)
+def test_a_router_is_left_out_unless_every_target_is_a_reasoning_model(litellm, entry):
+    report = discover(litellm, entry, adaptive_router("nested", "gemma"))
+    assert "auto" not in report["reasoning"]
+    assert "auto" not in report["can_disable"]
+    assert report["routers"] == ["nested"]
+
+
+def test_a_router_config_delivered_as_a_json_string_is_read(litellm):
+    entry = router("auto", complexity_router_default_model="gemma", complexity_router_config='{"tiers": {"A": "qwen"}}')
+    assert discover(litellm, entry)["can_disable"] == ["auto", "gemma", "qwen"]
 
 
 def test_first_run_installs_the_functions_and_attaches_them(workspace, sync):

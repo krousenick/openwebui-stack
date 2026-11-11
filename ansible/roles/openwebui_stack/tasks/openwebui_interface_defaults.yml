@@ -1,0 +1,33 @@
+---
+# Site-wide defaults for every user's Settings > Interface, from
+# openwebui_default_interface_settings. A user's own choice still wins.
+# Only the listed keys are set; every other key of the defaults, and every
+# other admin setting, keeps its value.
+#
+# The defaults are one field of Open WebUI's admin config, which is saved
+# as a whole: container-scripts/openwebui_interface_defaults.py posts the
+# stored config back with only that field changed, and leaves out the MFA
+# fields, which Open WebUI refuses from an API key (and which would sign
+# every user out if they changed). Open WebUI 0.13 reads the value from its
+# database on every request, so no restart.
+#
+# Why it exists: Open WebUI 0.13.3 shows an enabled switch (the Thinking
+# switch, tasks/openwebui_reasoning.yml) as a chip beside the + menu only
+# with the per-user setting showInputSelections, which is off by default.
+# Without it the switch is visible only inside the + menu.
+#
+# Auth reuses the skill-publisher admin API key that openwebui_skills.yml
+# upserts from the vault value openwebui_api_admin_key; that task runs
+# first in tasks/main.yml.
+
+- name: Set the Open WebUI default interface settings
+  ansible.builtin.import_tasks:
+    file: container_script.yml
+  vars:
+    container_script: openwebui_interface_defaults.py
+    container_script_service: open-webui
+    container_script_env:
+      OPENWEBUI_API_KEY: "{{ openwebui_api_admin_key }}"
+    container_script_payload:
+      settings: "{{ openwebui_default_interface_settings }}"
+  when: openwebui_default_interface_settings | default({}, true) | length > 0
