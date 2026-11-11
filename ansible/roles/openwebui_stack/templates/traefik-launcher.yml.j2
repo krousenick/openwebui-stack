@@ -11,13 +11,18 @@
 # node's loopback. Traefik adds no auth of its own: the gate owns the whole
 # OAuth flow, like the voice router. A node without a running gate fails
 # the /ping health check and its portal answers 503.
+#
+# /api/stack/ stays off the portals: it is the slot status the stack's
+# launcher follower reads from the gate directly. The gate lets it through
+# without a sign-in (the launcher wants a token for it), so Traefik does not
+# publish it at all.
 
 http:
   routers:
 {% for node in launcher_nodes %}
 {% set label = node | lower | regex_replace('[^a-z0-9-]', '-') %}
     launcher-{{ label }}:
-      rule: "Host(`{{ launcher_hostname_prefix }}{{ label }}.{{ domain }}`)"
+      rule: "Host(`{{ launcher_hostname_prefix }}{{ label }}.{{ domain }}`) && !PathPrefix(`/api/stack/`)"
       entryPoints:
         - websecure
       tls: {}

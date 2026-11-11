@@ -23,7 +23,8 @@ All render into `litellm/vllm-models.yaml` (see [Register with LiteLLM](#registe
 | `dnf` package management | `prerequisites` role base-package task; install guidance in fail messages |
 | **`firewalld`** + `python3-firewall`/`python3-dbus` | `vllm_compute` firewall tasks (`tasks/firewall.yml`) drive the `ansible.posix.firewalld` module; the python packages are its runtime deps (installed by `prerequisites` on RedHat-family hosts) |
 | `systemd` | the `vllm-ray`, `vllm-serve`, `vllm-flux-*` units |
-| Docker Engine + compose plugin **or podman**, NVIDIA driver + container toolkit | container runtime; checked by `prerequisites` (installed per-node by hand, or by the role with `prerequisites_install_missing: true`) |
+| NVIDIA driver | installed when missing, and its kernel module rebuilt after a kernel update, by the `nvidia_driver` role (see [NVIDIA driver](#nvidia-driver-the-nvidia_driver-role)) |
+| Docker Engine + compose plugin **or podman**, NVIDIA container toolkit | container runtime; checked by `prerequisites` (installed per-node by hand, or by the role with `prerequisites_install_missing: true`) |
 
 | OS | Status | Notes |
 |---|---|---|
@@ -375,6 +376,10 @@ The launcher only manages the machine it runs on, so placement follows the topol
                                    │ child processes
                                    ▼
                        vllm serve … (the models started from the GUI)
+
+ stack host: launcher-follower ── http://<node>:<gate port>/api/stack/slot ──▶ gate ──▶ launcher
+             (every 30 s, bearer token; Traefik does not publish /api/stack/)
+             └──▶ LiteLLM entry for http://<node>:8000/v1 renamed to what is served ──▶ Open WebUI
 ```
 
 - **`vllm-launcher`** is a container built on the node from the node's own vLLM image (`vllm_launcher_base_image`, default `vllm_image`), so the `vllm` it starts is the same build the Ansible units run. It mounts the same Hugging Face cache, so models the node already has show up as installed. It runs with host networking and listens on `127.0.0.1:8765` only; that port is never opened in the firewall. Its state (settings, favorites, benchmark records, server logs) lives in `vllm_launcher_data_dir` (`/opt/vllm/launcher/data`, mode `0700`).
@@ -400,7 +405,7 @@ Order matters: the gates need the Keycloak client and its secret, which the stac
    ```
 
    The names must be the inventory hostnames `inference.yml` deploys under: each gate answers as `launcher-<its inventory hostname>.<domain>`, and Keycloak only accepts redirect URIs it was given.
-2. **DNS.** Add a record for each `launcher-<node>.<domain>` next to the other service names. A `*.<domain>` certificate already covers them.
+2. **DNS and the network.** Add a record for each `launcher-<node>.<domain>` next to the other service names, pointing at the **stack host** like them: Traefik there serves HTTPS for the portal and forwards to the node. A record that points at the node itself reaches nothing, because the gate speaks plain HTTP on its own port. A `*.<domain>` certificate already covers the names. The stack host must reach the gate port on the node (`vllm_launcher_auth_port`, 4180): the role opens it in the node's `vllm-cluster` zone, and a router between the two networks has to pass it too. If the router passes only some ports, pick one it passes and set it on both sides, `launcher_auth_port` for the stack and `vllm_launcher_auth_port` for the node.
 3. **Run `playbooks/site.yml`.** It generates `launcher_oidc_client_secret`, creates the client and role mappings, renders the Traefik routes and writes `LAUNCHER_OIDC_CLIENT_SECRET` and `LAUNCHER_SSL_INSECURE_SKIP_VERIFY` into `.env`.
 4. **Node side.** Set `vllm_launcher_enabled: true` in the group_vars the node is deployed from (`ansible/group_vars/vllm_compute/vars.yml`, or `ansible/tests/vllm-remote/group_vars/vllm_compute/vars.yml` for the remote node) and run `playbooks/inference.yml` (`tests/vllm-remote/run.sh inference`).
 
@@ -408,7 +413,7 @@ The node play resolves the stack's domain, realm, client secret and TLS-verify s
 
 A run on a launcher node: installs `git` if missing → checks out the source → builds `localhost/vllm-launcher:<commit>` (the launcher runs from its source tree and nothing is installed when the vLLM image already ships its dependencies, which `vllm/vllm-openai` does, so the build needs no network) → generates the gate's cookie secret once → renders scripts and units → opens port 4180 and `vllm_launcher_model_ports` → starts both units → waits for `/api/about` and `/ping`.
 
-### Tuning the node's server from the GUI
+### Swapping and tuning the node's model from the GUI
 
 By default the launcher runs next to the Ansible-managed units and shares the GPU with them. On a node whose GPU `vllm-serve` already fills, the GUI rates every launch red until the primary slot is handed over:
 
@@ -418,15 +423,60 @@ vllm_launcher_owns_primary: true   # group var, or a host var for one node
 
 `vllm-serve` then stays installed but stopped and disabled, its `/health` wait is skipped, and the GPU and `vllm_port` are free for the GUI. Flip it back and the next run restores the Ansible-managed server. Standalone mode only.
 
-To serve through LiteLLM and Open WebUI exactly as before, launch from the GUI with:
+With the primary slot handed over, the launcher runs **one model at a time** on `vllm_port` (`vllm_launcher_swap`, on by default), and LiteLLM and Open WebUI follow whatever it serves:
 
-| Launch form field | Value | Why |
+- **Swap.** Find a model on the Models page (search Hugging Face, Download), then **Launch…** it, or pick it on the Launch page. Launching first runs the checks the launcher would run anyway, so settings it refuses never stop anything; then it stops the running model, waits until its GPU memory and port are free, and starts the new one on port 8000 whatever the form's Port says. The served name is the form's, or the last part of the repo id (`Qwen/Qwen3-8B` → `Qwen3-8B`); the configured model (`vllm_model`) keeps `vllm_served_model_name`.
+- **Tune.** The Launch page opens on the running model, with the settings it runs with as its first preset, **Running now**. Change any of them and launch: the model restarts with them. **Tune settings** on the running server's card (Servers page) opens the same page.
+- **Fit.** The verdict and the Models page's Fits / Tight / Won't fit rate each model against the **whole GPU**, not against what the running model leaves free: memory the launcher's own server holds counts as free, because the launch frees it first. Memory other programs hold still counts as used; it is sampled while no launcher server runs. The Dashboard keeps showing the real free memory. The verdict also says what the launch replaces.
+- **Rollback.** When the new model exits before it answers `/health` (out of memory, a wrong parser, a bad flag), the settings it replaced start again by themselves (`vllm_launcher_swap_rollback`). The failed attempt and its log stay on the Servers page; the log says what was started again. Stopping the new model by hand is not a failure, and a model still loading after `vllm_launcher_swap_load_timeout` (45 minutes) is left alone.
+- **Open WebUI.** The stack's launcher follower (service `launcher-follower`, `launcher_follow_enabled`) reads each node's slot every 30 seconds through its gate. Once the new model answers, it renames LiteLLM's entry for the node's port to the served name and sets its context length (vLLM's `max_model_len`), reasoning flags, default effort and repetition detection, then puts the Thinking switch on the model in Open WebUI when it reasons. Open WebUI lists the new name after a page reload, usually within a minute of the model answering. Until then, and while a model loads, requests to the node fail. The entry keeps its id, endpoint and stored API key; `inference.yml` only creates it when it is missing and no longer prunes or replaces it.
+
+How LiteLLM lists a model started from the GUI:
+
+| | The configured model (`vllm_served_model_name`) | Any other model |
 |---|---|---|
-| Port | `vllm_port` (8000) | The endpoint LiteLLM already has registered |
-| Served model name | `vllm_served_model_name` | LiteLLM sends this name; a different one answers 404 |
-| API key | leave empty | `vllm_launcher_enforce_api_key` already starts every server with the node's key |
+| Reasoning capable | with a reasoning parser in the launch settings | with a reasoning parser in the launch settings |
+| Effort levels (opencode picker, Thinking switch off state) | `vllm_reasoning_efforts` | `vllm_launcher_reasoning_efforts` (`[none, low, medium, high]`) |
+| Default effort | `vllm_reasoning_effort` | `vllm_launcher_reasoning_effort` (none) |
+| Adaptive-router preferences | from `vllm_adaptive_quality_tier` / `_strengths` | none |
+| Repetition detection | `vllm_repetition_detection` | `vllm_repetition_detection` |
 
-Save it as a favorite to relaunch in one click. A model under a new name, or on another port (pick one from `vllm_launcher_model_ports`, 8100-8109), is reachable from the stack host but is not registered with LiteLLM: add it in the LiteLLM UI (`http://<node>:<port>/v1`, the node's API key).
+Thinking and tool calls depend on the launch settings, as they do for the Ansible server: set the reasoning parser (the advisor suggests one by model family) and the tool call parser in the form, plus `--enable-auto-tool-choice` in Extra arguments for tool calls. A model launched without a reasoning parser is listed as not reasoning. The configured model's full settings, copied from the Ansible server's command line (`/opt/vllm/vllm-serve.sh` on the node, from `vllm_extra_args`, `vllm_reasoning_parser` and `vllm_chat_template_kwargs`), are saved as a favorite; for the Gemma 4 model on the remote test node they are:
+
+| Form field | Value |
+|---|---|
+| Reasoning parser | `gemma4` (without it, thinking is not separated from the answer) |
+| Tool call parser | `gemma4` |
+| KV cache dtype, max num seqs, enforce eager, prefix caching | `fp8`, `16`, on, on |
+| Extra arguments | `--enable-auto-tool-choice --default-chat-template-kwargs '{"enable_thinking": true}' --disable-log-requests` |
+
+The chat-template default is what makes thinking the default, as the Thinking switch in Open WebUI expects. The same launch through the API, on the node:
+
+```bash
+curl -s -X POST http://127.0.0.1:8765/api/servers -H 'Content-Type: application/json' -d '{
+  "engine_mode": "vllm-native", "repo_id": "cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit",
+  "config": {"port": 8000, "served_model_name": "gemma-4-26b-a4b", "max_model_len": 262144,
+             "gpu_memory_utilization": 0.9, "tensor_parallel_size": 1, "max_num_seqs": 16,
+             "kv_cache_dtype": "fp8", "enforce_eager": true, "enable_prefix_caching": true,
+             "reasoning_parser": "gemma4", "tool_call_parser": "gemma4",
+             "extra_args": "--enable-auto-tool-choice --default-chat-template-kwargs '\''{\"enable_thinking\": true}'\'' --disable-log-requests"}}'
+```
+
+Save it as a favorite to relaunch in one click (`POST /api/servers/<id>/favorites` with a `name`; relaunch with `POST /api/favorites/<favorite id>/launch`). A favorite's launch is a swap like any other.
+
+Knobs (`roles/vllm_compute/defaults/main.yml`, and `roles/openwebui_stack/defaults/main.yml` for the follower):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `vllm_launcher_swap` | `true` | One model at a time on `vllm_port`, with `vllm_launcher_owns_primary`. `false`: launches start next to each other again, on free ports, and LiteLLM is not followed |
+| `vllm_launcher_swap_rollback` | `true` | Start the replaced settings again when a new model exits before it answers |
+| `vllm_launcher_swap_load_timeout` | `2700` | Seconds the rollback watcher waits for a new model to answer |
+| `vllm_launcher_swap_release_timeout` | `90` | Seconds to wait for the stopped model's GPU memory and port before starting anyway |
+| `vllm_launcher_reasoning_efforts` / `_effort` | `[none, low, medium, high]` / `""` | How LiteLLM lists a GUI-started reasoning model other than the configured one |
+| `launcher_follow_enabled` | `true` | The `launcher-follower` service on the stack host |
+| `launcher_follow_interval` | `30` | Seconds between its passes |
+
+The follower reads `GET /api/stack/slot` on each node's gate. The gate lets that one route through without a sign-in, and the launcher answers it only with the bearer token `launcher_status_token` (generated by `site.yml`, `LAUNCHER_STATUS_TOKEN` in `.env`, rendered into the node's `/opt/vllm/launcher/launcher.env` by `inference.yml`). Traefik does not publish `/api/stack/` on the portal. Run `site.yml` before `inference.yml`: the node play stops when it finds no token.
 
 ### Chat is off in the launcher
 
@@ -451,7 +501,7 @@ To check a model after launching it, send it a message from Open WebUI, or `curl
 - **It does not see the Ansible units.** It lists only servers it started. `vllm-serve`, `vllm-flux-*` and `vllm-aux-*` stay under `systemctl`.
 - **Nothing restarts a GUI-started model.** They are child processes of the launcher container: a reboot, a `systemctl restart vllm-launcher`, or a playbook run that rebuilds the image or changes its script stops them, and they stay down until relaunched. A run that changes nothing leaves them alone.
 - **It is not a chat client.** Test chat and the Open WebUI panel are off (see above); test through Open WebUI, or `curl` through LiteLLM.
-- **No automatic LiteLLM registration** (see the table above).
+- **One model per node through LiteLLM.** The follower keeps one LiteLLM entry per node in step with the model on `vllm_port`. With `vllm_launcher_swap: false`, a model under another name or on another port (`vllm_launcher_model_ports`, 8100-8109) is not registered: add it in the LiteLLM UI (`http://<node>:<port>/v1`, the node's API key).
 - **Its servers' logs are not shipped to Loki.** The log shipper reads the `vllm-serve` unit's journal; a GUI-started server logs to a file under `vllm_launcher_data_dir`, shown in the GUI's Servers tab. Metrics are unaffected: the collector scrapes `/metrics` on `vllm_port` whoever started the server.
 - **vLLM only.** The image carries no llama.cpp, SGLang or TGI, and the launcher's Docker-based modes are unavailable inside the container. `vllm_launcher_extra_build_steps` appends Dockerfile lines to add an engine (`llama-server` on `PATH` enables llama.cpp).
 - **Ray mode is limited.** The form has no pipeline-parallel field and the memory advice counts only the head's GPU, so the sharded primary stays under Ansible (`vllm_launcher_owns_primary` is refused). The head's launcher is for downloads and extra single-node models.
@@ -469,6 +519,14 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8765/api/openw
 # on the stack host: an anonymous request is sent to Keycloak
 curl -sk -o /dev/null -w '%{http_code} %{redirect_url}\n' https://launcher-vllm-node-01.<domain>/
 # 302 https://auth.<domain>/realms/platform/protocol/openid-connect/auth?...
+
+# on the stack host, in the deployed tree: what the follower reads and does
+docker compose logs --tail 20 launcher-follower
+docker compose exec launcher-follower python3 /opt/stack-scripts/launcher_follower.py --once --check
+TOKEN=$(grep -m1 '^LAUNCHER_STATUS_TOKEN=' .env | cut -d= -f2-)
+curl -s -H 'Host: launcher-vllm-node-01.<domain>' -H "Authorization: Bearer $TOKEN" \
+  http://<node>:<gate port>/api/stack/slot
+# {"version": 1, "state": "serving", "litellm": {"model_name": "gemma-4-26b-a4b", ...}}
 ```
 
 ### Troubleshooting
@@ -476,11 +534,22 @@ curl -sk -o /dev/null -w '%{http_code} %{redirect_url}\n' https://launcher-vllm-
 | Symptom | Cause | Fix |
 |---|---|---|
 | `inference.yml` stops at "has no stack domain or no OIDC client secret" | `site.yml` has not run with `launcher_enabled: true`, or the node play cannot read the deployed `.env` | Run `site.yml` first; or set `vllm_launcher_domain` and `vllm_launcher_oidc_client_secret` |
-| Portal answers 503 / "no available server" | Traefik's `/ping` check on `<node>:4180` fails: gate down, port closed, or wrong address | `systemctl status vllm-launcher-auth` on the node; check `launcher_node_addresses` and the `vllm-cluster` zone source |
+| Portal answers 503 / "no available server" | Traefik's `/ping` check on `<node>:<gate port>` (4180 by default) fails: gate down, port closed, or wrong address | `systemctl status vllm-launcher-auth` on the node; check `launcher_node_addresses` and the `vllm-cluster` zone source |
+| Portal answers 503 although `curl http://127.0.0.1:<gate port>/ping` on the node answers 200, and `curl http://<node>:<gate port>/ping` from the stack host times out | A router between the stack host and the node drops the gate port (a packet capture on the node shows nothing arriving) | Let the router pass the port, or move the gate to a port it passes: `launcher_auth_port` (stack) and `vllm_launcher_auth_port` (node) to the same value, then rerun both playbooks |
+| The browser cannot connect to `launcher-<node>.<domain>` at all | Its DNS record points at the node, where nothing serves HTTPS | Point it at the stack host, like `chatbot.<domain>` |
+| `vllm_launcher_enabled: true` in `tests/vllm-remote/group_vars/vllm_compute/vars.local.yml` has no effect | Ansible reads that directory alphabetically, so `vars.local.yml` comes before `vars.yml` and loses to any variable `vars.yml` also sets | Keep the switch out of `vars.yml` (it is, since this was found); set it only in `vars.local.yml` |
 | Keycloak shows "Invalid parameter: redirect_uri" | The portal's hostname is not on the `launcher` client: the stack inventory and the node inventory name the node differently | Make `launcher_nodes` match the node's inventory hostname, rerun `site.yml` |
 | 403 after signing in | The user lacks `launcher_admin` | Add the user to `platform-admins` or `admin` in Keycloak |
 | Gate log shows `x509: certificate signed by unknown authority` | `auth.<domain>` serves a certificate the proxy does not trust | `oauth2_proxy_ssl_insecure_skip_verify: true` on the stack (rendered as `LAUNCHER_SSL_INSECURE_SKIP_VERIFY`), rerun both playbooks |
 | Every launch is rated red, no free VRAM | `vllm-serve` holds the GPU | `vllm_launcher_owns_primary: true` for that node |
+| A launch answers "Port 8000 is in use by a program this launcher did not start" | `vllm-serve` (or something else) listens on the slot port | `systemctl status vllm-serve`; set `vllm_launcher_owns_primary: true` and rerun `inference.yml` |
+| A launch answers "Another launch is replacing the model right now" | A swap is still stopping the old model or starting the new one | Wait a minute and launch again |
+| A swapped-in model stopped and the previous one came back | The new model exited before it answered (rollback) | Read the failed server's log on the Servers page; fix the settings and launch again |
+| Open WebUI still lists the previous model's name | The new model is still loading, or LiteLLM's workers have not reloaded yet | Wait for the server to show Running, then reload Open WebUI; `docker compose logs launcher-follower` on the stack host |
+| `launcher-follower` logs "the gate wants a sign-in for the slot status" | That node runs no slot (`vllm_launcher_swap` or `vllm_launcher_owns_primary` off), or its gate predates the slot | Rerun `inference.yml`; with the slot off on purpose, the follower only reports the node |
+| `launcher-follower` logs "the slot status answered 401" | The node has another status token than the stack's `.env` | Rerun `inference.yml` after `site.yml` |
+| `launcher-follower` logs "LiteLLM has no entry for http://<node>:8000/v1" | The node's entry was deleted or never created | Rerun `inference.yml`: it creates the entry, and the follower names it after the served model |
+| `inference.yml` stops at "has no status token" | `site.yml` has not generated `launcher_status_token` yet | Run `site.yml` first |
 | No "Test chat" button, no Open WebUI panel | Chat is off in the launcher by design | Chat through Open WebUI; `vllm_launcher_chat_enabled: true` brings them back |
 | `vllm-launcher` exits with "cannot switch chat off" (or the image build stops in `patch_ui.py`) | `vllm_launcher_version` points at a launcher that moved its chat endpoints | Update the paths in `files/vllm-launcher-entry.py` and `files/vllm-launcher-patch-ui.py`, or set `vllm_launcher_chat_enabled: true` |
 | Models started from the GUI are gone | The launcher container restarted (reboot, image rebuild, changed unit) | Relaunch from Favorites |
@@ -488,6 +557,41 @@ curl -sk -o /dev/null -w '%{http_code} %{redirect_url}\n' https://launcher-vllm-
 Every variable is documented in `roles/vllm_compute/defaults/main.yml` (`vllm_launcher_*`) and `roles/openwebui_stack/defaults/main.yml` (`launcher_*`).
 
 ---
+
+## NVIDIA driver (the `nvidia_driver` role)
+
+Both playbooks start with the `nvidia_driver` role. It looks at the host first and then does the least that makes `nvidia-smi` work:
+
+| What it finds | What it does |
+|---|---|
+| No NVIDIA GPU | Nothing |
+| `nvidia-smi` works | Nothing |
+| A kernel module built for the running kernel but not loaded | Loads it |
+| A driver installed with no kernel module for the running kernel: the state a kernel update leaves behind | Rebuilds the module for the running kernel, keeping the installed libraries and tools |
+| No driver at all | Installs one |
+
+How it installs or rebuilds depends on the system (`nvidia_driver_method: auto`):
+
+- **Fedora and the RHEL family**: NVIDIA's own package repository, with the open kernel modules built by DKMS (`kmod-nvidia-open-dkms`, `nvidia-driver`, `nvidia-driver-cuda`). DKMS also rebuilds the module by itself when a new kernel is installed, as long as its headers are there.
+- **VMware Photon OS**, and any host whose driver came from NVIDIA's `.run` installer: the `.run` installer of the installed version, with `--kernel-module-only` for a rebuild. Photon has no DKMS, so every kernel update needs this rebuild; the role installs the matching `linux-<flavor>-devel` headers first. A first install needs `nvidia_driver_version`. Installers are kept in `nvidia_driver_runfile_dir` (`/root/nvidia`), so a later rebuild downloads nothing.
+
+After a repair it loads `nvidia` and `nvidia_uvm` and regenerates the container device file (`/var/run/cdi/nvidia.yaml`) when the NVIDIA container toolkit is installed.
+
+It never reboots a host and never restarts a container. A first install while `nouveau` holds the GPU needs a reboot; the role says so and stops there. Containers that could not get the GPU start again when their owner runs: the stack's compose step, the vLLM units.
+
+| | `inference.yml` (compute nodes) | `site.yml` (stack host) |
+|---|---|---|
+| A driver that cannot be made to work | Stops the play (`nvidia_driver_required: true`) | Reported; the deploy goes on and the `gpu` compose profile is left out of the run |
+
+Run it alone with `--tags nvidia_driver`. A dry run (`--check`) reports what it would do and changes nothing:
+
+```bash
+# from ansible/ on the controller
+ansible-playbook -i inventory/hosts.yml -i inventory/hosts.local.yml playbooks/site.yml --tags nvidia_driver
+ansible-playbook -i tests/vllm-remote/inventory.yml -i tests/vllm-remote/inventory.local.yml playbooks/inference.yml --tags nvidia_driver --check
+```
+
+Variables in `roles/nvidia_driver/defaults/main.yml`: `nvidia_driver_enabled`, `nvidia_driver_install` (false: detect and report only), `nvidia_driver_required`, `nvidia_driver_method`, `nvidia_driver_version`, `nvidia_driver_runfile_*`, `nvidia_driver_dnf_*`.
 
 ## Rootless containers and tini
 
@@ -585,12 +689,12 @@ nvidia-ctk runtime configure --runtime=docker && systemctl restart docker
 **Podman nodes** (daemonless; GPU injection uses CDI, so only the toolkit + a generated spec are needed):
 
 ```bash
-dnf install podman nvidia-container-toolkit akmod-nvidia xorg-x11-drv-nvidia-cuda
+dnf install podman nvidia-container-toolkit
 nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml
 ```
 
 - `docker-compose` is the compose plugin package on Fedora (Photon: `tdnf install docker docker-compose`).
-- The NVIDIA driver (`akmod-nvidia` builds the kmod on next boot; `xorg-x11-drv-nvidia-cuda` adds CUDA).
+- The NVIDIA driver comes from the `nvidia_driver` role, the first role `inference.yml` runs: it installs NVIDIA's packages when a GPU has no driver (see [NVIDIA driver](#nvidia-driver-the-nvidia_driver-role)). Do not mix in RPM Fusion's `akmod-nvidia`: two driver sources on one node conflict.
 - Docker nodes run `nvidia-ctk runtime configure` to register the `nvidia` runtime `--gpus all` needs; podman nodes use `--device nvidia.com/gpu=all` (set `vllm_container_gpu_flag` accordingly), which resolves through the CDI spec.
 - Rootful podman defaults its image store to `/var/lib/containers/storage`; when `/var` is small, set `vllm_podman_storage_root` (the role rewrites `/etc/containers/storage.conf`).
 - Put a large data volume where `vllm_hf_cache_dir` points — pre-download big models with `huggingface-cli download <repo>` so first serve does not download on every node.
@@ -671,6 +775,8 @@ The models then appear in Open WebUI's model dropdown.
 | Tear aux down | `vllm_aux_enabled: false` → re-run |
 | Monitoring off | `vllm_monitoring_enabled: false` → re-run (exporter quadlets stay until removed by hand) |
 | Tune a node's model from the browser | `vllm_launcher_enabled: true` (+ `vllm_launcher_owns_primary: true` to free the GPU) → re-run → `https://launcher-<node>.<domain>` |
+| Swap the node's model | Launcher: Models (search, Download) → Launch… → Launch. The running model stops; LiteLLM and Open WebUI follow within a minute of the new one answering |
+| Change the running model's settings | Launcher: Tune settings on its server card (or the Launch page, preset **Running now**) → change → Launch |
 | Give the primary model back to Ansible | `vllm_launcher_owns_primary: false` → re-run (stop the GUI-started server first; it holds the port) |
 | Update the launcher | Set `vllm_launcher_version` to a newer commit → re-run (rebuilds the image and restarts the launcher, which stops GUI-started models) |
 | Tear the launcher down | `vllm_launcher_enabled: false` → re-run (units, scripts and ports removed; data directory and image stay) |

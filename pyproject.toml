@@ -15,6 +15,7 @@ include = [
     "container-scripts/**/*.py",
     "tests/**/*.py",
     "ansible/roles/vllm_compute/files/ray_nodes_ready.py",
+    "ansible/roles/vllm_compute/files/vllm-launcher-slot.py",
 ]
 # The scripts import each other as top-level modules (the container runs
 # them by path, which puts their directory first on sys.path); these roots

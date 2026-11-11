@@ -103,13 +103,23 @@ def _decode(raw: bytes) -> Any:
 
 
 class Api:
-    """JSON-over-HTTP client for one service, with an optional bearer token."""
+    """JSON-over-HTTP client for one service, with an optional bearer token and fixed headers."""
 
-    def __init__(self, base_url: str, token: str | None = None, *, check: bool = False, timeout: float = 120.0):
+    def __init__(
+        self,
+        base_url: str,
+        token: str | None = None,
+        *,
+        check: bool = False,
+        timeout: float = 120.0,
+        headers: Mapping[str, str] | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.check = check
         self.timeout = timeout
+        # Sent with every request, e.g. a Host header for a gate that routes by name.
+        self.headers = dict(headers or {})
         self.actions: list[str] = []
 
     @classmethod
@@ -135,7 +145,7 @@ class Api:
         url = self.base_url + path
         if query:
             url += "?" + urllib.parse.urlencode(query)
-        headers = {}
+        headers = dict(self.headers)
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         if json_body is not None:

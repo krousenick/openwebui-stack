@@ -71,6 +71,9 @@
             and (lookup('ansible.builtin.env', 'LAUNCHER_SSL_INSECURE_SKIP_VERIFY') | default('', true) | length == 0))
         or ((vllm_launcher_oidc_client_secret | string | length == 0)
             and (lookup('ansible.builtin.env', 'LAUNCHER_OIDC_CLIENT_SECRET') | default('', true) | length == 0))
+        or ((vllm_launcher_slot | bool)
+            and (vllm_launcher_status_token | string | length == 0)
+            and (lookup('ansible.builtin.env', 'LAUNCHER_STATUS_TOKEN') | default('', true) | length == 0))
 
     - name: Resolve the launcher gate settings
       # The group references are '\1' with ONE backslash: inside {{ }} in a
@@ -106,6 +109,12 @@
                   | regex_search('^LAUNCHER_SSL_INSECURE_SKIP_VERIFY=(.*)$', '\1', multiline=True)
                   | default([''], true) | first | trim)
               or 'false') | bool }}
+        vllm_launcher_effective_status_token: >-
+          {{ (vllm_launcher_status_token | string | trim)
+             or (lookup('ansible.builtin.env', 'LAUNCHER_STATUS_TOKEN') | default('', true) | trim)
+             or (vllm_launcher_stack_env_text
+                 | regex_search('^LAUNCHER_STATUS_TOKEN=(.*)$', '\1', multiline=True)
+                 | default([''], true) | first | trim) }}
       no_log: true
 
     - name: Require the stack settings the launcher gate needs
@@ -124,6 +133,24 @@
           and vllm_launcher_oidc_client_secret, or export DOMAIN and
           LAUNCHER_OIDC_CLIENT_SECRET on the controller.
         quiet: true
+
+    - name: Require the status token the stack's follower reads the slot with
+      # vllm_launcher_slot: one model at a time, and the stack keeps LiteLLM
+      # in step with it through GET /api/stack/slot, which this token guards.
+      ansible.builtin.assert:
+        that:
+          - vllm_launcher_effective_status_token | length >= 16
+          - vllm_launcher_effective_status_token not in ['CHANGE_ME', 'change-me-before-production']
+        fail_msg: >-
+          {{ inventory_hostname }} runs the launcher's single-model slot
+          (vllm_launcher_owns_primary and vllm_launcher_swap) but has no
+          status token. Run playbooks/site.yml first: it generates
+          launcher_status_token and renders LAUNCHER_STATUS_TOKEN into
+          {{ vllm_launcher_stack_env_file }} on {{ vllm_launcher_stack_host }}.
+          Otherwise set vllm_launcher_status_token, or export
+          LAUNCHER_STATUS_TOKEN on the controller.
+        quiet: true
+      when: vllm_launcher_slot | bool
 
     - name: Derive the portal hostname and the base image reference
       # Same hostname rule as launcher_fqdns in the openwebui_stack role
@@ -220,10 +247,13 @@
         group: root
         mode: "0644"
 
-    - name: Deploy the image overlay (entry point, page patch script, stylesheet)
+    - name: Deploy the image overlay (entry point, slot, page patch script, stylesheet)
       # stack_entry.py is the image's entry point: it refuses the launcher's
-      # chat requests unless vllm_launcher_chat_enabled. patch_ui.py runs in
-      # the build and fits the page (sign-in chip, chat controls hidden).
+      # chat requests unless vllm_launcher_chat_enabled, and loads
+      # stack_slot.py when the run script names a slot settings file.
+      # patch_ui.py runs in the build and fits the page (sign-in chip, chat
+      # controls hidden). The slot module ships in every image; it only runs
+      # when the run script names the settings file.
       ansible.builtin.copy:
         src: "{{ item.src }}"
         dest: "{{ vllm_launcher_dir }}/build/overlay/{{ item.dest }}"
@@ -232,15 +262,17 @@
         mode: "0644"
       loop:
         - { src: vllm-launcher-entry.py, dest: stack_entry.py }
+        - { src: vllm-launcher-slot.py, dest: stack_slot.py }
         - { src: vllm-launcher-patch-ui.py, dest: patch_ui.py }
         - { src: vllm-launcher-signin.css, dest: stack-auth.css }
       loop_control:
         label: "{{ item.dest }}"
       register: vllm_launcher_overlay_static
 
-    - name: Render the page script (sign-in chip, chat button hidden)
+    - name: Render the page script (sign-in chip, chat button hidden, Tune settings)
       # Carries the Keycloak end_session URL for single logout, so it is
-      # rendered per deployment.
+      # rendered per deployment. With the slot it also puts a "Tune
+      # settings" button on the running server's card.
       ansible.builtin.template:
         src: vllm-launcher-signin.js.j2
         dest: "{{ vllm_launcher_dir }}/build/overlay/stack-auth.js"
@@ -332,6 +364,39 @@
       no_log: true
       register: vllm_launcher_auth_env
 
+    - name: Render the launcher's secrets
+      # The node's vLLM API key and Hugging Face token (inherited by every
+      # server the GUI starts) and the slot's status token. An --env-file,
+      # so no value shows in the process list. Same ownership as auth.env.
+      ansible.builtin.template:
+        src: vllm-launcher.env.j2
+        dest: "{{ vllm_launcher_dir }}/launcher.env"
+        owner: root
+        group: "{{ vllm_run_group }}"
+        mode: "0640"
+      no_log: true
+      register: vllm_launcher_env_file
+
+    - name: Render the single-model slot settings
+      # Read by stack_slot.py in the launcher container (mounted read-only
+      # at /etc/stack/slot.json): the slot port, rollback, and how LiteLLM
+      # should list the configured model and any other model. No secrets.
+      ansible.builtin.template:
+        src: vllm-launcher-slot.json.j2
+        dest: "{{ vllm_launcher_dir }}/slot.json"
+        owner: root
+        group: "{{ vllm_run_group }}"
+        mode: "0640"
+      register: vllm_launcher_slot_file
+      when: vllm_launcher_slot | bool
+
+    - name: Remove the slot settings from a node without the slot
+      ansible.builtin.file:
+        path: "{{ vllm_launcher_dir }}/slot.json"
+        state: absent
+      register: vllm_launcher_slot_removed
+      when: not (vllm_launcher_slot | bool)
+
     # --- scripts and units --------------------------------------------------
     - name: Deploy the launcher run script
       ansible.builtin.template:
@@ -400,10 +465,10 @@
     # Restarts are explicit tasks, not handlers: flushing handlers here
     # would also fire the pending flux/aux restarts earlier than a run
     # without the launcher does.
-    - name: Restart the launcher when its image, script or unit changed
+    - name: Restart the launcher when its image, script, unit or settings changed
       # Stops every model server started from the GUI (they are child
       # processes of the launcher container). A run that changes none of
-      # the three never restarts it.
+      # these never restarts it.
       ansible.builtin.systemd:
         name: vllm-launcher
         state: restarted
@@ -412,6 +477,9 @@
         vllm_launcher_build is changed
         or vllm_launcher_script is changed
         or vllm_launcher_unit is changed
+        or vllm_launcher_env_file is changed
+        or vllm_launcher_slot_file is changed
+        or vllm_launcher_slot_removed is changed
 
     - name: Restart the gate when its settings, script or unit changed
       # Signs nobody out: sessions live in the browser cookie, and the
@@ -501,6 +569,8 @@
         - "{{ vllm_launcher_dir }}/vllm-launcher.sh"
         - "{{ vllm_launcher_dir }}/vllm-launcher-auth.sh"
         - "{{ vllm_launcher_dir }}/auth.env"
+        - "{{ vllm_launcher_dir }}/launcher.env"
+        - "{{ vllm_launcher_dir }}/slot.json"
         - "{{ vllm_launcher_dir }}/cookie-secret"
         - "{{ vllm_launcher_dir }}/build"
       when: vllm_launcher_deployed_units.results | selectattr('stat.exists') | list | length > 0

@@ -1,6 +1,7 @@
 // Managed by Ansible (role: vllm_compute). The stack's additions to the LLM
 // Launcher page on {{ inventory_hostname }}: the sign-in chip with its Log out
-// link, and (when chat is off) hiding the launcher's "Test chat" button.
+// link, (when chat is off) hiding the launcher's "Test chat" button, and
+// (with the single-model slot) a "Tune settings" button on the running model.
 //
 // Sign-in chip:
 // The launcher has no login of its own: oauth2-proxy on this node sits in
@@ -36,6 +37,69 @@
     // React re-creates the server cards on every status change.
     new MutationObserver(hideChatButtons)
       .observe(document.body, { childList: true, subtree: true });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
+{% endif %}
+{% if vllm_launcher_slot | bool %}
+
+// Single-model slot (vllm_launcher_swap): the Launch page opens on the running
+// model with the settings it runs with as its first preset ("Running now"),
+// and launching from there restarts it with the changes (stack_slot.py). The
+// "Tune settings" button on the running server's card is a shortcut to that
+// page: it presses the top bar's "Launch a model", which opens Launch afresh.
+(function () {
+  'use strict';
+
+  var LABEL = 'Tune settings';
+  var MARK = 'data-stack-tune';
+  var LIVE = /^(Running|Starting up)/;
+
+  function openLaunch() {
+    var buttons = document.querySelectorAll('.topbar-btn-primary');
+    for (var i = 0; i < buttons.length; i += 1) {
+      if ((buttons[i].textContent || '').trim() === 'Launch a model') {
+        buttons[i].click();
+        return;
+      }
+    }
+  }
+
+  function syncTuneButtons() {
+    var cards = document.querySelectorAll('.server-card');
+    for (var i = 0; i < cards.length; i += 1) {
+      var controls = cards[i].querySelector('.server-controls');
+      if (!controls) {
+        continue;
+      }
+      var badge = cards[i].querySelector('.server-heading .badge');
+      var live = LIVE.test(((badge && badge.textContent) || '').trim());
+      var existing = controls.querySelector('[' + MARK + ']');
+      if (live && !existing) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-ghost sm';
+        button.setAttribute(MARK, '');
+        button.title = 'Open Launch with the settings this model runs with. Launching restarts it with your changes.';
+        button.appendChild(document.createTextNode(LABEL));
+        button.addEventListener('click', openLaunch);
+        controls.insertBefore(button, controls.firstChild);
+      } else if (!live && existing) {
+        existing.parentNode.removeChild(existing);
+      }
+    }
+  }
+
+  function start() {
+    syncTuneButtons();
+    // React re-creates the server cards on every status change.
+    new MutationObserver(syncTuneButtons)
+      .observe(document.body, { childList: true, subtree: true, characterData: true });
   }
 
   if (document.readyState === 'loading') {

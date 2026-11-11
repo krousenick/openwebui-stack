@@ -15,6 +15,8 @@ This guide takes a bare machine to a fully working Open WebUI AI platform with K
 - [Upgrades and version pinning](#upgrades-and-version-pinning)
 - [Troubleshooting](#troubleshooting)
 
+Every URL and port the stack publishes or uses is listed in [urls.md](urls.md).
+
 ## Stack overview
 
 | Layer | Component | Image in `docker-compose.yml` | Latest release (2026-10-27) |
@@ -334,7 +336,7 @@ For HF-precision models across multiple GPU nodes connected by 10/25GbE, use the
    ansible-galaxy collection install -r requirements.yaml
    ansible-playbook playbooks/inference.yml
    ```
-    Per node the global `prerequisites` role first checks that Docker, `docker compose`, and the NVIDIA driver are present (the driver via `prerequisites_check_nvidia: true` for the `vllm_compute` group). The `vllm_compute` role then opens the pinned Ray ports (6379, 8265, 13377–13379, 14000–15000) in a `vllm-cluster` firewalld zone restricted to the compute CIDR, deploys `vllm-ray` and `vllm-serve` systemd units (containers run with `--network host --gpus all --ipc host --shm-size 16g`), waits for all Ray nodes to register, then waits for `GET /health` on port 8000. Docker Engine, the compose plugin, `nvidia-container-toolkit`, the nvidia runtime registration (`nvidia-ctk runtime configure --runtime=docker`), and the NVIDIA driver itself are host prerequisites: install them on each node first (for example on Fedora: `dnf install docker docker-compose nvidia-container-toolkit` and `dnf install akmod-nvidia xorg-x11-drv-nvidia-cuda` for the driver).
+    Per node the `nvidia_driver` role first makes sure the GPU has a working driver: it installs one when missing and rebuilds the kernel module after a kernel update ([details](vllm-inference.md#nvidia-driver-the-nvidia_driver-role)). The global `prerequisites` role then checks that Docker, `docker compose`, and the NVIDIA driver are present (the driver via `prerequisites_check_nvidia: true` for the `vllm_compute` group). The `vllm_compute` role then opens the pinned Ray ports (6379, 8265, 13377–13379, 14000–15000) in a `vllm-cluster` firewalld zone restricted to the compute CIDR, deploys `vllm-ray` and `vllm-serve` systemd units (containers run with `--network host --gpus all --ipc host --shm-size 16g`), waits for all Ray nodes to register, then waits for `GET /health` on port 8000. Docker Engine, the compose plugin, `nvidia-container-toolkit`, the nvidia runtime registration (`nvidia-ctk runtime configure --runtime=docker`), and the NVIDIA driver itself are host prerequisites: install them on each node first (for example on Fedora: `dnf install docker docker-compose nvidia-container-toolkit` and `dnf install akmod-nvidia xorg-x11-drv-nvidia-cuda` for the driver).
  4. **Register with LiteLLM**: the run renders `litellm/vllm-models.yaml` (one cluster endpoint in ray mode, one entry per node in standalone). Merge it into `model_list` in `litellm/config.yaml` on the stack host, then `docker compose restart litellm`.
 
      **Flux image generation** is deployed by the same role via `vllm_flux_enabled: true` and the `vllm_flux_models` list in `ansible/group_vars/vllm_compute/vars.yml` - one standalone container and `vllm-flux-<name>` systemd unit per configured model, each on its own host port. It is no longer a `docker-compose.yml` service; flux entries (with `mode: image_generation`) render into `litellm/vllm-models.yaml` with the rest.

@@ -61,6 +61,7 @@ stack_secret_names:
   - voice_oidc_client_secret
   - oauth2_proxy_cookie_secret
   - launcher_oidc_client_secret
+  - launcher_status_token
   - keycloak_provisioner_client_secret
   - traefik_dashboard_password
   - code_sandbox_token
@@ -122,6 +123,17 @@ launcher_node_addresses: {}
 # vllm_compute role: the node's gate answers under this name on this port.
 launcher_hostname_prefix: "launcher-"
 launcher_auth_port: 4180
+
+# Launcher follower (container-scripts/launcher_follower.py, service
+# launcher-follower): a node whose launcher runs one model at a time
+# (vllm_launcher_swap) changes what its primary port serves whenever a
+# model is swapped in or retuned from the GUI. Every interval the follower
+# reads each portal node's GET /api/stack/slot through its gate (bearer
+# launcher_status_token), renames and re-describes LiteLLM's entry for that
+# endpoint to match, and attaches the Open WebUI Thinking switch to it. A
+# node without the slot is only reported in the service log.
+launcher_follow_enabled: true
+launcher_follow_interval: 30
 
 # Derived, not configured. Portal names follow the same rule as the
 # vllm_compute role: prefix + inventory hostname, lowercased, anything

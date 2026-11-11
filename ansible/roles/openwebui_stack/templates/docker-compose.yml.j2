@@ -1228,6 +1228,67 @@ services:
           memory: 128M
           cpus: "0.5"
 {% endif %}
+{% if launcher_enabled | default(false) | bool and launcher_follow_enabled | default(true) | bool and launcher_nodes | length > 0 %}
+
+  # ===========================================================================
+  # LLM Launcher follower
+  # A compute node whose launcher runs one model at a time (vllm_launcher_swap)
+  # changes what its primary port serves whenever a model is swapped in or
+  # retuned from the GUI. Every interval this reads each node's
+  # GET /api/stack/slot through its gate (LAUNCHER_STATUS_TOKEN), points
+  # LiteLLM's entry for that endpoint at the served model (PATCH: name,
+  # context, reasoning flags; id, api_base and key stay) and attaches the Open
+  # WebUI Thinking switch to it. container-scripts/launcher_follower.py
+  # ===========================================================================
+{% set launcher_follow_nodes = [] %}
+{% for node in launcher_nodes %}
+{%   set label = node | lower | regex_replace('[^a-z0-9-]', '-') %}
+{%   set address = (launcher_node_addresses | default({}))[node] | default((hostvars[node] | default({})).ansible_host | default(node)) %}
+{%   set _ = launcher_follow_nodes.append({'name': node, 'gate': 'http://' ~ address ~ ':' ~ launcher_auth_port, 'host': launcher_hostname_prefix ~ label ~ '.' ~ domain}) %}
+{% endfor %}
+  launcher-follower:
+    # Only the image's Python runs: the litellm image is already on the host.
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_launcher-follower
+    restart: unless-stopped
+    logging: *default-logging
+    entrypoint: [ "python3", "-u", "{{ container_scripts_mount }}/launcher_follower.py" ]
+    command: [ "--interval", "{{ launcher_follow_interval }}"{% if not (openwebui_reasoning_switch_enabled | default(true) | bool) %}, "--no-thinking-switch"{% endif %}{% if not (openwebui_reasoning_switch_default_on | default(true) | bool) %}, "--thinking-default-off"{% endif %}{% if openwebui_reasoning_models_exclude | default([]) | length > 0 %}, "--thinking-exclude", {{ openwebui_reasoning_models_exclude | join(',') | to_json }}{% endif %} ]
+    environment:
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?error}"
+      OPENWEBUI_API_KEY: "${OPENWEBUI_API_ADMIN_KEY:?error}"
+      LAUNCHER_STATUS_TOKEN: "${LAUNCHER_STATUS_TOKEN:?error}"
+      LAUNCHER_FOLLOW_NODES: {{ launcher_follow_nodes | to_json | to_json }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./container-scripts:{{ container_scripts_mount }}:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      # backend: the LiteLLM and Open WebUI admin APIs. frontend: the route
+      # to the compute nodes' gates (backend is internal).
+      - backend
+      - frontend
+    depends_on:
+      litellm:
+        condition: service_healthy
+      open-webui:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "python3", "{{ container_scripts_mount }}/launcher_follower.py", "--healthcheck" ]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+{% endif %}
 
   # ===========================================================================
   # NVIDIA GPU Exporter (Optional - requires NVIDIA runtime)

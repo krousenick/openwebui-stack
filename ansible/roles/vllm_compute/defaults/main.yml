@@ -577,6 +577,47 @@ vllm_launcher_enforce_api_key: true
 # try the GUI on one node while the others keep serving.
 vllm_launcher_owns_primary: false
 
+# One model at a time, on a node whose launcher owns the primary slot: every
+# launch from the GUI (Launch page, Favorites) stops the running model and
+# starts the new one on vllm_port. Choosing another model swaps it in, and
+# launching the running model with changed settings restarts it with them
+# (the Launch page opens on it, with its settings as the "Running now"
+# preset). The fit advice and the Models page then rate each model against
+# the whole GPU instead of what the running model leaves free. The stack's
+# launcher follower (launcher_follow_enabled) points LiteLLM and Open WebUI
+# at whatever the node serves; it reads the node through the gate with
+# LAUNCHER_STATUS_TOKEN, so run playbooks/site.yml first. No effect without
+# vllm_launcher_owns_primary, where vllm-serve holds the port.
+vllm_launcher_swap: true
+
+# Start the replaced settings again when a swapped-in model exits before it
+# answers (out of memory, a wrong parser). The failed attempt and its log
+# stay on the Servers page.
+vllm_launcher_swap_rollback: true
+
+# Seconds a new model may take to answer before the rollback watcher stops
+# waiting for it (big models take 10-15 minutes to load).
+vllm_launcher_swap_load_timeout: 2700
+
+# Seconds to wait for the stopped model's GPU memory and port to come free
+# before the next model starts anyway.
+vllm_launcher_swap_release_timeout: 90
+
+# How LiteLLM lists a GUI-started model that has a reasoning parser but is
+# not the configured one (vllm_served_model_name keeps its own
+# vllm_reasoning_efforts, vllm_reasoning_effort and adaptive-router
+# settings): the effort levels clients offer (keep none for the Thinking
+# switch's off state) and the default effort for requests that send none
+# ("" leaves the model's own default).
+vllm_launcher_reasoning_efforts: [none, low, medium, high]
+vllm_launcher_reasoning_effort: ""
+
+# Bearer token for the slot status route (GET /api/stack/slot) that the
+# stack's follower reads through the gate. Resolves like the gate settings
+# below: this variable -> LAUNCHER_STATUS_TOKEN in the controller
+# environment -> the .env playbooks/site.yml rendered.
+vllm_launcher_status_token: ""
+
 # Host ports opened in the vllm-cluster zone for extra models started from
 # the GUI (pick one of these as the port in the Launch form). The primary
 # port (vllm_port) is already open. Empty string opens nothing.

@@ -7,13 +7,18 @@
 # `vllm serve` processes started from the GUI are children of this
 # container: they share its GPU access, the Hugging Face cache the Ansible
 # units use, and the environment below. Stopping this unit stops them.
+# Secrets (API key, Hugging Face token, status token) come from
+# {{ vllm_launcher_dir }}/launcher.env.
+{% if vllm_launcher_slot | bool %}
+#
+# Single-model slot (vllm_launcher_swap): stack_slot.py reads
+# {{ vllm_launcher_dir }}/slot.json. A launch replaces the running model on
+# port {{ vllm_port }}, and a failed launch starts the replaced one again.
+{% endif %}
 set -euo pipefail
 
 readonly IMAGE="{{ vllm_launcher_image }}"
 readonly NAME="{{ vllm_container_name }}-launcher"
-{% if vllm_hf_token | length > 0 %}
-readonly HF_TOKEN="{{ vllm_hf_token }}"
-{% endif %}
 
 exec {{ vllm_container_cli }} run \
   --rm \
@@ -40,14 +45,13 @@ exec {{ vllm_container_cli }} run \
   --ipc host \
   -v {{ vllm_hf_cache_dir }}:/root/.cache/huggingface \
   -v {{ vllm_launcher_data_dir }}:/data \
+{% if vllm_launcher_slot | bool %}
+  -v {{ vllm_launcher_dir }}/slot.json:/etc/stack/slot.json:ro \
+  -e LAUNCHER_STACK_SLOT_FILE=/etc/stack/slot.json \
+{% endif %}
   -e LOCAL_LLM_LAUNCHER_HOME=/data \
-{% if vllm_hf_token | length > 0 %}
-  -e HF_TOKEN="$HF_TOKEN" \
-{% endif %}
+  --env-file {{ vllm_launcher_dir }}/launcher.env \
   -e HF_TOKENIZERS_PARALLELISM=0 \
-{% if vllm_launcher_enforce_api_key | bool and vllm_api_key | length > 0 %}
-  -e VLLM_API_KEY="{{ vllm_api_key }}" \
-{% endif %}
 {% if vllm_deployment_mode == 'ray' %}
   -e VLLM_HOST_IP={{ vllm_host_ip }} \
   -e RAY_ADDRESS={{ vllm_ray_head_address }}:{{ vllm_ray_head_port }} \

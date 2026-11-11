@@ -27,6 +27,7 @@ grafana_oidc_client_secret: CHANGE_ME
 voice_oidc_client_secret: CHANGE_ME
 oauth2_proxy_cookie_secret: CHANGE_ME
 launcher_oidc_client_secret: CHANGE_ME
+launcher_status_token: CHANGE_ME
 keycloak_provisioner_client_secret: CHANGE_ME
 traefik_dashboard_password: CHANGE_ME
 code_sandbox_token: CHANGE_ME

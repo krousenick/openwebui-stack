@@ -61,7 +61,7 @@ class FakeService:
                 self.end_headers()
                 self.wfile.write(raw)
 
-            do_GET = do_POST = do_PUT = do_DELETE = serve
+            do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = serve
 
             def log_message(self, *args: Any) -> None:
                 pass
@@ -128,6 +128,9 @@ class FakeLiteLLM(FakeService):
         self.plugins: dict[str, dict[str, Any]] = {}
         self.models: list[dict[str, Any]] = []
         self.minted = 0
+        # False: PATCH answers 200 but /model/info keeps the old entry, like a
+        # worker that has not reloaded the database yet.
+        self.apply_patches = True
 
     def handle(self, request: Request) -> tuple[int, Any]:
         method, path = request.method, request.path
@@ -151,6 +154,9 @@ class FakeLiteLLM(FakeService):
             return 401, {"error": "invalid proxy key"}
         if path == "/model/info":
             return 200, {"data": self.models}
+        patch = re.fullmatch(r"/model/([^/]+)/update", path)
+        if patch and method == "PATCH":
+            return self.patch_model(patch.group(1), request.json())
         if path == "/v1/skills" and method == "GET":
             skills = list(self.skills.values())
             if "query" in request.query:
@@ -192,6 +198,28 @@ class FakeLiteLLM(FakeService):
 
     def titles(self) -> list[str]:
         return sorted(skill["display_title"] for skill in self.skills.values())
+
+    def patch_model(self, model_id: str, body: dict[str, Any]) -> tuple[int, Any]:
+        """PATCH /model/{id}/update as LiteLLM 1.110 merges it (update_db_model).
+
+        Written from the proxy's source: litellm_params and model_info merge
+        key by key, a None value is ignored, and a litellm_params key goes
+        only when litellm_params_to_remove names it.
+        """
+        entry = next((m for m in self.models if (m.get("model_info") or {}).get("id") == model_id), None)
+        if entry is None:
+            return 404, {"error": f"Model {model_id} not found on proxy."}
+        if not self.apply_patches:
+            return 200, entry
+        if body.get("model_name"):
+            entry["model_name"] = body["model_name"]
+        params = entry.setdefault("litellm_params", {})
+        params.update({key: value for key, value in (body.get("litellm_params") or {}).items() if value is not None})
+        for key in body.get("litellm_params_to_remove") or ():
+            params.pop(key, None)
+        info = entry.setdefault("model_info", {})
+        info.update({key: value for key, value in (body.get("model_info") or {}).items() if value is not None})
+        return 200, entry
 
 
 # Open WebUI 0.13.3 MfaConfigForm fields; written from its source, not

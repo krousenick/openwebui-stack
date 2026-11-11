@@ -1203,7 +1203,7 @@ For full HF-precision models larger than a single llama.cpp node can serve, use 
    ansible-galaxy collection install -r requirements.yaml
    ansible-playbook playbooks/inference.yml
    ```
-     The role runs after the global `prerequisites` role, which checks the container CLI (Docker + compose, or podman) and — for this group via `prerequisites_check_nvidia: true` in `ansible/group_vars/vllm_compute/vars.yml` — the NVIDIA driver. Set `prerequisites_install_missing: true` for a node group and the role installs the missing CLI plus the NVIDIA container toolkit and generates the CDI spec podman's `--device nvidia.com/gpu=all` consumes; with the default `false` it fails fast with install guidance instead. The role opens pinned Ray ports (6379, 8265, 13377-13379, 14000-15000) in a dedicated `vllm-cluster` firewalld zone restricted to the compute CIDR (via the `ansible.posix.firewalld` module, which also admits SSH so the management subnet keeps shell access), deploys systemd units (`vllm-ray`, `vllm-serve`), waits for Ray workers to join, then waits for `GET /health` on the API.
+     The play starts with the `nvidia_driver` role: it installs the NVIDIA driver on a node that has none and rebuilds the kernel module after a kernel update (details in [docs/vllm-inference.md](docs/vllm-inference.md#nvidia-driver-the-nvidia_driver-role)); `site.yml` runs it on the stack host too. The role runs after the global `prerequisites` role, which checks the container CLI (Docker + compose, or podman) and — for this group via `prerequisites_check_nvidia: true` in `ansible/group_vars/vllm_compute/vars.yml` — the NVIDIA driver. Set `prerequisites_install_missing: true` for a node group and the role installs the missing CLI plus the NVIDIA container toolkit and generates the CDI spec podman's `--device nvidia.com/gpu=all` consumes; with the default `false` it fails fast with install guidance instead. The role opens pinned Ray ports (6379, 8265, 13377-13379, 14000-15000) in a dedicated `vllm-cluster` firewalld zone restricted to the compute CIDR (via the `ansible.posix.firewalld` module, which also admits SSH so the management subnet keeps shell access), deploys systemd units (`vllm-ray`, `vllm-serve`), waits for Ray workers to join, then waits for `GET /health` on the API.
 4. **Register with LiteLLM**: the run renders `litellm/vllm-models.yaml` with the `model_list` snippet (single cluster endpoint in ray mode; one entry per node in standalone mode). Merge it into `litellm/config.yaml` on the photon host and `docker compose restart litellm`.
 
 #### Flux image-generation servers
@@ -1267,7 +1267,9 @@ vllm_launcher_owns_primary: true   # optional: stop vllm-serve so the GUI has th
 
 The launcher is a control panel, not a chat client: its "Test chat" box and its "Open WebUI" panel are switched off (`vllm_launcher_chat_enabled: false`), so a launched model is tried from Open WebUI.
 
-Models started from the GUI are child processes of the launcher container: nothing relaunches them after a reboot or a launcher restart, and a model under a new name is not registered with LiteLLM automatically. To keep serving through LiteLLM unchanged, launch on port 8000 with the served model name LiteLLM already knows. Setup, limits, verification and troubleshooting: [docs/vllm-inference.md](docs/vllm-inference.md#llm-launcher-web-control-panel-per-inference-server).
+With `vllm_launcher_owns_primary: true` the node runs one model at a time (`vllm_launcher_swap`): launching another model from the GUI stops the running one and starts the new one on port 8000, and launching the running model with changed settings restarts it with them (the Launch page opens on it, with its settings as the **Running now** preset). The fit ratings count the whole GPU, not what the running model leaves free. A model that fails to load is replaced by the previous settings again. The `launcher-follower` service on the stack host renames the node's LiteLLM entry to whatever the node serves and puts the Thinking switch on it, so Open WebUI lists the new model within about a minute of it answering.
+
+Models started from the GUI are child processes of the launcher container: nothing relaunches them after a reboot or a launcher restart. Setup, limits, verification and troubleshooting: [docs/vllm-inference.md](docs/vllm-inference.md#llm-launcher-web-control-panel-per-inference-server).
 
 #### Remote node monitoring
 
@@ -1500,6 +1502,7 @@ The workflow sees a secret only after it reached GitHub. GitHub's own secret sca
 ## Additional Resources
 
 - [Complete setup and usage guide](docs/setup-guide.md) - end-to-end install, SSO, usage, local inference, monitoring, backups, upgrades, and troubleshooting
+- [URLs and ports](docs/urls.md) - every address the stack publishes or uses
 - [Users, sign-in and account self-service](docs/keycloak-users.md)
 - [Passkey user guide](docs/passkey-user.md)
 - [Open WebUI Documentation](https://docs.openwebui.com/)

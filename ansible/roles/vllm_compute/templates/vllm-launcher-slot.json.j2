@@ -1,0 +1,21 @@
+{{ {
+     'node': inventory_hostname,
+     'port': vllm_port | int,
+     'api_base': 'http://' ~ vllm_host_ip ~ ':' ~ (vllm_port | string) ~ '/v1',
+     'rollback': vllm_launcher_swap_rollback | bool,
+     'load_timeout': vllm_launcher_swap_load_timeout | int,
+     'release_timeout': vllm_launcher_swap_release_timeout | int,
+     'configured_repo_id': vllm_model,
+     'configured_served_name': vllm_served_model_name,
+     'reasoning_efforts': vllm_launcher_reasoning_efforts | list,
+     'reasoning_effort': vllm_launcher_reasoning_effort | string,
+     'repetition_detection': vllm_repetition_detection | default({}, true),
+     'profiles': {
+       vllm_served_model_name: {
+         'reasoning_efforts': vllm_reasoning_efforts | default([], true) | list,
+         'reasoning_effort': vllm_reasoning_effort | default('', true) | string,
+         'adaptive_router_preferences':
+           (vllm_adaptive_model_info | default({}, true)).adaptive_router_preferences | default({}, true),
+       },
+     },
+   } | to_nice_json }}

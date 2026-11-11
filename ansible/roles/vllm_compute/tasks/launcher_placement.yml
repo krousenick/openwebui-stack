@@ -67,3 +67,11 @@
   ansible.builtin.set_fact:
     vllm_launcher_primary_owned: >-
       {{ (vllm_launcher_node | bool) and (vllm_launcher_owns_primary | bool) }}
+
+- name: Record whether the launcher runs the primary slot one model at a time
+  # vllm_launcher_slot: a launch replaces the running model, and the stack's
+  # follower keeps LiteLLM's entry for this node's primary port in step with
+  # it (litellm_registration.yml then only creates that entry, once).
+  ansible.builtin.set_fact:
+    vllm_launcher_slot: >-
+      {{ (vllm_launcher_primary_owned | bool) and (vllm_launcher_swap | bool) }}

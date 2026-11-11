@@ -147,9 +147,11 @@ vllm_repetition_detection:
 # One 4090 at 0.90 leaves no room for a second model, so the GUI can only
 # start something once it owns the primary slot: vllm_launcher_owns_primary
 # true keeps vllm-serve installed but stopped, freeing the GPU and port 8000
-# for the GUI. Launch there with served model name gemma-4-26b-a4b and
-# LiteLLM keeps routing to it. Nothing serves until a model is launched, and
-# nothing relaunches it after a reboot or a vllm-launcher restart.
+# for the GUI. The launcher then runs one model at a time on port 8000
+# (vllm_launcher_swap, on by default): a launch replaces the running model,
+# and the stack's launcher follower points LiteLLM at whatever it serves.
+# Nothing serves until a model is launched, and nothing relaunches it after
+# a reboot or a vllm-launcher restart.
 #
 # Both switches are off (the role defaults) and are deliberately not set in
 # this file: set them in vars.local.yml. A variable set here wins over the

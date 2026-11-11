@@ -48,6 +48,28 @@
   run_once: true
   become: false
 
+- name: Collect the primary endpoints the launcher's single-model slot owns
+  # vllm_launcher_slot nodes (launcher_placement.yml): the launcher swaps the
+  # model on the primary port, and the stack's launcher follower renames and
+  # re-describes that endpoint's LiteLLM entry to match what is served
+  # (PATCH, keeping the entry's id and stored API key). This run therefore
+  # only creates such an entry when none exists for the endpoint, and never
+  # prunes or replaces it. The group reference is '\1' with ONE backslash
+  # (a {{ }} template in a block scalar).
+  ansible.builtin.set_fact:
+    vllm_slot_api_bases: >-
+      {{ groups['vllm_compute'] | default([])
+         | map('extract', hostvars)
+         | selectattr('vllm_launcher_slot', 'defined')
+         | selectattr('vllm_launcher_slot', 'truthy', convert_bool=true)
+         | selectattr('vllm_host_ip', 'defined')
+         | map(attribute='vllm_host_ip')
+         | map('regex_replace', '^(.*)$', 'http://\1:' ~ (vllm_port | string) ~ '/v1')
+         | list }}
+  delegate_to: localhost
+  run_once: true
+  become: false
+
 - name: Build the aux (node, entry) pairs for registration
   # subelements flattens each entry's hosts list into one
   # [entry, hostname] pair per placement; every pair is one LiteLLM
@@ -106,7 +128,9 @@
    # older registrations may hold a string. Only db models whose api_base
    # points at a vLLM endpoint (http(s)://<host>:<port>/v1) are considered;
    # config-declared models never reach this loop. The delete + re-register
-   # cycle below is the refresh path.
+   # cycle below is the refresh path. Entries of a launcher slot endpoint
+   # (vllm_slot_api_bases) are never stale here: the launcher follower keeps
+   # them in step with whatever model the node serves.
   ansible.builtin.set_fact:
     vllm_stale_models: "{{ (vllm_stale_models | default([])) + [candidate_item] }}"
   vars:
@@ -185,6 +209,7 @@
   when:
     - vllm_litellm_endpoint.stdout != 'LITELLM_NOT_RUNNING'
     - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
+    - candidate_item.litellm_params.api_base not in (vllm_slot_api_bases | default([]))
     - candidate_item.model_name not in vllm_registered_names
       or (candidate_item.model_info.max_input_tokens | default(0) | int)
         != (vllm_expected_max_input[candidate_item.model_name] | default(0) | int)
@@ -270,6 +295,9 @@
   # model_name entries as load-balanced replicas). Entries already present
   # are skipped, so re-runs are idempotent - the prune above removed the
   # stale entry, so a context-length change lands here as a re-register.
+  # A launcher slot endpoint is registered only while LiteLLM has no entry
+  # for its api_base at all, whatever that entry is named: the launcher
+  # follower renames it to the model the node serves.
   # model_info is rendered to a JSON string because uri's json serializer
   # turns a YAML/Ansible multi-line string body scalar into a quoted
   # string; LiteLLM's /model/new accepts a model_info object, so the
@@ -312,11 +340,19 @@
   become: false
   no_log: true
   loop: "{{ vllm_endpoints if vllm_deployment_mode == 'standalone' else [vllm_ray_head_address] }}"
+  vars:
+    vllm_register_api_base: "{{ 'http://' ~ item ~ ':' ~ (vllm_port | string) ~ '/v1' }}"
   when:
     - vllm_litellm_endpoint.stdout != 'LITELLM_NOT_RUNNING'
     - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
-    - vllm_served_model_name not in (vllm_litellm_models.json.data | default([])
-      | map(attribute='id') | list)
+    - >-
+      (vllm_register_api_base in (vllm_slot_api_bases | default([]))
+       and vllm_register_api_base not in (vllm_litellm_model_info.json.data | default([])
+           | selectattr('litellm_params.api_base', 'defined')
+           | map(attribute='litellm_params.api_base') | list))
+      or (vllm_register_api_base not in (vllm_slot_api_bases | default([]))
+          and vllm_served_model_name not in (vllm_litellm_models.json.data | default([])
+              | map(attribute='id') | list))
 
 - name: Register the aux models with LiteLLM
   # Same idempotent pattern as the primary model: one POST per (node,
@@ -367,31 +403,33 @@
   ansible.builtin.debug:
     msg: >-
       {{ 'Registered ' ~ vllm_served_model_name ~ ' with LiteLLM ('
-        ~ (vllm_litellm_register.results | default([]) | selectattr('changed') | list | length)
+        ~ (vllm_litellm_register.results | default([]) | selectattr('changed', 'true') | list | length)
         ~ ' endpoint(s) added)'
         ~ (', registered '
-          ~ (vllm_aux_litellm_register.results | default([]) | selectattr('changed') | list | length)
-          ~ ' aux endpoint(s)' if (vllm_aux_litellm_register.results | default([]) | selectattr('changed') | list | length) > 0 else '')
-      if (vllm_litellm_register.results | default([]) | selectattr('changed') | list | length) > 0
-        or (vllm_aux_litellm_register.results | default([]) | selectattr('changed') | list | length) > 0
+          ~ (vllm_aux_litellm_register.results | default([]) | selectattr('changed', 'true') | list | length)
+          ~ ' aux endpoint(s)' if (vllm_aux_litellm_register.results | default([]) | selectattr('changed', 'true') | list | length) > 0 else '')
+      if (vllm_litellm_register.results | default([]) | selectattr('changed', 'true') | list | length) > 0
+        or (vllm_aux_litellm_register.results | default([]) | selectattr('changed', 'true') | list | length) > 0
       else vllm_served_model_name ~ ' already registered with LiteLLM - skipped'
       }}
   delegate_to: localhost
   run_once: true
   become: false
+  # selectattr('changed', 'true'), not selectattr('changed'): under --check
+  # the uri tasks above are skipped, and their results carry no changed key.
 
 - name: Prune result
   ansible.builtin.debug:
     msg: >-
       {{ 'Pruned stale vLLM model(s) from LiteLLM: '
         ~ (vllm_litellm_prune.results | default([])
-          | selectattr('changed')
+          | selectattr('changed', 'true')
           | map(attribute='stale_vllm_item.model_name') | join(', ')
           | default('', true)) }}
   delegate_to: localhost
   run_once: true
   become: false
-  when: (vllm_litellm_prune.results | default([]) | selectattr('changed') | list | length) > 0
+  when: (vllm_litellm_prune.results | default([]) | selectattr('changed', 'true') | list | length) > 0
 
 - name: Point the operator to the generated snippet
   ansible.builtin.debug:

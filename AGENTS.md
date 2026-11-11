@@ -7,6 +7,8 @@ This is a Docker Compose stack for Open WebUI with LiteLLM, Keycloak SSO, observ
 
 ## Photon VM
 
+Every URL and port the stack publishes or uses, and how its names must resolve, is in `docs/urls.md`.
+
 The stack runs on VMware Photon OS, not on the Mac and not in the OrbStack Fedora VM. The deployed tree is `/mnt/data1/openwebui-stack`. Run `docker compose` checks there. The stack host's address and SSH user live in `ansible/inventory/hosts.local.yml` (gitignored; see `hosts.yml` for the placeholder version). The site's domain and other settings that stay out of git live in `ansible/group_vars/all/vars.local.yml` (gitignored; see `vars.local.yml.example`): the playbooks load it after `vars.yml`, and `tasks/keycloak.yml` loads it again after its `include_vars` of `vars.yml`, which would otherwise put `domain: localhost` back for the Keycloak clients. Keep real domains, addresses and subnets out of tracked files. See `.magie-coder/skills/photon-vm/SKILL.md`.
 
 ## Commands
@@ -185,6 +187,10 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4180/ping
 
 # On the stack host: an anonymous request is redirected to Keycloak
 curl -sk -o /dev/null -w '%{http_code} %{redirect_url}\n' https://launcher-vllm-node-01.<domain>/
+
+# On the stack host: what the launcher follower reads from each node and would change
+docker compose logs --tail 20 launcher-follower
+docker compose exec launcher-follower python3 /opt/stack-scripts/launcher_follower.py --once --check
 ```
 
 Local-LLM-Launcher-GUI (pinned by `vllm_launcher_version`) runs on the compute nodes, one per independent inference server: every node in standalone mode, the Ray head in ray mode (`tasks/launcher_placement.yml`). Pieces: `vllm-launcher` (container built on the node's vLLM image, GUI on `127.0.0.1:8765`), `vllm-launcher-auth` (oauth2-proxy on 4180, `OAUTH2_PROXY_ALLOWED_ROLES=launcher:launcher_admin`), and on the stack host the `launcher` Keycloak client plus `traefik/dynamic/launcher.yml` (`roles/openwebui_stack/tasks/launcher.yml`). Both sides are off by default (`launcher_enabled`, `vllm_launcher_enabled`). Full details in `docs/vllm-inference.md` "LLM Launcher".
@@ -197,7 +203,34 @@ Local-LLM-Launcher-GUI (pinned by `vllm_launcher_version`) runs on the compute n
 - `vllm_launcher_owns_primary: true` keeps `vllm-serve` stopped and disabled; the `Restart vllm-serve` handler is skipped on such a node so a changed script cannot start it.
 - The sign-in chip is added by the image build (`files/vllm-launcher-patch-ui.py`), not patched into the checkout: the launcher ships a compiled React bundle.
 - Chat is off in the launcher (`vllm_launcher_chat_enabled: false`): its "Test chat" box and its "Open WebUI" panel, which would start an Open WebUI on the node with no login. The image's entry point (`files/vllm-launcher-entry.py`, `stack_entry.py` in the image) replaces `POST /api/servers/{id}/chat` and `/api/openwebui/*` with 403s before the launcher builds its app; `patch_ui.py` and the page script only hide the controls. Keep the entry point: starting the image with `python3 -m local_llm_launcher` brings chat back. Both files fail closed when a new `vllm_launcher_version` moved those routes; update the paths in both.
+- The portal's DNS record points at the stack host, like every other service name, never at the node: Traefik there serves HTTPS and forwards to the gate. The stack host must reach the gate port through any router in between; when a router passes only some ports, move the gate on both sides together (`launcher_auth_port` for the stack, `vllm_launcher_auth_port` for the node).
+- `tests/vllm-remote/group_vars/vllm_compute/` is read alphabetically, so `vars.local.yml` comes before `vars.yml` and loses to any variable `vars.yml` also sets. Site switches (`vllm_launcher_enabled`, `vllm_launcher_owns_primary`, the gate port) are therefore left out of the tracked `vars.yml`; set them in `vars.local.yml`.
+- To reproduce the Ansible-managed server from the GUI, copy its reasoning parser, tool parser and `--default-chat-template-kwargs` too, not just port and served name, or thinking and tool calls stop working (`docs/vllm-inference.md` "Swapping and tuning the node's model from the GUI" has the launch request).
+- Single-model slot (`vllm_launcher_swap`, with `vllm_launcher_owns_primary`): `files/vllm-launcher-slot.py` (`stack_slot.py` in the image, loaded by the entry point when the run script sets `LAUNCHER_STACK_SLOT_FILE`) wraps the launcher's internals, not its routes: `servers.launch/stop/remove`, `api.get_hardware`, `api.installed_models`, `advisor.advise/presets`. A launch runs the launcher's own pre-spawn checks first (`vllm_backends.validate`, MTP, `build_spec`), so refused settings never stop the running model; then it stops every running server, waits for the port and GPU memory, and starts the new one on `vllm_port`. `install()` fails closed when a new `vllm_launcher_version` moved any of them.
+- Whole-GPU fit: only the advisor sees the adjusted free memory (memory the launcher's servers hold counts as free; other programs' use is sampled while none runs). `/api/hardware`, the Dashboard and the sidebar keep the real numbers. Nested `advise()` calls from `presets()` carry the `_stack_whole_gpu` marker and are not adjusted twice.
+- `GET /api/stack/slot` is the follower's contract: the gate skips sign-in for that one GET route (`OAUTH2_PROXY_SKIP_AUTH_ROUTES`), the launcher answers only with the bearer `LAUNCHER_STACK_STATUS_TOKEN` (`launcher_status_token`, stack vault → `.env` → the node's `launcher.env`), and Traefik's portal rule excludes `/api/stack/`. The follower calls the gate directly with `Host: launcher-<node>.<domain>`, because the launcher's TrustedHostMiddleware refuses any other name.
+- The route's `Request` annotation is set as an object after the def (`add_status_route`): the module uses postponed annotations, and FastAPI cannot resolve the string `"Request"` there and reads it as a required query parameter (every request answers 422).
+- The follower (`container-scripts/launcher_follower.py`, service `launcher-follower`) changes the node's LiteLLM entry with `PATCH /model/{id}/update`, never delete + `/model/new`: `/model/info` does not return the stored API key, and PATCH keeps it and the api_base. PATCH merges; a litellm_params key goes only through `litellm_params_to_remove`, and model_info keys cannot be removed, so every `supports_<level>_reasoning_effort` flag is sent as true or false. `litellm_registration.yml` creates a slot node's entry only when none exists for its api_base and never prunes or replaces it, or each `inference.yml` run would undo the follower.
+- Both the slot and the follower use urllib openers without an HTTPS handler: urllib builds a TLS context for one up front, which the FIPS-mode GPU node refuses inside the Ubuntu-based launcher image unless `/proc/sys/crypto/fips_enabled` is masked.
 - Backslash group references in Ansible: inside `{{ }}` in a block scalar (`>-`, `|`) write `'\1'`; `'\\1'` there makes `regex_search` fail and `regex_replace` insert a literal `\1`. In double-quoted YAML and in bare `when:` expressions write `'\\1'` (the forms `tasks/auxiliary.yml` uses). The same goes for `'\n'` passed to `join()`.
+
+### NVIDIA driver (`nvidia_driver` role)
+
+```bash
+# What the role finds and would do, on the stack host and on the nodes (changes nothing)
+ansible-playbook -i inventory/hosts.yml -i inventory/hosts.local.yml playbooks/site.yml --tags nvidia_driver --check
+ansible-playbook -i tests/vllm-remote/inventory.yml -i tests/vllm-remote/inventory.local.yml playbooks/inference.yml --tags nvidia_driver --check
+```
+
+First role of `site.yml` and `inference.yml`. It classifies the host (`tasks/detect.yml`: `no_gpu`, `ok`, `module_not_loaded`, `module_missing`, `not_installed`) and repairs only what is broken: `modprobe`, a kernel-module rebuild for the running kernel, or a full install. Method: NVIDIA's dnf repository with DKMS on Fedora/RHEL, NVIDIA's `.run` installer on Photon OS and on any host already installed that way. Details in `docs/vllm-inference.md` "NVIDIA driver".
+
+**Critical implementation notes:**
+- Photon's driver is not under DKMS: every kernel update plus reboot leaves the GPU without a module until the role rebuilds it (`module_missing`). The rebuild uses the installer of the version already on the host (`--kernel-module-only`), so the module always matches the libraries; installers are kept in `/root/nvidia`.
+- Never reboot and never restart containers from the role. A first install while `nouveau` holds the GPU stops with a message asking for a reboot.
+- `nvidia_driver_required` is true only in `inference.yml`. On the stack host the GPU is optional: an unrepairable driver must not fail `site.yml`, and `tasks/gpu_profile.yml` then drops the `gpu` compose profile for the run.
+- The detection script runs under `--check` (`check_mode: false`) and is passed as `shell: cmd:`; Ansible splits a free-form multi-line shell argument on quotes and rejects this one.
+- A task placed after the second detection inside the repair block never runs: the block's condition is checked again for every task, and once the driver works it is false. The CDI refresh therefore sits outside the block and keys on `nvidia_driver_state_before`.
+- Tested on Photon on 2026-11-11 by removing the module files for the running kernel: the dry run reported the rebuild and changed nothing, the real run rebuilt and loaded the module in 66 seconds, the next run changed nothing, and Chatterbox and the GPU exporter worked again once restarted.
 
 ### Rootless podman and tini on the vLLM nodes
 
