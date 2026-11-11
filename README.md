@@ -1459,6 +1459,44 @@ docker compose restart lgtm
 #    -> Test, or via the API)
 ```
 
+## Secret Scanning
+
+The **Secret Scan** workflow (`.github/workflows/secret-scan.yml`) fails a push or pull request when the history behind it holds a secret. It runs on every branch with no path filter, and a weekly run (or a manual one from the Actions tab) scans every branch and tag. The checks live in `scripts/check-secrets.sh`, so a local run checks exactly what CI checks.
+
+| Step | What fails it |
+|------|---------------|
+| gitleaks | A finding of gitleaks's default rules or the stack's own in `.gitleaks.toml`, anywhere in the history: anything but `CHANGE_ME`, `change-me-before-production` or `""` in the tracked vault template `ansible/group_vars/all/vault.yml`; a literal value for a secret variable in `.env.example` or an env template; an `sk-` LiteLLM or Open WebUI key; a password in a URL or connection string. |
+| trufflehog | A result from any of trufflehog's detectors, verified or not, anywhere in the history. In CI it also checks found keys with their providers and labels the live ones. |
+| policy | A tracked file that holds secrets by nature (`.env`, `*.local.yml`, `token.txt`, keys and certificates, database dumps, credential files), or an inline allow comment. |
+
+How strict it is:
+
+- Each run scans the whole history of the commit under test, not only the new commits. A secret committed once fails every run until it is purged from the history; a later commit that deletes it does not clear it.
+- Any finding fails. trufflehog's unverified and unknown results count, and there is no global allowlist.
+- Inline allow comments do not work: gitleaks ignores them and the policy step fails on them. A false positive is accepted only by its gitleaks fingerprint in `.gitleaksignore`, where review sees it.
+- The scanner versions are pinned and each download must match a sha256 recorded in the script. `actions/checkout` is pinned by commit, and the job's read-only token is not left in the checkout.
+- Values never reach the log. gitleaks runs with `--redact`, and the script prints only the rule or detector, commit, file, line and gitleaks fingerprint.
+
+Run it locally (Linux x86_64 with curl, git and jq):
+
+```bash
+bash scripts/check-secrets.sh install                 # pinned scanners, ~/.cache/openwebui-stack/secret-scanners
+bash scripts/check-secrets.sh --no-verify             # history of HEAD, like a push
+bash scripts/check-secrets.sh --no-verify --all-refs  # every branch and tag, like the weekly run
+```
+
+`--no-verify` stops trufflehog from trying found credentials against their services. Use it on hosts inside the network (Photon, the GPU node), where a found credential could reach an internal service.
+
+When it fails:
+
+1. Treat the secret as leaked and rotate it at its source first. Purging it from git does not undo the exposure.
+2. Remove it from the history and force-push the affected branches, for example with git filter-repo (`--invert-paths --path <file>` for a file, `--replace-text` for a value inside one). Scope the rewrite with `--refs <first-bad-commit>^..<branch>` so that older commits, including the GitHub-signed upstream ones on `main`, keep their hashes. Every clone of a rewritten branch must reset to the new one, and GitHub can still serve the old commits by hash until GitHub Support removes them.
+3. For a false positive, add the fingerprint from the log to `.gitleaksignore`, with a comment above it saying why. trufflehog has no per-finding allowlist; narrow the scan in `scripts/check-secrets.sh` instead, as is done for its JDBC detector. That detector flags the compose template's credential-free `jdbc:postgresql://postgres:5432/...` URL, and the `url-credentials` and `connection-string-password` gitleaks rules cover passwords in connection strings in its place.
+
+To update a scanner, change its version and its tarball sha256 (from the release's checksums file) together at the top of `scripts/check-secrets.sh`. Dependabot moves the `actions/checkout` pin, not the scanners.
+
+The workflow sees a secret only after it reached GitHub. GitHub's own secret scanning with push protection, in the repository's security settings, refuses such a push before it lands; it is free on public repositories, and private ones need GitHub Secret Protection.
+
 ## Additional Resources
 
 - [Complete setup and usage guide](docs/setup-guide.md) - end-to-end install, SSO, usage, local inference, monitoring, backups, upgrades, and troubleshooting

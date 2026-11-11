@@ -305,6 +305,28 @@ Shared code: `stack_api.py` (HTTP client, argument parser, exit contract) and `s
 - A container that predates the mount fails with a hint to run `--tags environment,compose` once. `tasks/sync.yml` carries the `always` tag, so the deployed `container-scripts/` is current on tag-limited runs.
 - `roles/vllm_compute/files/ray_nodes_ready.py` is the one script outside this scheme: the Ray head container has no such mount, so `tasks/services.yml` pipes it to `python -` over stdin.
 
+### Secret scanning (CI)
+
+```bash
+# What the Secret Scan workflow runs (Linux x86_64 with curl, git, jq; run it on Photon)
+bash scripts/check-secrets.sh install
+bash scripts/check-secrets.sh --no-verify             # history of HEAD
+bash scripts/check-secrets.sh --no-verify --all-refs  # every branch and tag
+```
+
+`.github/workflows/secret-scan.yml` runs `scripts/check-secrets.sh` on every push and pull request, with no path filter, and weekly over every branch and tag. Three steps: gitleaks (`.gitleaks.toml`: the default rules plus the stack's), trufflehog (every detector but JDBC), and a policy step (tracked secret files, inline allow comments). Details in README "Secret Scanning".
+
+**Critical implementation notes:**
+- Each run scans the whole history of the commit under test. A secret committed once fails every run until it is purged from the history and force-pushed; a commit that deletes the file does not clear it. Rotate the secret first.
+- Never let a value reach the log: gitleaks runs with `--redact`, and trufflehog's JSON is reduced to detector, commit, file and line. Keep both when changing the script; Actions logs are public on a public repository.
+- No inline allow comments. gitleaks runs with `--ignore-gitleaks-allow` and the policy step fails on any. Accept a false positive by its gitleaks fingerprint in `.gitleaksignore` with a comment, or by a narrow exclusion in the script; trufflehog has no fingerprints.
+- trufflehog's JDBC detector is off: it flags the compose template's `jdbc:postgresql://postgres:5432/...` URL, which has no credentials. The `url-credentials` and `connection-string-password` gitleaks rules replace it. `url-credentials` must keep accepting `${USER:-default}:${PASSWORD:?message}@` references: the compose URLs have that form, also in the upstream commits on `main`, which cannot be rewritten.
+- `ansible/group_vars/all/vault.yml` may hold only `CHANGE_ME`, `change-me-before-production` or `""` (rule `stack-vault-template-value`); real values go in `vault.local.yml`. The rule also accepts the Jinja lookups of earlier template versions, but only when their quoted literals are env var names, plugin names, lookup options or placeholders. `.env.example` and the env templates take `changeme_*` placeholders or `{{ }}` / `${ }` references.
+- Scanner versions and their tarball sha256 sit together at the top of the script and change together. Dependabot moves only the `actions/checkout` pin.
+- The workflow calls the script through `bash`: a script added from Windows has no executable bit.
+- Use `--no-verify` on Photon and the nodes. Verification signs in with what trufflehog found, and from inside the network a found credential can reach internal services.
+- To purge a secret, scope git filter-repo to the affected range (`--refs <first-bad-commit>^..<branch>`). A whole-repository rewrite re-hashes the GitHub-signed upstream commits on `main`, because git fast-export drops signatures.
+
 ### Linting & Quality Checks
 
 **Shell Scripts:**
@@ -433,11 +455,13 @@ PROXY_BASE_URL: "https://litellm.${DOMAIN:-localhost}"
 ├── container-scripts/   # Python the playbook runs inside litellm/open-webui
 ├── tests/container_scripts/  # pytest suite for container-scripts/
 ├── pyproject.toml       # ruff and pytest configuration
+├── .gitleaks.toml       # secret-scan rules (Secret Scan workflow)
 └── scripts/
     ├── setup.sh
     ├── generate-certs.sh
     ├── backup-keycloak.sh
     ├── reset-stack.sh
+    ├── check-secrets.sh     # gitleaks, trufflehog and policy; what CI runs
     └── sync-ollama-models.sh
 ```
 

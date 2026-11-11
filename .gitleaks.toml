@@ -1,0 +1,115 @@
+# =============================================================================
+# gitleaks configuration (strict)
+# =============================================================================
+# Used by scripts/check-secrets.sh and the Secret Scan workflow
+# (.github/workflows/secret-scan.yml). gitleaks's default rules plus the
+# stack's own below. There is no global allowlist and inline allow comments
+# are ignored (--ignore-gitleaks-allow): a finding is accepted only by its
+# fingerprint in .gitleaksignore, with a comment saying why.
+
+title = "openwebui-stack strict"
+
+[extend]
+useDefault = true
+
+# =============================================================================
+# Vault template: placeholders only
+# =============================================================================
+# ansible/group_vars/all/vault.yml is tracked as a template. Real values live
+# in the gitignored vault.local.yml next to it; the playbook generates any
+# stack secret left as CHANGE_ME.
+[[rules]]
+id = "stack-vault-template-value"
+description = "Value in the tracked vault template; real secrets belong in vault.local.yml"
+path = '''(?:^|/)ansible/group_vars/all/vault\.ya?ml$'''
+# A block value (key: >-) is judged by its first line.
+regex = '''(?m)^[A-Za-z_][A-Za-z0-9_]*:[ \t]*(?:[|>][-+]?[ \t]*\n[ \t]+)?([^\s#][^#\r\n]*?)[ \t]*(?:#.*)?$'''
+secretGroup = 1
+
+[[rules.allowlists]]
+description = "Placeholders the playbook replaces, and empty optional keys"
+regexTarget = "secret"
+regexes = ['''^(?:CHANGE_ME|change-me-before-production|""|'')$''']
+
+[[rules.allowlists]]
+description = "Jinja lookups (earlier versions of the template). Quoted literals inside may only be env var names, plugin names, lookup options or placeholders, so default('a-real-password') still fails."
+regexTarget = "secret"
+regexes = ['''^"?\{\{(?:[^'"]|'(?:[A-Z][A-Z0-9_]*|[a-z]+(?:\.[a-z_]+)+|properties|ignore|CHANGE_ME|change-me-before-production)?')*(?:\}\}"?)?$''']
+
+# =============================================================================
+# Env templates and examples: placeholders and references only
+# =============================================================================
+# .env.example, the playbook's env.j2 and the *.env.j2 / *.env.example files
+# take changeme_* placeholders or {{ }} / ${ } references. A literal value
+# for a secret-named variable there is a leaked secret, however weak.
+[[rules]]
+id = "stack-env-template-value"
+description = "Literal value for a secret variable in a tracked env template or example"
+path = '''(?:^|/)(?:[^/]*\.env\.example|[^/]*\.env\.j2|env\.j2)$'''
+regex = '''(?m)^[ \t]*(?:#[ \t]*)?(?:export[ \t]+)?[A-Za-z0-9_]*(?i:password|passwd|secret|token|api_?key|access_key|private_key|master_key|salt_key|license|client_state|webhook_url)[A-Za-z0-9_]*[ \t]*=[ \t]*["']?([^\s"'#]+)'''
+secretGroup = 1
+
+[[rules.allowlists]]
+description = "Placeholders, references and booleans"
+regexTarget = "secret"
+regexes = [
+    '''^(?:changeme|change-me|CHANGE_ME)[A-Za-z0-9_-]*$''',
+    '''^(?:\{\{|\$\{|\$[A-Za-z_])''',
+    '''^(?i:true|false|none|null)$''',
+]
+
+[[rules.allowlists]]
+description = "OIDC token endpoint URLs without credentials"
+regexTarget = "line"
+regexes = ['''(?i)_TOKEN_(?:ENDPOINT|URL)[ \t]*=[ \t]*["']?https://[^@\s]*$''']
+
+# =============================================================================
+# LiteLLM and Open WebUI API keys
+# =============================================================================
+# The LiteLLM master key, LiteLLM virtual keys and the Open WebUI API key all
+# start with sk- and carry no provider marker, so the default rules only see
+# them next to a key-like variable name.
+[[rules]]
+id = "stack-sk-key"
+description = "LiteLLM or Open WebUI API key (sk- prefix)"
+regex = '''\b(sk-[A-Za-z0-9_-]{20,})'''
+secretGroup = 1
+entropy = 3.5
+keywords = ["sk-"]
+
+# =============================================================================
+# Passwords in URLs and connection strings
+# =============================================================================
+# These replace trufflehog's JDBC detector, which scripts/check-secrets.sh
+# turns off: it flags the compose template's credential-free
+# jdbc:postgresql://postgres:5432/... URL.
+[[rules]]
+id = "url-credentials"
+description = "Password in a URL (scheme://user:password@host)"
+# The user part may be a ${USER:-default} reference, which holds a colon.
+regex = '''(?i)\b[a-z][a-z0-9+.-]{1,30}://(?:\$\{[^}\s]*\}|[^\s:/@"'`$])*:(\$\{[^}]*\}|[^\s/@"'`$][^\s/@"'`]{2,255})@[a-z0-9\[$]'''
+secretGroup = 1
+keywords = ["://"]
+
+[[rules.allowlists]]
+description = "Variable references and obvious placeholders"
+regexTarget = "secret"
+regexes = [
+    '''^(?:\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\{.*\}\}|\{[^{}]*\}|<[^>]*>|%\([A-Za-z_]+\)s)$''',
+    '''^(?:\*+|x+|X+|\.\.\.|password|passwd|pass|secret|CHANGE_ME|(?:changeme|change-me)[A-Za-z0-9_-]*)$''',
+]
+
+[[rules]]
+id = "connection-string-password"
+description = "Password passed as a URL or connection-string parameter (password=, pwd=)"
+regex = '''(?i)(?:://|jdbc:)[^\s"'`]*?[?;&](?:password|passwd|pwd)=([^&;\s"'`]{3,256})'''
+secretGroup = 1
+keywords = ["password=", "passwd=", "pwd="]
+
+[[rules.allowlists]]
+description = "Variable references and obvious placeholders"
+regexTarget = "secret"
+regexes = [
+    '''^(?:\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\{.*\}\}|\{[^{}]*\}|<[^>]*>|%\([A-Za-z_]+\)s)$''',
+    '''^(?:\*+|x+|X+|\.\.\.|password|passwd|pass|secret|CHANGE_ME|(?:changeme|change-me)[A-Za-z0-9_-]*)$''',
+]
