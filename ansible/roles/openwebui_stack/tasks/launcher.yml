@@ -1,0 +1,29 @@
+---
+# Stack-host half of the LLM Launcher portals. The launcher GUI and its
+# oauth2-proxy gate run on the vLLM compute nodes (playbooks/inference.yml,
+# role vllm_compute); this file publishes each gate through Traefik as
+# https://<launcher_hostname_prefix><node>.<domain>. The `launcher` Keycloak
+# client and its launcher_admin role come from keycloak_apps in
+# group_vars/all/vars.yml, and the client secret reaches the nodes through
+# LAUNCHER_OIDC_CLIENT_SECRET in the rendered .env.
+#
+# The route file is written straight into the deployed traefik/dynamic
+# tree (Traefik watches it, no restart). It is not in the repo checkout:
+# it carries node addresses, and the sync task never deletes extra files.
+
+- name: Render the Traefik routes for the LLM Launcher portals
+  ansible.builtin.template:
+    src: traefik-launcher.yml.j2
+    dest: "{{ project_root }}/traefik/dynamic/launcher.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - launcher_enabled | bool
+    - launcher_nodes | length > 0
+
+- name: Remove the LLM Launcher routes when the portals are off
+  ansible.builtin.file:
+    path: "{{ project_root }}/traefik/dynamic/launcher.yml"
+    state: absent
+  when: not (launcher_enabled | bool) or (launcher_nodes | length == 0)

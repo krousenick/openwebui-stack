@@ -26,9 +26,14 @@
   #              jobs pick it up.
   #   free     - no role deployment, no listener: deploy.
   # systemctl list-unit-files does NOT list generated quadlet units, so
-  # the owned test checks the quadlet file / container itself.
+  # the owned test checks the quadlet file / container itself. With
+  # rootless podman the role deploys a system unit instead of a quadlet
+  # (second branch); its header names the role. Keep apostrophes out of
+  # this script: the free-form shell argument is split on quotes first.
   ansible.builtin.shell: |-
     if [ "{{ vllm_container_cli }}" = "podman" ] && [ -f /etc/containers/systemd/{{ item.name }}.container ]; then
+      echo owned
+    elif [ "{{ vllm_container_cli }}" = "podman" ] && grep -q -s 'role: vllm_compute' /etc/systemd/system/{{ item.name }}.service; then
       echo owned
     elif [ "{{ vllm_container_cli }}" = "docker" ] && {{ vllm_container_cli }} container inspect {{ item.name }} >/dev/null 2>&1; then
       echo owned
@@ -113,6 +118,88 @@
     - vllm_container_cli == 'podman'
     - item != (vllm_gpu_exporter.name | default(''))
 
+- name: Delete stale GPU exporter units (rootless podman)
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.service"
+    state: absent
+  loop:
+    - vllm-dcgm-exporter
+    - vllm-nvidia-smi-exporter
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_rootless | bool
+    - item != (vllm_gpu_exporter.name | default(''))
+  notify: Reload systemd
+
+# --- rootless podman -----------------------------------------------------------
+# A quadlet under /etc/containers/systemd is root's, so with rootless podman
+# each exporter is a system unit that runs podman as the service account
+# (templates/vllm-exporter.service.j2), like the model servers. The unit
+# keeps the quadlet's name, <name>.service, so the handler, the start task
+# and the health wait below serve both. A node that had root quadlets gets
+# them stopped and removed first.
+- name: Find exporter quadlets from before the switch to rootless
+  ansible.builtin.stat:
+    path: "/etc/containers/systemd/{{ item }}.container"
+  loop:
+    - vllm-node-exporter
+    - vllm-dcgm-exporter
+    - vllm-nvidia-smi-exporter
+  register: vllm_exporter_root_quadlets
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_rootless | bool
+
+- name: Stop the exporters that still run as root
+  # failed_when: false tolerates a quadlet whose unit is already stopped.
+  ansible.builtin.systemd:
+    name: "{{ item.item }}.service"
+    state: stopped
+  loop: "{{ vllm_exporter_root_quadlets.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('') }}"
+  when: item.stat.exists | default(false)
+  failed_when: false
+
+- name: Delete the root exporter quadlets
+  ansible.builtin.file:
+    path: "/etc/containers/systemd/{{ item.item }}.container"
+    state: absent
+  loop: "{{ vllm_exporter_root_quadlets.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('') }}"
+  when: item.stat.exists | default(false)
+  register: vllm_exporter_root_quadlets_removed
+
+- name: Reload systemd after removing the root exporter quadlets
+  # Before the units below are written: the generator's <name>.service
+  # must be gone so the new unit file is the only definition.
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: vllm_exporter_root_quadlets_removed is changed
+
+- name: Deploy exporter units (rootless podman)
+  vars:
+    vllm_exporter_image_fq: >-
+      {{ item.image
+         if ('.' in item.image.split('/')[0] or ':' in item.image.split('/')[0])
+         else 'docker.io/' ~ item.image }}
+  ansible.builtin.template:
+    src: vllm-exporter.service.j2
+    dest: "/etc/systemd/system/{{ item.name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ vllm_monitoring_deploy }}"
+  loop_control:
+    loop_var: item
+  when:
+    - vllm_monitoring_enabled | bool
+    - vllm_rootless | bool
+  notify:
+    - Reload systemd
+    - Restart monitoring exporters
+
 - name: Deploy exporter quadlets (podman)
   containers.podman.podman_container:
     name: "{{ item.name }}"
@@ -133,6 +220,7 @@
   when:
     - vllm_monitoring_enabled | bool
     - vllm_container_cli == 'podman'
+    - not (vllm_rootless | bool)
   notify: Restart monitoring exporters
 
 - name: Deploy exporters as containers (docker)
@@ -160,7 +248,8 @@
 
 - name: Enable and start the exporter quadlet services
   # state:quadlet writes /etc/containers/systemd/<name>.container; the
-  # systemd generator exposes it as <name>.service.
+  # systemd generator exposes it as <name>.service. With rootless podman
+  # the unit file above carries the same name.
   ansible.builtin.systemd:
     name: "{{ item.name }}.service"
     state: started

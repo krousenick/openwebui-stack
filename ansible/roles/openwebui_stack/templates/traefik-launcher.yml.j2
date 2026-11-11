@@ -1,0 +1,50 @@
+# =============================================================================
+# Traefik Dynamic Configuration - LLM Launcher portals
+# =============================================================================
+# Rendered by ansible/roles/openwebui_stack (tasks/launcher.yml) from
+# launcher_nodes (default: the vllm_compute inventory group) and
+# launcher_node_addresses. Do not edit by hand; re-run the playbook.
+#
+# One router per compute node: https://{{ launcher_hostname_prefix }}<node>.{{ domain }} goes to
+# the oauth2-proxy gate on that node (port {{ launcher_auth_port }}), which signs the user in
+# against Keycloak on this host and forwards to the launcher GUI on the
+# node's loopback. Traefik adds no auth of its own: the gate owns the whole
+# OAuth flow, like the voice router. A node without a running gate fails
+# the /ping health check and its portal answers 503.
+
+http:
+  routers:
+{% for node in launcher_nodes %}
+{% set label = node | lower | regex_replace('[^a-z0-9-]', '-') %}
+    launcher-{{ label }}:
+      rule: "Host(`{{ launcher_hostname_prefix }}{{ label }}.{{ domain }}`)"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: launcher-{{ label }}
+      middlewares:
+        - secure-headers@file
+{% endfor %}
+
+  services:
+{% for node in launcher_nodes %}
+{% set label = node | lower | regex_replace('[^a-z0-9-]', '-') %}
+    launcher-{{ label }}:
+      loadBalancer:
+        serversTransport: launcher@file
+        servers:
+          - url: "http://{{ (launcher_node_addresses | default({}))[node] | default((hostvars[node] | default({})).ansible_host | default(node)) }}:{{ launcher_auth_port }}"
+        healthCheck:
+          path: /ping
+          interval: 10s
+          timeout: 3s
+{% endfor %}
+
+  serversTransports:
+    # The launcher's test chat and benchmark calls wait on the model before
+    # the first response byte, so the global 300s header timeout is lifted.
+    launcher:
+      forwardingTimeouts:
+        dialTimeout: 10s
+        responseHeaderTimeout: 0s
+        idleConnTimeout: 180s

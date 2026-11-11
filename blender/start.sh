@@ -63,8 +63,13 @@ fi
 # a DNS error. BLENDER_HOST=127.0.0.1 (default) points the stdio server at
 # the addon in this same container. Dies with the container; the
 # Xvfb/Blender processes are cleaned up by the trap.
+#
+# The `exec` inside --stdio is deliberate: supergateway runs the string
+# through `sh -c`, and dash would otherwise stay as a wrapper with the
+# server as its child. With exec the server replaces the shell, so the
+# gateway's own child is the server and it reaps it directly.
 exec supergateway \
-    --stdio "/opt/uv-tools/mcp-for-blender/bin/mcp-for-blender" \
+    --stdio "exec /opt/uv-tools/mcp-for-blender/bin/mcp-for-blender" \
     --outputTransport streamableHttp \
     --host 0.0.0.0 \
     --port 8000

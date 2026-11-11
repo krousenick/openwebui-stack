@@ -44,8 +44,13 @@ fi
 # stdio -> streamable HTTP. freecad-mcp's --host is the *bridge* address
 # (the bridge port is hardcoded to 9875 in the fork's client); the server
 # itself speaks stdio only.
+#
+# The `exec` inside --stdio is deliberate: supergateway runs the string
+# through `sh -c`, and dash would otherwise stay as a wrapper with the
+# server as its child. With exec the server replaces the shell, so the
+# gateway's own child is the server and it reaps it directly.
 exec supergateway \
-    --stdio "freecad-mcp --host localhost" \
+    --stdio "exec freecad-mcp --host localhost" \
     --outputTransport streamableHttp \
     --host 0.0.0.0 \
     --port 8000

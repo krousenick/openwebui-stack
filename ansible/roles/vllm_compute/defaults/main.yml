@@ -49,10 +49,52 @@ vllm_deployment_mode: ray
 # (the prerequisites role installs it when prerequisites_install_missing).
 vllm_container_cli: docker
 
-# Rootful podman storage graphroot when vllm_container_cli is podman. The
-# remote node keeps all data under /home (its /var is small); set this per
-# group_vars. Only applied when it differs from the current value.
+# Run the containers rootless: as an unprivileged service account instead
+# of root. On by default wherever it is possible, which is every podman
+# node; the docker daemon itself runs as root, so docker nodes stay rootful.
+# The units stay system units with the same names; they get
+# User=<vllm_container_user>, and the account gets lingering so its runtime
+# directory exists without a login. Root inside a container is then that
+# account on the host: a process that breaks out of a container holds no
+# root and no sudo. GPU access goes through CDI (vllm_container_gpu_flag:
+# "--device nvidia.com/gpu=all"), which needs no root.
+#
+# Switching an existing node moves it in one run: the role stops the units
+# that still run as root, removes their containers from root's store, hands
+# vllm_hf_cache_dir to the account, and starts the units again. The account
+# has its own image store, so the first start pulls the images again (the
+# copy in root's store can be deleted afterwards: `podman rmi` as root).
+vllm_container_rootless: "{{ vllm_container_cli == 'podman' }}"
+
+# The service account. Created when missing, with no password and no login
+# shell; an account that already exists is used as it is. Do not point this
+# at an account with sudo rights: that hands a container breakout root.
+vllm_container_user: vllm
+# Its home when the role creates it; "" lets useradd choose (/home/<name>).
+vllm_container_user_home: ""
+
+# Where the account keeps images and containers. "" is podman's default,
+# ~/.local/share/containers/storage under its home. Set a path on the data
+# volume when the home filesystem is small.
+vllm_rootless_storage_root: ""
+
+# Rootful podman storage graphroot when vllm_container_cli is podman and
+# vllm_container_rootless is false. The remote node keeps all data under
+# /home (its /var is small); set this per group_vars. Only applied when it
+# differs from the current value.
 vllm_podman_storage_root: /var/lib/containers/storage
+
+# Start every container under an init process (PID 1) that forwards the
+# stop signal to the server and reaps the processes it leaves behind;
+# without one a container whose server ignores SIGTERM is only stopped by
+# the kill after the timeout. docker's --init is tini. podman's own --init
+# is catatonit, so on podman the role installs tini and passes it with
+# --init-path; it must be the static build, because podman mounts the host
+# binary into images that may not carry its libraries. Set the path to ""
+# to use catatonit instead.
+vllm_container_init: true
+vllm_container_init_package: tini-static
+vllm_container_init_path: "{{ '/usr/bin/tini-static' if vllm_container_cli == 'podman' else '' }}"
 
 # Image reference. Podman nodes need a fully-qualified reference: with
 # short-name-mode=enforcing (the Fedora default) an unqualified name like
@@ -445,3 +487,149 @@ vllm_controller_host: "{{ hostvars[groups['openwebui'] | first]['ansible_host']
   if (groups['openwebui'] | default([]) | length > 0) else '127.0.0.1' }}"
 vllm_loki_push_port: 3100
 vllm_loki_push_url: "http://{{ vllm_controller_host }}:{{ vllm_loki_push_port }}/loki/api/v1/push"
+
+# ===========================================================================
+# LLM Launcher: a web control panel for each independent inference server
+# ===========================================================================
+# Local-LLM-Launcher-GUI (https://github.com/jimdawdy-hub/Local-LLM-Launcher-GUI)
+# is a browser GUI for downloading models and starting `vllm serve` with
+# per-setting guidance (a green/yellow/red rating for every flag against the
+# node's GPU). It only manages the machine it runs on, so the role runs one
+# per independent inference server:
+#
+#   standalone  one launcher on every vllm_compute node
+#   ray         one launcher, on the vllm_ray_head node
+#
+# Each launcher is a container (unit vllm-launcher) built on the node's own
+# vLLM image, so the models it starts run the same vLLM as the Ansible units
+# and read the same Hugging Face cache. It listens on the node's loopback
+# only. An oauth2-proxy container (unit vllm-launcher-auth) is the only way
+# in: it signs users in against Keycloak on the stack host and admits the
+# roles in vllm_launcher_allowed_roles. Traefik on the stack host publishes
+# it as https://launcher-<inventory name>.<domain> (playbooks/site.yml,
+# launcher_enabled in group_vars/all/vars.yml).
+#
+# Models started from the GUI are child processes of the launcher container:
+# restarting vllm-launcher (an image rebuild, a changed unit) stops them, and
+# nothing restarts them after a reboot.
+# ===========================================================================
+vllm_launcher_enabled: false
+
+# Nodes that run a launcher. 'auto' follows the topology above; a list of
+# inventory hostnames (or a comma-separated string) overrides it.
+vllm_launcher_hosts: auto
+
+# Upstream source, pinned to a commit for reproducible images. Point both at
+# a fork to carry local changes. 476cceb is the v0.6.1 release (2026-10-31).
+vllm_launcher_repo: https://github.com/jimdawdy-hub/Local-LLM-Launcher-GUI.git
+vllm_launcher_version: 476cceb9ca1116039dc2f38d49c45a7cd39d50f5
+
+# Base image of the launcher image. The launcher is installed on top of it,
+# so `vllm` inside the container is whatever this image ships.
+vllm_launcher_base_image: "{{ vllm_image }}"
+
+# Image the node builds. The tag follows the pinned commit, so a version bump
+# builds a new image. A changed Dockerfile or sign-in chip rebuilds it too;
+# set vllm_launcher_rebuild: true for one run to pick up a newer base image.
+vllm_launcher_image: "localhost/vllm-launcher:{{ vllm_launcher_version[:12] }}"
+vllm_launcher_rebuild: false
+
+# Raw Dockerfile lines appended after the launcher install, e.g. to add
+# another engine the GUI can drive (llama-server on PATH enables llama.cpp).
+vllm_launcher_extra_build_steps: []
+
+# Loopback port of the GUI on the node. Never opened in the firewall.
+vllm_launcher_port: 8765
+
+# Install directory (build context, scripts, secrets) and the launcher's
+# state: settings.json (may hold a Hugging Face token), saved favorites,
+# benchmark records, and the logs of the servers it started.
+vllm_launcher_dir: "{{ vllm_install_dir }}/launcher"
+vllm_launcher_data_dir: "{{ vllm_launcher_dir }}/data"
+
+# Bind the servers the GUI starts to 0.0.0.0 instead of 127.0.0.1, so
+# LiteLLM on the stack host can reach them. Seeds the launcher's "LAN
+# access" setting on first deploy only; after that the Settings page owns it.
+vllm_launcher_lan_access: true
+
+# Chat from the launcher itself. Off: people talk to models through Open
+# WebUI or an API client (opencode, an IDE), never through the launcher.
+# The image then refuses the launcher's two chat paths and hides their
+# controls: the "Test chat" box on a server card, and the panel that starts
+# a second Open WebUI on the node with no login in front of it. Changing
+# this rebuilds the image and restarts the launcher (which stops the models
+# it started).
+vllm_launcher_chat_enabled: false
+
+# Start every `vllm serve` the GUI launches with the node's API key
+# (VLLM_API_KEY = vllm_api_key), so a GUI-started server is never open on
+# the compute segment and LiteLLM's stored key keeps working. With
+# vllm_launcher_chat_enabled: true the launcher's test chat sends no key,
+# so it reports an error against these servers; set this false to use it
+# and rely on the firewall zone alone.
+vllm_launcher_enforce_api_key: true
+
+# Hand this node's primary model slot to the launcher: the role keeps
+# vllm-serve installed but stopped and disabled, and skips its /health wait,
+# so the GUI has the GPU. Launch on vllm_port with the served model name
+# LiteLLM already knows and the registration keeps routing to it. Standalone
+# mode only (a ray-sharded model stays under Ansible). Set it per host to
+# try the GUI on one node while the others keep serving.
+vllm_launcher_owns_primary: false
+
+# Host ports opened in the vllm-cluster zone for extra models started from
+# the GUI (pick one of these as the port in the Launch form). The primary
+# port (vllm_port) is already open. Empty string opens nothing.
+vllm_launcher_model_ports: "8100-8109"
+
+# Extra environment for the launcher container (inherited by the servers it
+# starts), e.g. {HF_HUB_ENABLE_HF_TRANSFER: "1"}.
+vllm_launcher_extra_env: {}
+
+# /api/about wait budget after (re)starting the launcher (x 5s).
+vllm_launcher_health_wait_retries: 24
+
+# --- OAuth gate (oauth2-proxy on the node) ---------------------------------
+vllm_launcher_auth_image: "quay.io/oauth2-proxy/oauth2-proxy:v7.15.1"
+
+# Port oauth2-proxy listens on; opened in the vllm-cluster zone so Traefik
+# on the stack host can reach it. Must match launcher_auth_port in
+# group_vars/all/vars.yml.
+vllm_launcher_auth_port: 4180
+
+# Public name of this node's portal: <prefix><inventory hostname>.<domain>.
+# Must match launcher_hostname_prefix in group_vars/all/vars.yml, which
+# builds the Traefik routes and the Keycloak redirect URIs from it.
+vllm_launcher_hostname_prefix: "launcher-"
+
+# Keycloak client created by playbooks/site.yml and the roles oauth2-proxy
+# admits (keycloak-oidc --allowed-role: "<client>:<client role>" or a realm
+# role name). An empty list admits every signed-in realm user.
+vllm_launcher_oidc_client_id: launcher
+vllm_launcher_allowed_roles:
+  - "launcher:launcher_admin"
+
+# Stack settings the gate needs. Each resolves in order: its variable below
+# -> the controller environment -> the .env playbooks/site.yml rendered
+# (keys DOMAIN, KEYCLOAK_REALM, LAUNCHER_OIDC_CLIENT_SECRET,
+# LAUNCHER_SSL_INSECURE_SKIP_VERIFY in both). The .env is read from
+# vllm_launcher_stack_host: the stack host of this inventory, or the
+# controller itself when the inventory has none (tests/vllm-remote, where
+# ansible runs on the stack host and the runner also sources that .env).
+# Run site.yml first so the `launcher` Keycloak client and its secret exist.
+#   domain        the stack's domain (portal = launcher-<host>.<domain>)
+#   realm         Keycloak realm; 'platform' when nothing else is found
+#   client secret secret of the `launcher` OIDC client
+#   skip verify   true when auth.<domain> serves a certificate the
+#                 oauth2-proxy image does not trust (Cloudflare Origin CA)
+vllm_launcher_domain: ""
+vllm_launcher_keycloak_realm: ""
+vllm_launcher_oidc_client_secret: ""
+vllm_launcher_ssl_insecure_skip_verify: ""
+vllm_launcher_stack_host: "{{ groups['openwebui'] | default([]) | first | default('localhost') }}"
+vllm_launcher_stack_env_file: /mnt/data1/openwebui-stack/.env
+
+# Address the node's oauth2-proxy uses for auth.<domain> (OIDC discovery,
+# token exchange). Pinned to the stack host so the node does not depend on
+# DNS for it; empty string leaves name resolution to the node.
+vllm_launcher_keycloak_host_ip: "{{ vllm_controller_host if vllm_controller_host != '127.0.0.1' else '' }}"

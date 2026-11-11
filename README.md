@@ -232,6 +232,8 @@ Users are assigned roles based on their Keycloak group membership:
 
 Role names are the values in the `roles` token claim. Grafana maps them with the JMESPath in `docker-compose.yml`. Open WebUI treats `openwebui_admin` as admin. LiteLLM reads `proxy_admin`, `proxy_admin_viewer`, `internal_user`, and `internal_user_viewer` from `GENERIC_USER_ROLE_ATTRIBUTE`.
 
+`platform-admins` and `admin` also hold `launcher_admin` on the `launcher` client. The [LLM Launcher portals](#llm-launcher-portals-web-control-panel-per-inference-server) admit only that role (oauth2-proxy reads it from `resource_access.launcher.roles` in the access token), so self-registered users in `user` get a 403 there.
+
 **Creating more users:**
 
 1. Go to Keycloak Admin Console → Users → Add user
@@ -266,6 +268,22 @@ To register a passkey for that user, follow [docs/passkey-user.md](docs/passkey-
 2. Click "Sign in with Keycloak"
 3. Enter Keycloak credentials
 4. Redirected back to Grafana, logged in
+
+### Single Logout
+
+Logging out of any app ends the Keycloak SSO session, not only that app's own session, so the next visit to any app asks for credentials again. Each app's Log out sends the browser to the realm's `end_session_endpoint` (`https://auth.${DOMAIN}/realms/platform/protocol/openid-connect/logout`) and Keycloak sends it back afterwards:
+
+| App | Setting that sends Log out to Keycloak | Returns to |
+|-----|----------------------------------------|------------|
+| Open WebUI | Built in (discovery `end_session_endpoint` + `id_token_hint`); `WEBUI_AUTH_SIGNOUT_REDIRECT_URL` supplies the return URL | `https://chatbot.${DOMAIN}/auth` |
+| Grafana | `GF_AUTH_GENERIC_OAUTH_SIGNOUT_REDIRECT_URL` (Grafana appends `id_token_hint`) | `https://grafana.${DOMAIN}/login` |
+| LiteLLM | `PROXY_LOGOUT_URL` | `https://litellm.${DOMAIN}/ui` |
+| Voice | `/oauth2/sign_out?rd=` link injected into the Chatterbox UI (oauth2-proxy fills in `{id_token}`) | `https://voice.${DOMAIN}` |
+| LLM Launcher portals | Same `/oauth2/sign_out?rd=` link, added to the launcher page by the image build on each compute node (`roles/vllm_compute/templates/vllm-launcher-signin.js.j2`) | `https://launcher-<node>.${DOMAIN}` |
+
+The return URL is the `post_logout_redirect_uri` parameter. Keycloak accepts it only when the client lists that exact URL, so every client in `keycloak_apps` (`ansible/group_vars/all/vars.yml`) carries `post_logout_redirect_uris`. Change the app setting and the client entry together; a mismatch shows Keycloak's "Invalid redirect uri" page after logout. The LiteLLM Admin UI has no ID token to send, so its URL identifies the client with `client_id` and Keycloak asks "Do you want to log out?" before ending the session. Grafana gets the same prompt when its stored token has expired. A local Grafana admin login (not SSO) logs out locally and is not sent to Keycloak.
+
+**Reaching the other apps:** when the SSO session ends, Keycloak POSTs a back-channel logout token to Open WebUI (`backchannel_logout_url` on the `open-webui` client, `http://open-webui:8080/oauth/backchannel-logout` on the compose network; `ENABLE_OAUTH_BACKCHANNEL_LOGOUT: "true"`). Open WebUI deletes that user's OAuth sessions and revokes their JWTs through Valkey, so an open chat tab is signed out without waiting for its token to expire. Grafana, LiteLLM, and oauth2-proxy have no back-channel logout endpoint: a session already open in those apps lasts until it expires on its own, and the next login goes through Keycloak again.
 
 ### Security Features
 
@@ -531,7 +549,8 @@ Every chat model served by LiteLLM can search the web. No per-chat tool setup is
 1. **`brave-search-mcp`** runs the official `mcp/brave-search` image with `BRAVE_SEARCH_API_KEY` and exposes the MCP endpoint over streamable HTTP at `http://brave-search-mcp:8080/mcp` (backend network, no published port).
 2. **LiteLLM mounts it as an MCP server** named `brave_search` (`mcp_servers:` in [litellm/config.yaml](litellm/config.yaml)), reachable at `http://litellm:4000/mcp/brave_search`. `allow_all_keys: true` lets any LiteLLM virtual key use it. Eight tools are exposed: `brave_web_search`, `brave_news_search`, `brave_image_search`, `brave_video_search`, `brave_summarizer`, and local search (places, POIs, maps).
 3. **A startup hook injects the tools into every non-streaming chat request.** `LITELLM_WORKER_STARTUP_HOOKS: "brave_mcp_callback:register_callback"` loads [litellm/brave_mcp_callback.py](litellm/brave_mcp_callback.py), whose `BraveMCPInjector` is a LiteLLM `CustomLogger`. Its `async_pre_call_hook` appends `{"type": "mcp", "server_url": "litellm_proxy/mcp/brave_search", "require_approval": "never"}` to the `tools` list of every `completion`/`acompletion` call. Streaming requests (`stream: true`) are **skipped**: LiteLLM's MCP streaming iterator forwards the tool-call deltas to the client, and clients with their own function-calling loop (Open WebUI) record those deltas as their own tool calls, fail to resolve the MCP-namespaced name, and append error tool responses that corrupt the history ("Missing corresponding tool call for tool response message" on the next Gemini turn). If the request already carries Brave tools, the hook also skips injection so the model never sees the tool set twice.
-4. **LiteLLM executes the tool calls server-side.** With `require_approval: never`, LiteLLM converts the MCP tools to provider function-calling format (Gemini function declarations, Bedrock tools, etc.), runs the call against the Brave MCP container, and sends the results back to the model in a follow-up turn — all inside one `/v1/chat/completions` request. The client only sees the final answer.
+4. **LiteLLM executes the tool calls server-side.** With `require_approval: never`, LiteLLM converts the MCP tools to provider function-calling format (Gemini function declarations, Anthropic tools, Bedrock tools, etc.), runs the call against the Brave MCP container, and sends the results back to the model in a follow-up turn — all inside one `/v1/chat/completions` request. The client only sees the final answer.
+5. **Further searches run server-side too.** LiteLLM's gateway stops after that one round. When the model answers the first results with another search, the gateway returns those tool calls to the client, which never sent the tools and cannot run them. The injector therefore also implements LiteLLM's agentic-loop hooks (`async_should_run_agentic_loop` and `async_build_agentic_loop_plan`). When the model's reply to tool results is another Brave tool call, the hook executes it with the gateway's own executor and LiteLLM makes the next model call, for up to `max_agentic_loops` further rounds (LiteLLM's default is 3, so 1 + 3 search rounds per request). The follow-up call of the last round is shaped so the request ends in a text answer instead of another tool call. For Claude it keeps the tools and the history and sends `tool_choice: "none"`, which the Anthropic API enforces. For every other provider the tool rounds are folded into the user turn as plain text and the call carries no tools: on the live stack Gemini ignored `tool_choice: "none"` and kept asking for searches for as long as the history showed tool calls, and LiteLLM then stripped the call and returned an empty answer. The hook only continues requests it flagged itself (`metadata.brave_mcp_auto_execute`), so a client that sends the gateway tool with `require_approval` other than `never` still gets its tool calls back.
 
 Because injection happens in the proxy, it works identically for non-streaming Open WebUI automations, Home Assistant, the voice assistant, and direct `curl` calls: just ask the model to "search the web".
 
@@ -540,16 +559,33 @@ Because injection happens in the proxy, it works identically for non-streaming O
 Streaming chats use the **client-side** MCP path instead, enabled per model with default tool IDs:
 
 1. Open WebUI has a tool server connection of type `mcp` pointing at `http://litellm:4000/mcp/brave_search` (Admin Settings → Tool Servers, bearer auth with `LITELLM_MASTER_KEY`).
-2. Each Gemini model has a Workspace entry (Admin → Workspace → Models) with **Default Tools** set to `server:mcp:brave_search`, stored as `meta.toolIds`. The frontend merges this into every chat request's `tool_ids`.
+2. Each Gemini model has a Workspace entry (Admin → Workspace → Models) with **Default Tools** set to `server:mcp:brave_search`, stored as `meta.toolIds`. The frontend merges this into every chat request's `tool_ids`. Claude models, and any other model without a Workspace entry of its own, get the same tool IDs from the global default (`models.default_metadata`, see [Default-enabled MCP tools](#default-enabled-mcp-tools-and-hidden-built-in-web-search)).
 3. Open WebUI resolves the tool server, fetches the 8 tool specs (`brave_search-brave_web_search`, ...), and exposes them to the model as native function tools. The model's tool calls are executed by Open WebUI's MCP client against LiteLLM's MCP gateway.
 
 Verified flow: user asks for weather → model emits a `brave_search_brave_search-brave_web_search` call → Open WebUI calls LiteLLM `/mcp/brave_search` → result returned → final answer with live data. The history stays well-formed (`user → assistant(tool_call) → tool → assistant`), so multi-turn chats never hit "Missing corresponding tool call".
 
 > **Note:** the hook checks `call_type` for both `"completion"` and `"acompletion"`. LiteLLM's `/v1/chat/completions` route invokes `async_pre_call_hook` with `call_type="acompletion"`, so a hook that only matches `"completion"` never fires on real proxy traffic.
 
+### Tool calls on Claude models
+
+The Claude models (`litellm_anthropic_models_enabled: true`) use the same tool paths as every other model: the injector for non-streaming requests, Open WebUI's MCP tool servers for streaming chats, and client-side tools for Anthropic-native clients on `/v1/messages`. Nothing is configured per model. The Anthropic API is stricter than the other providers in five places, and each one is handled here:
+
+| Anthropic API rule | Where the stack handles it |
+|--------------------|----------------------------|
+| A forced `tool_choice` (`required` or a named function) returns 400 on `claude-opus-5-5`, `claude-sonnet-5-5`, and `claude-fable-5-2` | `litellm_settings.drop_params: true`. LiteLLM downgrades it to `auto` for the models its map flags `supports_forced_tool_use: false`. With `drop_params` off, LiteLLM answers 400 itself. |
+| Every assistant tool call needs exactly one tool result in the next turn, and a tool result needs a matching call | `litellm_settings.modify_params: true`. LiteLLM adds a placeholder result for an unanswered call and drops an orphaned or duplicate result before the request reaches Anthropic. |
+| Sampling parameters (`temperature`, `top_p`, `top_k`) return 400 | `additional_drop_params` on each Claude entry in `litellm/config.yaml`. |
+| The conversation must open with a user turn | [Context compaction](#context-compaction) sends its note as a `user` turn for Claude models. |
+| Thinking blocks from a tool round may only come back unchanged | LiteLLM's server-side Brave loop replays the model's full assistant message, thinking blocks included, in its follow-up call. A client that sends back none of them is also accepted. |
+
+Web search does not depend on a Gemini key. The Brave task wires the MCP server for whichever providers are enabled, so an Anthropic-only stack gets it too.
+
+A model that chains searches (search, read the results, search again) is covered for every provider by step 5 of "How it works" above. Each further round only appends to the history and leaves the tools and the system prompt as they were, which is what Claude's thinking blocks require.
+
 ### Prerequisites and configuration
 
 - `BRAVE_SEARCH_API_KEY` in `.env` (required; the stack fails to start without it). Free tier: 1 query/second, 2,000/month.
+- Optional: `BRAVE_SEARCH_MAX_EXTRA_ROUNDS` in the `litellm` service environment lowers the number of search rounds after the first one (default: LiteLLM's `max_agentic_loops`, 3). `0` turns them off. It cannot raise the number above `max_agentic_loops`, which is set per model with `litellm_params.max_agentic_loops`.
 - The `litellm` container mounts `litellm/brave_mcp_callback.py` at `/app/brave_mcp_callback.py` and loads it via `LITELLM_WORKER_STARTUP_HOOKS`.
 
 ### Verification
@@ -572,6 +608,15 @@ curl -sk https://litellm.localhost/v1/chat/completions \
   -d '{"model": "gemini-3.5-flash-lite", "messages": [{"role": "user", "content": "Search the web for today top tech news"}]}'
 # A fresh answer citing current events means brave_search-brave_web_search ran.
 # The executed tool is recorded in SpendLogs column mcp_namespaced_tool_name.
+
+# A request that needed more than one search round logs each further round:
+docker compose logs litellm | grep "Brave MCP: tool round"
+# ... Brave MCP: tool round 1 of 3 after the first (1 call(s))
+
+# 4. Same request against a Claude model (litellm_anthropic_models_enabled: true)
+curl -sk https://litellm.localhost/v1/chat/completions \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" \
+  -d '{"model": "claude-haiku-5-5", "messages": [{"role": "user", "content": "Search the web for today top tech news"}]}'
 ```
 
 ### Troubleshooting
@@ -582,10 +627,14 @@ curl -sk https://litellm.localhost/v1/chat/completions \
 | "Missing corresponding tool call for tool response message" on Gemini | Streaming request got the injected server-side MCP tool; the client recorded the streamed tool-call deltas as its own and appended error tool responses | Keep `stream` requests excluded in the injector; use the Open WebUI client-side path (Workspace model Default Tools) for streaming chats |
 | `Worker startup hook ... executed successfully` missing from logs | Module not mounted or `LITELLM_WORKER_STARTUP_HOOKS` unset | Check the volume mount and env var in `docker-compose.yml` |
 | Tool call fails with "fetch failed" | `brave-search-mcp` outbound call to the Brave API failed (transient) | Retry; check `docker compose logs brave-search-mcp` |
+| Non-streaming answer is empty and carries `tool_calls` named `brave_search-...` | The model asked for a further search and the injector did not run it: `BRAVE_SEARCH_MAX_EXTRA_ROUNDS` is `0`, or a LiteLLM internal the hook calls has changed | Look for "Brave MCP: could not run a further tool round" in `docker compose logs litellm`; the traceback names the call to update in `litellm/brave_mcp_callback.py`. The request itself still succeeds |
 | Tool call fails with 401/403 | Invalid `BRAVE_SEARCH_API_KEY` | Update `.env`, then `docker compose up -d brave-search-mcp` |
 | Gemini returns 429 quota errors | Gemini free tier exhausted — unrelated to search tools | Wait for quota reset or set billing on the Gemini project |
+| Claude returns 400 "`tool_use` ids were found without `tool_result` blocks" or "unexpected `tool_use_id` found in `tool_result` blocks" | The chat history holds a tool call with no result, or a result with no call, and LiteLLM did not repair it | Keep `modify_params: true` in `litellm_settings`; rerun the playbook or `docker compose up -d litellm` |
+| Claude returns 400 "does not support forced tool use" (LiteLLM) or "`tool_choice`: type "tool" and "any" are not supported for this model" (Anthropic) | The client forced a tool call and `drop_params` is off | Keep `drop_params: true` in `litellm_settings`, or send `tool_choice: "auto"` |
+| Playbook fails at "Require Brave Search settings" | A required setting is empty: the Brave key, the LiteLLM master key, or the Open WebUI database settings | Set the missing value in the vault. A Gemini key is not required |
 
-Open WebUI's **direct** MCP path (Admin Settings → Tool Servers) is independent: an `mcp`-type tool server connects per-chat via tool IDs (`server:mcp:<id>`) and logs `Initialized 0 tool server(s)` at boot, which is expected for MCP-only configs. The Gemini Workspace models ship with Default Tools set, so streaming chats get web search without per-chat tool selection. Other models (Bedrock, Ollama) get it by adding `server:mcp:brave_search` to their Default Tools, or by picking the tool in the chat composer.
+Open WebUI's **direct** MCP path (Admin Settings → Tool Servers) is independent: an `mcp`-type tool server connects per-chat via tool IDs (`server:mcp:<id>`) and logs `Initialized 0 tool server(s)` at boot, which is expected for MCP-only configs. The Gemini Workspace models ship with Default Tools set, so streaming chats get web search without per-chat tool selection. Other models (Claude, Bedrock, Ollama) get the same tool IDs from the global default described below; a model with Default Tools of its own needs `server:mcp:brave_search` added there, or the tool picked in the chat composer.
 
 ### Default-enabled MCP tools and hidden built-in web search
 
@@ -601,6 +650,57 @@ The playbook configures both MCP tool servers as the **default tools for every m
 | New chats do not start with the MCP tools | `models.default_metadata` row missing or stale | Rerun the playbook (`ansible-playbook playbooks/site.yml`); verify `SELECT value FROM config WHERE key = 'models.default_metadata'` lists the expected `toolIds` |
 | A model never uses the MCP tools | That model has its own `meta.toolIds` set, which replaces the global default | Add the MCP IDs to the model's Default Tools in the Workspace editor |
 
+## Chat only through Open WebUI and API clients
+
+Models are chatted with in two places: Open WebUI, and API clients that hold a LiteLLM virtual key (opencode, an IDE, a script). The stack's other two web chats are switched off by default:
+
+| Web chat | Switch | What happens now |
+|---|---|---|
+| LiteLLM admin UI: **Chat** page | `litellm_ui_chat_enabled: false` | The page is gone from the sidebar (`general_settings.enable_chat_ui: false`) |
+| LiteLLM admin UI: **Playground** | `litellm_ui_chat_enabled: false` | LiteLLM has no switch for it, so the menu entry stays; sending a prompt answers 403 with a message that names Open WebUI |
+| LLM Launcher: **Test chat** and its **Open WebUI** panel | `vllm_launcher_chat_enabled: false` | Controls hidden, requests answer 403 ([docs/vllm-inference.md](docs/vllm-inference.md#chat-is-off-in-the-launcher)) |
+
+The admin UI keeps everything else: keys, models, usage, guardrails, MCP servers and their tool tests, model health checks.
+
+### How it works
+
+1. **A startup hook refuses the admin UI's model calls.** `LITELLM_WORKER_STARTUP_HOOKS` starts with `ui_chat_block_callback:register_callback`, which loads [litellm/ui_chat_block_callback.py](litellm/ui_chat_block_callback.py). Its `async_pre_call_hook` answers 403 to a model call (chat completions, responses, messages, embeddings, images, audio) when either is true:
+   - the key is a **UI session key**. Signing in to the admin UI mints one in LiteLLM's reserved `litellm-dashboard` team, and the Playground and Chat pages send it by default;
+   - the request's **`Referer` is the proxy's own `/ui` pages**, which covers a virtual key pasted into the Playground.
+2. **Everything else passes.** Open WebUI calls LiteLLM server-side with its own key and no `Referer`; API clients send neither signal. The admin UI's MCP tool tests, search tool tests and vector store searches are not model calls and are left alone.
+3. **The Chat page is removed by LiteLLM itself**: `general_settings.enable_chat_ui: false` in `litellm/config.yaml`. A value there overrides the toggle under Admin Settings > UI Settings.
+
+Set `litellm_ui_chat_enabled: true` in `ansible/group_vars/all/vars.yml` and rerun the playbook to bring both pages back.
+
+### Verification
+
+```bash
+# 1. The hook is loaded
+docker compose logs litellm | grep "startup hook"
+# ... Worker startup hook 'ui_chat_block_callback:register_callback' executed successfully
+
+# 2. The Chat page is off, from config.yaml
+curl -sk https://litellm.<domain>/get/ui_settings -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["values"]["enable_chat_ui"], d["source"]["enable_chat_ui"])'
+# False config
+
+# 3. A Playground-shaped request is refused, the same request from an API client answers
+curl -sk -o /dev/null -w '%{http_code}\n' https://litellm.<domain>/v1/chat/completions \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" \
+  -H "Referer: https://litellm.<domain>/ui/playground/" \
+  -d '{"model": "gemini-3.5-flash-lite", "messages": [{"role": "user", "content": "hi"}]}'
+# 403 (200 without the Referer header)
+```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Playground shows "Chat from the LiteLLM admin UI is turned off on this stack" | Working as configured | Chat in Open WebUI, or set `litellm_ui_chat_enabled: true` |
+| The Chat toggle in Admin Settings > UI Settings does not stick | `general_settings.enable_chat_ui` in `config.yaml` overrides the saved value | Change `litellm_ui_chat_enabled` and rerun the playbook |
+| A browser-based client gets 403 from LiteLLM | It is served under a `/ui/` path on the proxy's own host name, so its `Referer` matches | Serve it from another host name, or call LiteLLM from its backend |
+| The Playground still answers | Hook not loaded | Check the volume mount and `LITELLM_WORKER_STARTUP_HOOKS` in `docker-compose.yml` |
+
 ## Context Compaction
 
 Long chats never die at the context limit again. Every `/v1/chat/completions` request that would exceed the target model's context window is trimmed before it reaches the provider.
@@ -609,16 +709,17 @@ Long chats never die at the context limit again. Every `/v1/chat/completions` re
 
 1. **A startup hook loads the compactor.** `LITELLM_WORKER_STARTUP_HOOKS` includes `context_compaction_callback:register_callback`, which loads [litellm/context_compaction_callback.py](litellm/context_compaction_callback.py). Like the Brave MCP injector, it is a LiteLLM `CustomLogger` whose `async_pre_call_hook` runs on every `completion`/`acompletion` call — streaming included, because trimming never emits tool deltas.
 2. **The hook resolves the model's input window** from the live proxy router (`proxy_server.llm_router.get_model_list()` → `model_info.max_input_tokens`, the same field the `vllm_compute` role registers), then LiteLLM's known-model cost map, then a per-model env override (`CONTEXT_COMPACTION_MODEL_<name>`). A model with no resolvable window is left untouched — the provider's own 400 is clearer than a guessed trim.
-3. **Oversized histories are trimmed, not summarized.** When the estimated prompt exceeds `window - output_allowance`, the hook keeps every system/developer message, protects up to `CONTEXT_COMPACTION_KEEP_LAST_N` (default 6) newest messages, and drops oldest turns until the rest fits. The retained window is aligned to start at a `user` turn, so assistant tool calls and their tool results are never split apart. A short `[Earlier conversation was compacted...]` note replaces what was dropped, so the model knows older context is missing instead of silently hallucinating around the gap.
+3. **Oversized histories are trimmed, not summarized.** When the estimated prompt exceeds `window - output_allowance`, the hook keeps every system/developer message, protects up to `CONTEXT_COMPACTION_KEEP_LAST_N` (default 6) newest messages, and drops oldest turns until the rest fits. The retained window is aligned to start at a `user` turn, so assistant tool calls and their tool results are never split apart. A short `[Earlier conversation was compacted...]` note replaces what was dropped, so the model knows older context is missing instead of silently hallucinating around the gap. The note is an `assistant` turn, except for Claude models, where it is a `user` turn: the Anthropic API rejects a conversation that opens with an assistant turn, and LiteLLM merges the note with the user turn that follows it.
 4. **The proxy's response is untouched.** Clients (Open WebUI, automations, curl) keep their full local history; only the provider request is trimmed. The trim re-estimates with a 5% safety margin over a 4-chars-per-token floor, so providers do not see borderline prompts.
 
-Turn it off per request with `metadata: {"context_compaction": false}`. Models whose windows are known to the router or the cost map (all registered Gemini/Bedrock/vLLM models here) are handled automatically; register edge-node models with `max_input_tokens` in their LiteLLM entry or set `CONTEXT_COMPACTION_MODEL_<name>`.
+Turn it off per request with `metadata: {"context_compaction": false}`. Models whose windows are known to the router or the cost map (all registered Gemini/Claude/Bedrock/vLLM models here) are handled automatically; register edge-node models with `max_input_tokens` in their LiteLLM entry or set `CONTEXT_COMPACTION_MODEL_<name>`.
 
 ### Verification
 
 ```bash
-# 1. Both startup hooks loaded
+# 1. The startup hooks loaded
 docker compose logs litellm | grep "startup hook"
+# ... Worker startup hook 'ui_chat_block_callback:register_callback' executed successfully
 # ... Worker startup hook 'brave_mcp_callback:register_callback' executed successfully
 # ... Worker startup hook 'context_compaction_callback:register_callback' executed successfully
 
@@ -806,8 +907,8 @@ characters. Only `SKILL.md` is published to the proxy store and Open
 WebUI, so a skill must be self-contained: files beside it (`references/`,
 `scripts/`) reach opencode only.
 
-1. **LiteLLM proxy skill store** (`tasks/mcp/skills_gateway.yml`): the
-   zip is uploaded to `POST /v1/skills` with `custom_llm_provider=
+1. **LiteLLM proxy skill store** (`tasks/mcp/skills_gateway.yml`, logic
+   in `container-scripts/litellm_skills_sync.py`): the zip is uploaded to `POST /v1/skills` with `custom_llm_provider=
    litellm_proxy`, persisted in the proxy's Postgres. The
    `/.well-known/agent-skills/index.json` discovery index lists every
    stored skill with its archive sha256 (`litellm_settings.
@@ -819,8 +920,9 @@ WebUI, so a skill must be self-contained: files beside it (`references/`,
    (`POST`/`PUT /claude-code/plugins/<name>`), its archive source pointing
    at the proxy's own `https://litellm.<domain>/v1/skills/<id>/archive` —
    nothing leaves the network. Sources must be https, hence the public URL.
-3. **Open WebUI workspace** (`tasks/openwebui_skills.yml`): the playbook
-   pushes each SKILL.md through Open WebUI's Skills API
+3. **Open WebUI workspace** (`tasks/openwebui_skills.yml`, logic in
+   `container-scripts/openwebui_skills_sync.py`): the playbook pushes
+   each SKILL.md through Open WebUI's Skills API
    (`/api/v1/skills/create` + `/id/<name>/update` with
    `expected_version_id`) using a dedicated `skill-publisher` admin API
    key (`openwebui_api_admin_key` in the vault). Skills then appear in
@@ -872,6 +974,22 @@ it per chat from the + Integrations menu.
 The compose template mounts `./skills` read-only into both `litellm`
 (`/app/skills`, zip source for the store upload) and `open-webui`
 (`/app/skills`, source for the workspace push).
+
+Both publishers are Python scripts in `container-scripts/`, mounted
+read-only at `/opt/stack-scripts` in the same two containers and run by
+the playbook with the container's own Python
+(`tasks/container_script.yml`). `ansible-playbook --check --tags skills`
+runs them with `--check`: they read the live stores, write nothing, and
+list what a real run would change. Preview by hand on the stack host:
+
+```bash
+docker compose exec litellm python3 /opt/stack-scripts/litellm_skills_sync.py \
+  --archive-base-url https://litellm.<domain> --check
+```
+
+`pytest` validates every `skills/*/SKILL.md` against the frontmatter
+rules, locally and in CI (`.github/workflows/python.yml`), so a bad skill
+fails before a deploy.
 
 ## 3D Print Pipeline (Blender / FreeCAD / printer MCP)
 
@@ -1113,6 +1231,35 @@ vllm_aux_models:
 Each entry deploys one standalone `vllm serve` with its own `vllm-aux-<name>` systemd unit and host port (default base 8010) on the selected nodes only. Per-entry keys are the flux keys plus `hosts` (list, comma string, or `all`), `api_key`, `reasoning_parser`, and `chat_template_kwargs`; removing an entry or a host cleans up automatically. Each (node, entry) placement renders a `model_list` entry into `litellm/vllm-models.yaml` — a model placed on several nodes appears under the same `model_name` and LiteLLM load balances the replicas. Details: [docs/vllm-inference.md](docs/vllm-inference.md).
 
 Ray traffic is unauthenticated and can execute arbitrary code; keep `vllm_firewall_zone_source` limited to the compute segment and set `VLLM_API_KEY` on the controller so the API requires auth. The zone's source binding routes all traffic from that subnet into the zone, so the role also admits the `ssh` service there — without it, management hosts in the subnet lose SSH to the node when the zone reloads.
+
+#### Rootless containers and tini
+
+On podman nodes the role runs every container (model servers, Ray, launcher, exporters, log shipper) as an unprivileged service account, `vllm`, instead of root: `vllm_container_rootless` is on wherever `vllm_container_cli` is `podman`. The units keep their names and stay under `systemctl`; they gain `User=vllm`, and the account gets lingering so its runtime directory exists without a login. Docker nodes are unchanged, because the docker daemon runs as root.
+
+Every container also starts under tini as PID 1 (`vllm_container_init`), which forwards the stop signal and reaps leftover processes. On podman the role installs `tini-static` for it, since podman's built-in init is catatonit.
+
+The first run on a node that was deployed rootful moves it in place: it stops the root units, hands the Hugging Face cache to the account, and pulls the images again into the account's own store (25 GB for a vLLM image, during which the model is down). Details and troubleshooting: [docs/vllm-inference.md](docs/vllm-inference.md#rootless-containers-and-tini).
+
+#### LLM Launcher portals (web control panel per inference server)
+
+For downloading models and tuning `vllm serve` from a browser instead of group_vars, the role can run [Local-LLM-Launcher-GUI](https://github.com/jimdawdy-hub/Local-LLM-Launcher-GUI) (MIT, pinned to v0.6.1) next to each independent inference server: one on every node in standalone mode, one on the Ray head in ray mode. It rates every launch setting green/yellow/red against the node's GPU, starts and stops servers, and shows their logs. Off by default.
+
+Each launcher listens on its node's loopback only. An oauth2-proxy gate on the node signs users in against Keycloak on the stack host and admits the `launcher_admin` client role (`platform-admins` and `admin` groups); Traefik publishes it as `https://launcher-<inventory hostname>.<domain>`. The page gets the same signed-in chip and **Log out** link as the voice portal, with single logout through Keycloak.
+
+```yaml
+# 1. ansible/group_vars/all/vars.yml, then: ansible-playbook playbooks/site.yml
+launcher_enabled: true
+
+# 2. the node's vllm_compute group_vars, then: ansible-playbook playbooks/inference.yml
+vllm_launcher_enabled: true
+vllm_launcher_owns_primary: true   # optional: stop vllm-serve so the GUI has the GPU
+```
+
+`site.yml` goes first: it creates the `launcher` Keycloak client, the Traefik routes, and the client secret the node play reads from `.env`. Each `launcher-<node>` name needs a DNS record. When the nodes are deployed from another inventory or the stack inventory holds placeholder addresses, set `launcher_nodes` and `launcher_node_addresses` in `inventory/hosts.local.yml`.
+
+The launcher is a control panel, not a chat client: its "Test chat" box and its "Open WebUI" panel are switched off (`vllm_launcher_chat_enabled: false`), so a launched model is tried from Open WebUI.
+
+Models started from the GUI are child processes of the launcher container: nothing relaunches them after a reboot or a launcher restart, and a model under a new name is not registered with LiteLLM automatically. To keep serving through LiteLLM unchanged, launch on port 8000 with the served model name LiteLLM already knows. Setup, limits, verification and troubleshooting: [docs/vllm-inference.md](docs/vllm-inference.md#llm-launcher-web-control-panel-per-inference-server).
 
 #### Remote node monitoring
 

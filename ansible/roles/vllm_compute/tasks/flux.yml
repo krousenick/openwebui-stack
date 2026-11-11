@@ -103,7 +103,9 @@
         src: vllm-flux.sh.j2
         dest: "{{ vllm_install_dir }}/{{ flux_item.name }}/vllm-flux.sh"
         owner: root
-        group: root
+        # The group the unit runs as: a rootless service account can run
+        # the script, not rewrite it.
+        group: "{{ vllm_run_group }}"
         mode: "0750"
       loop: "{{ vllm_flux_effective_models }}"
       loop_control:

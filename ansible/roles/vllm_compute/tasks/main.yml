@@ -11,7 +11,9 @@
 #   5. Deploy the primary model services (services.yml).
 #   6. Deploy flux image-generation servers (flux.yml), independent of the
 #      primary topology.
-#   7. Render the LiteLLM snippet last so it sees every deployed model.
+#   7. Deploy the LLM Launcher GUI and its OAuth gate (launcher.yml) on the
+#      nodes launcher_placement.yml picked.
+#   8. Render the LiteLLM snippet last so it sees every deployed model.
 # ===========================================================================
 - name: Validate vLLM configuration
   ansible.builtin.assert:
@@ -84,7 +86,8 @@
 
 - name: Set this node's Ray role
   ansible.builtin.set_fact:
-    vllm_ray_role: "{{ 'head' if (vllm_ray_head_host | default('') == inventory_hostname) else 'worker' }}"
+    # vllm_ray_head_host is a list; the assert above guarantees one entry.
+    vllm_ray_role: "{{ 'head' if (vllm_ray_head_host[0] == inventory_hostname) else 'worker' }}"
   when: vllm_deployment_mode == 'ray'
 
 - name: Resolve host IP for VLLM_HOST_IP
@@ -131,6 +134,22 @@
   run_once: true
   delegate_to: localhost
 
+- name: Resolve LLM Launcher placement
+  # Before services.yml: a node whose primary model slot the launcher owns
+  # keeps vllm-serve stopped, so the fact must exist when the unit is
+  # deployed. Sets vllm_launcher_node / vllm_launcher_primary_owned (both
+  # false while vllm_launcher_enabled is false).
+  ansible.builtin.import_tasks:
+    file: launcher_placement.yml
+
+- name: Prepare the container runtime (init process, rootless account)
+  # Before every task file that deploys a unit or calls the container CLI:
+  # sets who the containers run as (vllm_run_user, vllm_container_argv) and
+  # the --init flags, and on a podman node creates the unprivileged service
+  # account the containers run under.
+  ansible.builtin.import_tasks:
+    file: container_runtime.yml
+
 - name: Resolve the GPU exporter flavor before the firewall tasks
   # The firewall opens the GPU exporter port, so the flavor (dcgm for
   # datacenter GPUs, nvidia-smi for GeForce) and vllm_gpu_exporter must be
@@ -163,6 +182,14 @@
   # as flux. Also runs before the LiteLLM render.
   ansible.builtin.import_tasks:
     file: auxiliary.yml
+
+- name: Deploy the LLM Launcher
+  # Web control panel per independent inference server, behind an
+  # oauth2-proxy gate that signs in against Keycloak on the stack host.
+  # Unconditional import like flux/aux: the cleanup block inside removes
+  # the units from nodes that no longer run a launcher.
+  ansible.builtin.import_tasks:
+    file: launcher.yml
 
 - name: Render LiteLLM registration snippet
   ansible.builtin.import_tasks:

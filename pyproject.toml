@@ -1,0 +1,41 @@
+# Tooling configuration only; this repository is not a Python package.
+#
+#   pip install ruff pytest
+#   ruff check && ruff format --check && pytest
+
+[tool.ruff]
+line-length = 120
+# The oldest Python the scripts meet: the open-webui image ships 3.12, the
+# litellm image 3.13.
+target-version = "py312"
+# Linted and formatted: the scripts the playbook runs and their tests. The
+# older Python in the repo (Open WebUI functions, LiteLLM callbacks, the
+# eval and CI helpers) predates this config and is left as written.
+include = [
+    "container-scripts/**/*.py",
+    "tests/**/*.py",
+    "ansible/roles/vllm_compute/files/ray_nodes_ready.py",
+]
+# The scripts import each other as top-level modules (the container runs
+# them by path, which puts their directory first on sys.path); these roots
+# tell the import sorter which modules are the repo's own.
+src = ["container-scripts", "tests/container_scripts", "ansible/roles/vllm_compute/files"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # import order
+    "B",   # bugbear: likely bugs
+    "UP",  # idioms the target Python makes obsolete
+    "SIM", # simplifications
+    "C4",  # comprehensions
+    "RET", # return statements
+    "PTH", # pathlib over os.path
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["container-scripts", "tests/container_scripts", "ansible/roles/vllm_compute/files"]
+addopts = "--import-mode=importlib -q"

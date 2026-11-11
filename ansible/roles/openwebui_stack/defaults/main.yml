@@ -60,6 +60,7 @@ stack_secret_names:
   - grafana_oidc_client_secret
   - voice_oidc_client_secret
   - oauth2_proxy_cookie_secret
+  - launcher_oidc_client_secret
   - keycloak_provisioner_client_secret
   - traefik_dashboard_password
   - code_sandbox_token
@@ -91,6 +92,54 @@ keycloak_admin_ip_range: "0.0.0.0/0"
 keycloak_registration_enabled: false
 keycloak_verify_email: false
 keycloak_default_groups: []
+
+# LLM Launcher portals. The launcher GUI and its oauth2-proxy gate run on
+# the vLLM compute nodes (role vllm_compute, vllm_launcher_enabled); this
+# role provides the stack-host half: the `launcher` Keycloak client, one
+# Traefik route per portal (https://<prefix><node>.<domain> -> the node's
+# gate), and the /etc/hosts entries. When false the routes and hosts
+# entries are removed; the Keycloak client stays (like voice).
+launcher_enabled: false
+
+# Nodes that get a portal: every vllm_compute host of THIS inventory by
+# default. A node without a running gate (a ray worker, or the launcher
+# disabled on the nodes) only yields a route Traefik reports as unhealthy,
+# so the default needs no knowledge of the compute topology. The names must
+# be the inventory hostnames playbooks/inference.yml deploys under, because
+# each gate answers as <prefix><its inventory hostname>.<domain>. When the
+# compute nodes are deployed from a different inventory (tests/vllm-remote)
+# or this one carries placeholder addresses, list the names here and give
+# their addresses in launcher_node_addresses.
+launcher_nodes: "{{ groups['vllm_compute'] | default([]) | list }}"
+
+# Address Traefik reaches each node's gate on, keyed by the name in
+# launcher_nodes. A node not listed here uses its inventory ansible_host.
+#   launcher_node_addresses:
+#     vllm-node-01: 192.0.2.20
+launcher_node_addresses: {}
+
+# Must match vllm_launcher_hostname_prefix / vllm_launcher_auth_port in the
+# vllm_compute role: the node's gate answers under this name on this port.
+launcher_hostname_prefix: "launcher-"
+launcher_auth_port: 4180
+
+# Derived, not configured. Portal names follow the same rule as the
+# vllm_compute role: prefix + inventory hostname, lowercased, anything
+# outside [a-z0-9-] replaced with "-". launcher.<domain> stands in when no
+# compute host exists, so the Keycloak client always has a redirect URI.
+# The group references are '\1' with ONE backslash: these are {{ }}
+# templates in block scalars, where Ansible hands the backslash to the
+# filter as written ('\\1' would insert a literal "\1").
+launcher_node_labels: >-
+  {{ launcher_nodes | map('lower') | map('regex_replace', '[^a-z0-9-]', '-') | list }}
+launcher_fqdns: >-
+  {{ (launcher_node_labels
+      | map('regex_replace', '^(.*)$', launcher_hostname_prefix ~ '\1.' ~ domain) | list)
+     or ['launcher.' ~ domain] }}
+launcher_redirect_uris: >-
+  {{ launcher_fqdns | map('regex_replace', '^(.*)$', 'https://\1/oauth2/callback') | list }}
+launcher_post_logout_redirect_uris: >-
+  {{ launcher_fqdns | map('regex_replace', '^(.*)$', 'https://\1') | list }}
 
 # Playwright MCP cluster. When true, the playbook adds the Open WebUI tool
 # server connection for the playwright_cluster LiteLLM MCP server. The
@@ -292,3 +341,26 @@ openwebui_reasoning_models_exclude: []
 # Claude Code, and other Agent Skills clients). Unauthenticated by design;
 # set false to keep skills visible only to keys with store access.
 skills_public_index_enabled: true
+
+# Chat from the LiteLLM admin UI (its Playground and Chat pages). Off:
+# people talk to models through Open WebUI or an API client (opencode, an
+# IDE), and the admin UI stays for keys, models, usage and settings. Two
+# pieces, both off this one switch:
+#   - general_settings.enable_chat_ui in litellm/config.yaml removes the
+#     Chat page. LiteLLM has no switch for the Playground, so its menu
+#     entry stays.
+#   - litellm/ui_chat_block_callback.py (a startup hook) refuses model
+#     calls made with an admin UI session or from the proxy's own /ui
+#     pages, with a message that names Open WebUI. MCP tool tests, search
+#     tool tests and model health checks from the UI keep working.
+litellm_ui_chat_enabled: false
+
+# Where the compose template mounts ./container-scripts (read-only) in the
+# litellm and open-webui containers. tasks/container_script.yml runs the
+# scripts from this path with the container's own Python.
+container_scripts_mount: /opt/stack-scripts
+
+# Derived, not configured: the JSON report of the latest
+# tasks/container_script.yml run, parsed. Empty when that run was skipped
+# or failed. Read it right after the import; the next run replaces it.
+container_script_report: "{{ container_script_run.stdout | default('{}', true) | from_json }}"

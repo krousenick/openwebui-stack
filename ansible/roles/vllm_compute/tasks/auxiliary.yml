@@ -148,7 +148,9 @@
         src: vllm-aux.sh.j2
         dest: "{{ vllm_install_dir }}/{{ aux_item.name }}/vllm-aux.sh"
         owner: root
-        group: root
+        # The group the unit runs as: a rootless service account can run
+        # the script, not rewrite it.
+        group: "{{ vllm_run_group }}"
         mode: "0750"
       loop: "{{ vllm_aux_local_models | default([]) }}"
       loop_control:

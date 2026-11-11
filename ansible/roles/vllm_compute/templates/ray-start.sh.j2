@@ -18,6 +18,17 @@ exec {{ vllm_container_cli }} run \
   --rm \
   --name "$NAME" \
   --network host \
+{% if vllm_container_init_flags | length > 0 %}
+  {{ vllm_container_init_flags }} \
+{% endif %}
+{% if vllm_rootless | bool %}
+  --security-opt no-new-privileges \
+{# podman run relays the container output to the unit, which is what
+   `journalctl -u` and the log shipper read. podman's own journald logging
+   would file every line a second time under the same unit; passthrough
+   would file it under the account's scope instead of the unit. #}
+  --log-driver none \
+{% endif %}
 {% if vllm_container_cli == 'docker' %}
   --shm-size {{ vllm_shm_size }} \
 {% endif %}

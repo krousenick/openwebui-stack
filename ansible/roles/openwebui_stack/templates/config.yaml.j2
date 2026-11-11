@@ -18,6 +18,13 @@ general_settings:
   # Background health checks
   background_health_checks: true # Disables periodic background pings
 
+  # The admin UI's Chat page (litellm_ui_chat_enabled). Off: chat goes
+  # through Open WebUI or an API client. A value here overrides the one
+  # saved from Admin Settings > UI Settings, so the toggle there has no
+  # effect while this line exists. The Playground has no such switch;
+  # ui_chat_block_callback.py refuses the model calls of both pages.
+  enable_chat_ui: {{ litellm_ui_chat_enabled | default(false) | bool | lower }}
+
   # Open WebUI sends the logged-in user when ENABLE_FORWARD_USER_INFO_HEADERS=true.
   # The username matches the LiteLLM user_id created by SSO, so Usage attributes spend to that user.
   user_header_mappings:
@@ -106,8 +113,27 @@ litellm_settings:
   # Number of retries
   num_retries: 3
 
-  # Drop unsupported parameters for providers
+  # Drop unsupported parameters for providers. Claude tool calls depend on
+  # this: claude-opus-5-5, claude-sonnet-5-5, and claude-fable-5-2 answer a
+  # forced tool_choice ("required" or a named function) with a 400. With
+  # drop_params on, LiteLLM downgrades it to "auto" for the models its map
+  # flags supports_forced_tool_use: false; with it off, LiteLLM returns its
+  # own 400 for them. claude-haiku-5-5 still accepts a forced tool_choice.
   drop_params: true
+
+  # Repair tool-call histories instead of failing the request. Claude needs
+  # every assistant tool call answered by exactly one tool result in the
+  # next turn and rejects a tool result that has no matching call. Open
+  # WebUI can send such a history: generation stopped during a tool call, a
+  # tool response that failed or was written twice, turns removed by
+  # context compaction. With modify_params on, LiteLLM adds a placeholder
+  # result for an unanswered call and drops an orphaned or duplicate result
+  # before the request reaches Anthropic. This repair runs only in
+  # LiteLLM's Anthropic message conversion, so requests to other providers
+  # are not rewritten by it. modify_params is a global LiteLLM flag: any
+  # other provider adapter that checks it makes its own repairs too.
+  # https://docs.litellm.ai/docs/completion/message_sanitization
+  modify_params: true
 
   # Fallback models configuration
   fallbacks: []
@@ -326,6 +352,12 @@ model_list:
   # (temperature/top_p/top_k return a 400), and Open WebUI sends them
   # whenever a user or Workspace model sets one. Thinking is adaptive by
   # default and needs no parameter.
+  # Tool calls need nothing per model: they use the same three paths as
+  # every other model (the Brave injector for non-streaming requests, Open
+  # WebUI's MCP tool servers from models.default_metadata for streaming
+  # chats, and client-side tools on /v1/messages). The two Claude-specific
+  # rules are handled in litellm_settings above: forced tool_choice
+  # (drop_params) and tool call/result pairing (modify_params).
   - model_name: claude-opus-5-5
     litellm_params:
       model: anthropic/claude-opus-5-5

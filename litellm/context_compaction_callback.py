@@ -18,6 +18,14 @@ ENV_PREFIX = "CONTEXT_COMPACTION_MODEL_"
 # Minimum size for a compaction note describing what was dropped.
 NOTE_PREFIX = "[Earlier conversation was compacted to fit the model's context window. "
 NOTE_SUFFIX = "]"
+# Claude models need the conversation to open with a user turn: the
+# Anthropic Messages API answers 400 ("first message must use the user
+# role") when it opens with an assistant turn, and LiteLLM does not repair
+# that. For these models the compaction note is sent as a user turn, which
+# LiteLLM merges with the user turn that follows it. Matched against the
+# deployment's litellm_params.model, so it covers Claude on the Anthropic
+# API, Bedrock, and Vertex AI. Every other provider keeps the assistant note.
+USER_FIRST_MODEL_MARKERS = ("anthropic", "claude")
 
 
 def _env_key(model_name: str) -> str:
@@ -63,6 +71,30 @@ def _window_for(model_name: str) -> Optional[int]:
         except ValueError:
             return None
     return None
+
+
+def _provider_model_for(model_name: str) -> str:
+    """Return the deployment's provider model id, e.g. anthropic/claude-opus-5-5."""
+    try:
+        from litellm.proxy import proxy_server
+
+        router = getattr(proxy_server, "llm_router", None)
+        if router is not None:
+            for deployment in router.get_model_list() or []:
+                if str(deployment.get("model_name", "")) == model_name:
+                    params = deployment.get("litellm_params") or {}
+                    return str(params.get("model") or model_name)
+    except Exception:
+        pass
+    return model_name
+
+
+def _note_role_for(model_name: str) -> str:
+    """Role of the compaction note: user where the provider needs a user-first history."""
+    provider_model = _provider_model_for(model_name).lower()
+    if any(marker in provider_model for marker in USER_FIRST_MODEL_MARKERS):
+        return "user"
+    return "assistant"
 
 
 def _message_text(message: dict) -> str:
@@ -167,7 +199,7 @@ class ContextCompaction(CustomLogger):
         if dropped == 0:
             return data
         note = {
-            "role": "assistant",
+            "role": _note_role_for(str(data.get("model", ""))),
             "content": (
                 f"{NOTE_PREFIX}{dropped} older message(s) were removed; "
                 f"rely on the conversation below and ask the user if you need details."

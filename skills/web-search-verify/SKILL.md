@@ -42,6 +42,8 @@ curl -sk https://litellm.localhost/v1/chat/completions \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"model": "gemini-3.5-flash-lite",
        "messages": [{"role": "user", "content": "Search the web for today top tech news"}]}'
+# Any served chat model works. On an Anthropic-only stack use
+# "claude-haiku-5-5"; web search does not need a Gemini key.
 ```
 
 Streaming chats are verified from the Open WebUI UI: send a streaming
@@ -59,11 +61,16 @@ model's `meta.toolIds`).
 | "Tool not found" tool responses in history | Injection ran on a streaming request | Never inject on stream: LiteLLM forwards tool-call deltas the client cannot resolve; the next Gemini turn then fails with "Missing corresponding tool call for tool response" |
 | Streaming chat has no search | Model entry missing `meta.toolIds` | Rerun playbook (`tool_defaults.yml` wires `server:mcp:brave_search` as a global default); recreate open-webui |
 | 401/403 from brave-search-mcp | Bad API key | Rotate the key in vault.local.yml, rerun |
+| Non-streaming answer is empty with `tool_calls` named `brave_search-...` | The model asked for a second search and the injector's further rounds did not run | `docker compose logs litellm \| grep "Brave MCP"`: "tool round N of M" means they run; "could not run a further tool round" plus a traceback means a LiteLLM internal used by `brave_mcp_callback.py` changed. `BRAVE_SEARCH_MAX_EXTRA_ROUNDS=0` also turns them off |
+| Claude 400: "`tool_use` ids were found without `tool_result` blocks" or "unexpected `tool_use_id`" | History has a tool call with no result (or a result with no call) and LiteLLM did not repair it | `litellm_settings.modify_params` must be `true` in `litellm/config.yaml`; rerun playbook |
+| Claude 400 on `tool_choice` (Opus, Sonnet, Fable) | Client forced a tool call and LiteLLM did not downgrade it to `auto` | `litellm_settings.drop_params` must be `true`; rerun playbook |
 
 ## Non-negotiables
 
 1. The injector skips `stream: true` — this is required behavior, not a
-   bug to fix.
+   bug to fix. Non-streaming requests get up to 1 + 3 search rounds: the
+   LiteLLM gateway runs the first, the injector's agentic-loop hooks the
+   rest, and the last one must answer in text.
 2. Built-in web search is off (`web.search.enable` false in Open WebUI);
    the MCP path is the default search path.
 3. After any config change: `docker compose up -d litellm` and re-run

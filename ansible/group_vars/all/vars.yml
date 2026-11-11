@@ -97,6 +97,29 @@ manage_hosts_file: true
 # publicly trusted certificate.
 oauth2_proxy_ssl_insecure_skip_verify: true
 
+# LLM Launcher portals: a web control panel per vLLM inference server
+# (download models, tune and start `vllm serve`), each behind its own
+# oauth2-proxy gate. The GUI and the gate run on the compute nodes
+# (vllm_launcher_enabled in the vllm_compute group_vars, deployed by
+# playbooks/inference.yml). This flag is the stack-host half: Traefik
+# routes https://launcher-<node>.<domain>, the /etc/hosts entries, and
+# LAUNCHER_OIDC_CLIENT_SECRET in .env for the nodes to read. Off until the
+# portals are wanted: set true, run site.yml, then enable the nodes and run
+# inference.yml (the gates need the Keycloak client and secret first).
+#
+# Portals default to every vllm_compute host of this inventory at its
+# ansible_host. When the nodes are deployed from another inventory
+# (tests/vllm-remote) or this one holds placeholder addresses, name the
+# real ones. Addresses are site-specific, so set these two as inventory
+# vars in inventory/hosts.local.yml (gitignored), not here:
+#   launcher_nodes: [vllm-node-01]
+#   launcher_node_addresses:
+#     vllm-node-01: 192.0.2.20
+# Each launcher-<node> name needs a DNS record like the other service
+# names; a *.<domain> certificate already covers it. The gates reuse
+# oauth2_proxy_ssl_insecure_skip_verify above.
+launcher_enabled: false
+
 docker_compose_pull: true
 
 # ---------------------------------------------------------------------------
@@ -107,6 +130,12 @@ docker_compose_pull: true
 # is present, the playbook wires the gateway search path, Open WebUI
 # search, and the Brave MCP connection.
 brave_search_enabled: true
+
+# Chat from the LiteLLM admin UI (Playground and Chat pages). false: models
+# are only reachable for chat through Open WebUI or an API client such as
+# opencode; the admin UI refuses to send prompts. See
+# roles/openwebui_stack/defaults/main.yml.
+litellm_ui_chat_enabled: false
 
 # Isolated Jupyter code sandbox for model-authored Python (numpy-stl,
 # trimesh, matplotlib). Token in vault.yml (code_sandbox_token). Set false
@@ -204,6 +233,16 @@ opencode_users: []
 # Applications
 # ---------------------------------------------------------------------------
 
+# Single logout (SLO): every app's Log out sends the browser to the Keycloak
+# end_session_endpoint, which ends the realm SSO session and returns to the
+# app. Keycloak only honours a post_logout_redirect_uri that the client
+# lists, and the match is exact, so each post_logout_redirect_uris entry
+# below must equal the URL the app sends (set in docker-compose.yml.j2,
+# or in roles/chatterbox/tasks/ui_auth.yml for voice).
+# backchannel_logout_url (optional) is where Keycloak POSTs a logout token
+# when the SSO session ends from any other app; it is called from the
+# keycloak container, so it is an internal compose-network URL.
+
 keycloak_apps:
 
   - client_id: grafana
@@ -212,6 +251,9 @@ keycloak_apps:
     base_url: "https://grafana.{{ domain }}"
     redirect_uris:
       - "https://grafana.{{ domain }}/login/generic_oauth"
+    # GF_AUTH_GENERIC_OAUTH_SIGNOUT_REDIRECT_URL
+    post_logout_redirect_uris:
+      - "https://grafana.{{ domain }}/login"
     roles:
       - grafanaadmin
       - admin
@@ -224,6 +266,12 @@ keycloak_apps:
     base_url: "https://chatbot.{{ domain }}"
     redirect_uris:
       - "https://chatbot.{{ domain }}/oauth/oidc/callback"
+    # WEBUI_AUTH_SIGNOUT_REDIRECT_URL
+    post_logout_redirect_uris:
+      - "https://chatbot.{{ domain }}/auth"
+    # Open WebUI is the one app here that accepts OIDC back-channel logout
+    # (ENABLE_OAUTH_BACKCHANNEL_LOGOUT). 8080 is its container port.
+    backchannel_logout_url: "http://open-webui:8080/oauth/backchannel-logout"
     roles:
       - openwebui_admin
       - openwebui_user
@@ -236,12 +284,27 @@ keycloak_apps:
     redirect_uris:
       - "https://voice.{{ domain }}/oauth2/callback"
     # oauth2-proxy sign_out redirects to the Keycloak end_session_endpoint
-    # with post_logout_redirect_uri back to voice.<domain>; the client must
-    # allow that URI or Keycloak rejects the logout redirect.
+    # with post_logout_redirect_uri back to voice.<domain>.
     post_logout_redirect_uris:
       - "https://voice.{{ domain }}"
     roles:
       - voice_user
+
+  # One client for every LLM Launcher portal. The oauth2-proxy gate on each
+  # compute node signs in with it, so it lists one redirect URI and one
+  # post-logout URI per launcher-<node>.<domain> (derived from the
+  # vllm_compute inventory group in the role defaults). The gates admit
+  # only launcher_admin (OAUTH2_PROXY_ALLOWED_ROLES=launcher:launcher_admin):
+  # the launcher starts processes, downloads models and can hold a Hugging
+  # Face token, so self-registered users must not reach it.
+  - client_id: launcher
+    client_secret: "{{ launcher_oidc_client_secret }}"
+    name: LLM Launcher
+    base_url: "https://{{ launcher_fqdns | first }}"
+    redirect_uris: "{{ launcher_redirect_uris }}"
+    post_logout_redirect_uris: "{{ launcher_post_logout_redirect_uris }}"
+    roles:
+      - launcher_admin
 
   - client_id: litellm
     client_secret: "{{ litellm_oidc_client_secret }}"
@@ -249,6 +312,9 @@ keycloak_apps:
     base_url: "https://litellm.{{ domain }}"
     redirect_uris:
       - "https://litellm.{{ domain }}/sso/callback"
+    # PROXY_LOGOUT_URL
+    post_logout_redirect_uris:
+      - "https://litellm.{{ domain }}/ui"
     # LiteLLM generic SSO does not send a PKCE verifier unless
     # GENERIC_CLIENT_USE_PKCE is true. Keycloak rejects the code exchange
     # when this client requires S256 and LiteLLM does not.
@@ -292,6 +358,12 @@ keycloak_group_role_mappings:
   - group: platform-admins
     client_id: litellm
     role: proxy_admin
+  - group: platform-admins
+    client_id: launcher
+    role: launcher_admin
+  - group: admin
+    client_id: launcher
+    role: launcher_admin
   - group: admin
     client_id: grafana
     role: admin

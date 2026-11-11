@@ -1,0 +1,73 @@
+name: Python Script Quality Check
+
+# The provisioning scripts the playbook runs inside the containers
+# (container-scripts/) and their tests. The suite also validates every
+# skills/*/SKILL.md, so a bad frontmatter fails here instead of mid-deploy.
+on:
+    push:
+        paths:
+            - "container-scripts/**"
+            - "tests/**"
+            - "skills/**"
+            - "ansible/roles/vllm_compute/files/*.py"
+            - "pyproject.toml"
+            - ".github/workflows/python.yml"
+    pull_request:
+        paths:
+            - "container-scripts/**"
+            - "tests/**"
+            - "skills/**"
+            - "ansible/roles/vllm_compute/files/*.py"
+            - "pyproject.toml"
+            - ".github/workflows/python.yml"
+
+permissions:
+    contents: read
+
+jobs:
+    lint:
+        name: Lint and format
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v6
+
+            - name: Set up Python
+              uses: actions/setup-python@v6
+              with:
+                  python-version: "3.13"
+
+            # Pinned: a newer formatter can restyle code that has not changed.
+            - name: Install ruff
+              run: pip install ruff==0.17.4
+
+            - name: Lint
+              run: ruff check
+
+            - name: Check formatting
+              run: ruff format --check
+
+    test:
+        name: Tests (Python ${{ matrix.python-version }})
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                # What the containers ship: open-webui 3.12, litellm 3.13.
+                python-version: ["3.12", "3.13"]
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v6
+
+            - name: Set up Python
+              uses: actions/setup-python@v6
+              with:
+                  python-version: ${{ matrix.python-version }}
+
+            - name: Install pytest
+              run: pip install "pytest>=8"
+
+            - name: Run the tests
+              run: pytest

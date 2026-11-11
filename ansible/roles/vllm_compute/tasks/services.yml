@@ -13,8 +13,12 @@
   # Only meaningful for podman nodes: the rootful graphroot defaults to
   # /var/lib/containers/storage, which is often on a small root filesystem.
   # vllm_podman_storage_root moves image + container storage onto the node's
-  # large data volume. Skipped for docker and when the value already matches.
-  when: vllm_container_cli == 'podman'
+  # large data volume. Skipped for docker, when the value already matches,
+  # and for rootless podman (the service account has its own store, see
+  # vllm_rootless_storage_root in container_runtime.yml).
+  when:
+    - vllm_container_cli == 'podman'
+    - not (vllm_rootless | bool)
   block:
     - name: Read the current rootful graphroot
       ansible.builtin.slurp:
@@ -38,7 +42,8 @@
 - name: Log into registry.redhat.io when pulling Red Hat images
   # Red Hat registry images (registry.redhat.io/...) need Customer Portal
   # credentials. The launch scripts run `{{ vllm_container_cli }} pull`, which
-  # uses the rootful podman/docker auth store this login writes. Credentials
+  # uses the auth store this login writes: root's, or the service account's
+  # when the containers run rootless (vllm_container_argv). Credentials
   # come from the controller environment (REGISTRY_REDHAT_IO_USER /
   # REGISTRY_REDHAT_IO_PASS); when they are absent the task is skipped and
   # an existing login on the node (or a public mirror) must serve the pull.
@@ -48,11 +53,7 @@
   block:
     - name: Check for an existing registry.redhat.io login
       ansible.builtin.command:
-        argv:
-          - "{{ vllm_container_cli }}"
-          - login
-          - --get-login
-          - registry.redhat.io
+        argv: "{{ vllm_container_argv + ['login', '--get-login', 'registry.redhat.io'] }}"
       register: vllm_registry_login_state
       changed_when: false
       failed_when: false
@@ -60,13 +61,10 @@
 
     - name: Log into registry.redhat.io
       ansible.builtin.command:
-        argv:
-          - "{{ vllm_container_cli }}"
-          - login
-          - --username
-          - "{{ lookup('ansible.builtin.env', 'REGISTRY_REDHAT_IO_USER') }}"
-          - --password-stdin
-          - registry.redhat.io
+        argv: >-
+          {{ vllm_container_argv
+             + ['login', '--username', lookup('ansible.builtin.env', 'REGISTRY_REDHAT_IO_USER'),
+                '--password-stdin', 'registry.redhat.io'] }}
       args:
         stdin: "{{ lookup('ansible.builtin.env', 'REGISTRY_REDHAT_IO_PASS') }}"
       register: vllm_registry_login
@@ -83,19 +81,43 @@
     mode: "0755"
 
 - name: Create the Hugging Face cache directory
+  # Owned by whoever the containers run as: root inside a rootless
+  # container is the service account on the host, and it writes here.
   ansible.builtin.file:
     path: "{{ vllm_hf_cache_dir }}"
     state: directory
-    owner: root
-    group: root
+    owner: "{{ vllm_run_user }}"
+    group: "{{ vllm_run_group }}"
     mode: "0755"
 
+- name: Hand an existing Hugging Face cache to the service account
+  # Weights downloaded while the containers ran as root are root's; a
+  # rootless container could read but not update them (and not write the
+  # lock files a load needs). One chown when anything in the tree belongs to
+  # someone else; a tree that is already the account's is only searched.
+  ansible.builtin.shell: |
+    set -eu
+    dir={{ vllm_hf_cache_dir | quote }}
+    owner={{ (vllm_run_user ~ ':' ~ vllm_run_group) | quote }}
+    if [ -n "$(find "$dir" -xdev \( ! -user {{ vllm_run_user | quote }} -o ! -group {{ vllm_run_group | quote }} \) -print -quit)" ]; then
+        chown -R "$owner" "$dir"
+        echo changed
+    fi
+  args:
+    executable: /bin/bash
+  register: vllm_hf_cache_owner
+  changed_when: "'changed' in vllm_hf_cache_owner.stdout"
+  when: vllm_rootless | bool
+
+# The launch scripts hold the API key and the Hugging Face token: root
+# owns them and only the group the units run as may read and execute them,
+# so a rootless service account can run its scripts but not rewrite them.
 - name: Deploy the Ray start script
   ansible.builtin.template:
     src: ray-start.sh.j2
     dest: "{{ vllm_install_dir }}/ray-start.sh"
     owner: root
-    group: root
+    group: "{{ vllm_run_group }}"
     mode: "0750"
   when: vllm_deployment_mode == 'ray'
   notify: Restart vllm-ray
@@ -107,7 +129,7 @@
     src: vllm-serve.sh.j2
     dest: "{{ vllm_install_dir }}/vllm-serve.sh"
     owner: root
-    group: root
+    group: "{{ vllm_run_group }}"
     mode: "0750"
   when: vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'
   notify: Restart vllm-serve
@@ -154,41 +176,44 @@
     - vllm_deployment_mode == 'ray'
     - vllm_ray_role == 'head'
   block:
-    - name: Wait for all Ray nodes to register (docker)
-      # Counts Alive nodes inside the head container until it matches the
-      # vllm_compute inventory size. 30 x 10s covers slow worker starts.
-      community.docker.docker_container_exec:
-        container: "{{ vllm_container_name }}-ray"
-        argv:
-          - python
-          - -c
-          - import ray; ray.init(address="auto"); exit(0 if len([n for n in ray.nodes() if n["Alive"]]) >= {{ groups['vllm_compute'] | length }} else 1)
+    - name: Wait for all Ray nodes to register
+      # files/ray_nodes_ready.py counts Alive nodes inside the head
+      # container until it matches the vllm_compute inventory size. It is
+      # piped to the container's Python, so one task serves docker and
+      # podman (their exec commands take the same arguments) and nothing
+      # is copied into the container. 30 x 10s covers slow worker starts.
+      ansible.builtin.command:
+        argv: >-
+          {{ vllm_container_argv
+             + ['exec', '-i', vllm_container_name ~ '-ray', 'python', '-',
+                '--expect', groups['vllm_compute'] | length | string] }}
+        stdin: "{{ lookup('ansible.builtin.file', 'ray_nodes_ready.py') }}"
       register: vllm_ray_status
       until: vllm_ray_status.rc == 0
       retries: 30
       delay: 10
       changed_when: false
       failed_when: false
-      when: vllm_container_cli == 'docker'
-
-    - name: Wait for all Ray nodes to register (podman)
-      containers.podman.podman_container_exec:
-        name: "{{ vllm_container_name }}-ray"
-        command:
-          - python
-          - -c
-          - import ray; ray.init(address="auto"); exit(0 if len([n for n in ray.nodes() if n["Alive"]]) >= {{ groups['vllm_compute'] | length }} else 1)
-      register: vllm_ray_status
-      until: vllm_ray_status.rc == 0
-      retries: 30
-      delay: 10
-      changed_when: false
-      failed_when: false
-      when: vllm_container_cli == 'podman'
 
     - name: Show Ray cluster status
       ansible.builtin.debug:
-        msg: "Ray cluster on {{ vllm_host_ip }} reports {{ groups['vllm_compute'] | length }} alive node(s) after {{ vllm_ray_status.attempts }} attempt(s)."
+        msg: >-
+          Ray cluster on {{ vllm_host_ip }}:
+          {{ vllm_ray_status.stdout_lines | default([]) | last | default('no report from the Ray head') }}
+          after {{ vllm_ray_status.attempts | default(1) }} attempt(s).
+
+- name: Hand the primary model slot to the LLM Launcher
+  # vllm_launcher_owns_primary: the script and unit above stay installed (so
+  # flipping the variable back restores the Ansible-managed server) but the
+  # unit is stopped and disabled, leaving the GPU and vllm_port to whatever
+  # is started from the launcher GUI. Nothing serves on vllm_port until
+  # someone launches a model there, and nothing restarts it after a reboot.
+  ansible.builtin.systemd:
+    name: "{{ vllm_vllm_service_name }}"
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  when: vllm_launcher_primary_owned | default(false) | bool
 
 - name: Enable and start the vLLM service
   ansible.builtin.systemd:
@@ -196,7 +221,9 @@
     state: started
     enabled: true
     daemon_reload: true
-  when: vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'
+  when:
+    - vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'
+    - not (vllm_launcher_primary_owned | default(false) | bool)
 
 - name: Wait for the vLLM API to accept requests
   # Model load can take minutes (weights + CUDA graphs); on a first run it
@@ -209,9 +236,13 @@
   retries: "{{ vllm_health_wait_retries }}"
   delay: 10
   changed_when: false
-  when: vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'
+  when:
+    - vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'
+    - not (vllm_launcher_primary_owned | default(false) | bool)
 
 - name: Confirm the vLLM API is healthy
   ansible.builtin.debug:
     msg: "vLLM API healthy on {{ vllm_host_ip }}:{{ vllm_port }} after {{ vllm_health.attempts }} attempt(s)."
-  when: vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'
+  when:
+    - vllm_deployment_mode == 'standalone' or vllm_ray_role == 'head'
+    - not (vllm_launcher_primary_owned | default(false) | bool)

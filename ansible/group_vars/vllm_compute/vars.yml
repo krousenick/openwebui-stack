@@ -60,6 +60,29 @@ vllm_hf_cache_dir: /home/huggingface
 vllm_api_key: local-vllm-key
 
 # ---------------------------------------------------------------------------
+# LLM Launcher: a web control panel per independent inference server
+# (download models, tune `vllm serve` with a green/yellow/red rating per
+# setting, start/stop servers, read logs). standalone: one launcher on every
+# node. ray: one on the vllm_ray_head node. Each sits behind an oauth2-proxy
+# gate that signs in against Keycloak on the stack host and admits the
+# launcher_admin role only; Traefik there publishes it as
+# https://launcher-<inventory hostname>.<domain>. Off until wanted: set
+# launcher_enabled: true in group_vars/all/vars.yml and run
+# playbooks/site.yml first (this play fails fast without the Keycloak
+# client secret that run renders), then set this true and run
+# playbooks/inference.yml. Every variable is documented in
+# roles/vllm_compute/defaults/main.yml.
+# ---------------------------------------------------------------------------
+vllm_launcher_enabled: false
+
+# Hand a node's primary model slot to the GUI: vllm-serve stays installed
+# but stopped, so the GPU and port 8000 are free for whatever is launched
+# from the portal. Nothing serves there until someone launches a model, and
+# nothing restarts it after a reboot. Leave false here and set it as a host
+# var on one node in the inventory to try the GUI while the others serve.
+vllm_launcher_owns_primary: false
+
+# ---------------------------------------------------------------------------
 # Flux image-generation servers. Independent of the topology above: each
 # entry runs one single-model server on every node, on its own port.
 # Edit this list to switch models or run several at once; removing an entry

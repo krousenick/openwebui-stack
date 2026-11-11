@@ -1,0 +1,346 @@
+---
+# ===========================================================================
+# Container runtime settings shared by every unit the role deploys.
+#
+#   init      Every container starts under an init process as PID 1
+#             (vllm_container_init): it forwards the stop signal to the
+#             server and reaps the processes a server leaves behind. docker's
+#             --init is tini. podman's own default is catatonit, so on podman
+#             the role installs tini (vllm_container_init_package) and passes
+#             it with --init-path.
+#
+#   rootless  On podman nodes the containers run as an unprivileged service
+#             account instead of root (vllm_container_rootless). The units
+#             stay system units (same names, same journal, same
+#             `systemctl status vllm-serve`); they get User=<account>, and
+#             the account gets lingering so its runtime directory and user
+#             manager exist without a login. Root inside a container is that
+#             account on the host.
+#
+# Facts for the rest of the role:
+#   vllm_rootless              rootless is in effect on this node
+#   vllm_run_user / _group     who the units and scripts run as (root when
+#   vllm_run_uid / _home       rootless is off)
+#   vllm_container_argv        argv prefix for a task that calls the container
+#                              CLI itself (image build, exec, login), so it
+#                              talks to the same image and container store
+#                              the units use
+#   vllm_container_init_flags  the --init flags of every `run`
+# ===========================================================================
+
+- name: Validate the container runtime settings
+  ansible.builtin.assert:
+    that:
+      - not (vllm_container_rootless | bool) or vllm_container_cli == 'podman'
+      - not (vllm_container_rootless | bool) or vllm_container_user | length > 0
+      - not (vllm_container_rootless | bool) or vllm_container_user != 'root'
+    fail_msg: >-
+      vllm_container_rootless needs vllm_container_cli: podman and an
+      unprivileged vllm_container_user. The docker daemon runs as root; set
+      vllm_container_rootless: false on a docker node.
+    quiet: true
+
+- name: Record whether the containers run rootless
+  ansible.builtin.set_fact:
+    vllm_rootless: "{{ vllm_container_rootless | bool and vllm_container_cli == 'podman' }}"
+
+# --- init process ------------------------------------------------------------
+- name: Install tini for the containers' init process
+  ansible.builtin.package:
+    name: "{{ vllm_container_init_package }}"
+    state: present
+  register: vllm_container_init_install
+  when:
+    - vllm_container_init | bool
+    - vllm_container_cli == 'podman'
+    - vllm_container_init_path | length > 0
+    - vllm_container_init_package | length > 0
+
+- name: Check the init binary
+  ansible.builtin.stat:
+    path: "{{ vllm_container_init_path }}"
+  register: vllm_container_init_stat
+  when:
+    - vllm_container_init | bool
+    - vllm_container_cli == 'podman'
+    - vllm_container_init_path | length > 0
+
+- name: Require the init binary
+  # podman bind-mounts this file into each container, so it must be a static
+  # binary: a dynamically linked tini only starts in images that carry its
+  # libraries.
+  ansible.builtin.assert:
+    that:
+      - vllm_container_init_stat.stat.exists
+      - vllm_container_init_stat.stat.executable
+    fail_msg: >-
+      vllm_container_init_path ({{ vllm_container_init_path }}) is not an
+      executable on {{ inventory_hostname }}. Install a static tini there
+      (Fedora and RHEL: tini-static; Debian and Ubuntu: tini, which ships
+      /usr/bin/tini-static), point vllm_container_init_path at it, or set it
+      to "" to use podman's built-in init (catatonit).
+    quiet: true
+  when:
+    - vllm_container_init_stat is not skipped
+    # A --check run only reports the install above, so the file is not there yet.
+    - not (ansible_check_mode and vllm_container_init_install is changed)
+
+- name: Record the init flags of every container run
+  ansible.builtin.set_fact:
+    vllm_container_init_flags: >-
+      {{ ''
+         if not (vllm_container_init | bool)
+         else (('--init --init-path ' ~ vllm_container_init_path)
+               if (vllm_container_cli == 'podman' and vllm_container_init_path | length > 0)
+               else '--init') }}
+
+# --- rootful (docker, or podman with vllm_container_rootless: false) ---------
+- name: Record the account the containers run as (root)
+  ansible.builtin.set_fact:
+    vllm_run_user: root
+    vllm_run_group: root
+    vllm_run_uid: "0"
+    vllm_run_home: /root
+    vllm_container_argv: ["{{ vllm_container_cli }}"]
+  when: not (vllm_rootless | bool)
+
+# --- rootless podman ---------------------------------------------------------
+- name: Prepare the service account for rootless containers
+  when: vllm_rootless | bool
+  block:
+    - name: Look up the container service account
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ vllm_container_user }}"
+        fail_key: false
+
+    - name: Create the container service account
+      # A regular account (not --system) so useradd assigns it subordinate
+      # ID ranges; no password and no login shell. Only created when it is
+      # missing: an account that already exists (vllm_container_user pointed
+      # at one) keeps its shell, home and password.
+      ansible.builtin.user:
+        name: "{{ vllm_container_user }}"
+        comment: vLLM containers (rootless podman)
+        shell: /sbin/nologin
+        home: "{{ vllm_container_user_home if vllm_container_user_home | length > 0 else omit }}"
+        create_home: true
+        password_lock: true
+      when: (ansible_facts.getent_passwd | default({}))[vllm_container_user] | default(none) is none
+
+    - name: Read the container service account
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ vllm_container_user }}"
+
+    - name: Read the service account's primary group
+      ansible.builtin.command:
+        argv:
+          - id
+          - -gn
+          - "{{ vllm_container_user }}"
+      register: vllm_run_group_lookup
+      # Read-only, and later tasks need the answer: run in check mode too.
+      check_mode: false
+      changed_when: false
+
+    - name: Record the account the containers run as
+      # runuser, not become_user: becoming an unprivileged account needs
+      # ACLs or pipelining on the node for Ansible's temporary files, and
+      # runuser needs neither. `env -C /` gives podman a working directory
+      # the account can enter (it refuses to start from one it cannot).
+      vars:
+        vllm_run_passwd: "{{ ansible_facts.getent_passwd[vllm_container_user] }}"
+      ansible.builtin.set_fact:
+        vllm_run_user: "{{ vllm_container_user }}"
+        vllm_run_group: "{{ vllm_run_group_lookup.stdout | trim }}"
+        vllm_run_uid: "{{ vllm_run_passwd[1] }}"
+        vllm_run_home: "{{ vllm_run_passwd[4] }}"
+        vllm_container_argv:
+          - runuser
+          - -u
+          - "{{ vllm_container_user }}"
+          - --
+          - env
+          - -C
+          - /
+          - "XDG_RUNTIME_DIR=/run/user/{{ vllm_run_passwd[1] }}"
+          - "HOME={{ vllm_run_passwd[4] }}"
+          - "{{ vllm_container_cli }}"
+
+    - name: Give the service account subordinate ID ranges
+      # Rootless podman maps the container's users onto these. useradd
+      # assigns them to the account created above; this covers an existing
+      # account without any (a system account, or one made before
+      # /etc/subuid was in use). The new range starts after every range
+      # already handed out.
+      ansible.builtin.shell: |
+        set -eu
+        user={{ vllm_container_user | quote }}
+        if grep -q "^${user}:" /etc/subuid 2>/dev/null && grep -q "^${user}:" /etc/subgid 2>/dev/null; then
+            echo present
+            exit 0
+        fi
+        next=$(cat /etc/subuid /etc/subgid 2>/dev/null \
+            | awk -F: 'BEGIN { max = 524288 } NF == 3 && $2 + $3 > max { max = $2 + $3 } END { print max }')
+        usermod --add-subuids "${next}-$((next + 65535))" --add-subgids "${next}-$((next + 65535))" "$user"
+        echo added
+      args:
+        executable: /bin/bash
+      register: vllm_subid_ranges
+      changed_when: "'added' in vllm_subid_ranges.stdout"
+
+    - name: Let the service account read the system journal
+      # The log shipper container reads /var/log/journal; rootless, it gets
+      # there through this group (passed in with --group-add keep-groups).
+      ansible.builtin.user:
+        name: "{{ vllm_container_user }}"
+        groups: systemd-journal
+        append: true
+      when:
+        - vllm_monitoring_enabled | bool
+        - vllm_log_shipping_enabled | bool
+
+    - name: Keep the service account's user manager running without a login
+      # Lingering: systemd starts user@<uid>.service at boot and keeps it,
+      # which provides /run/user/<uid> (podman's runtime directory) and the
+      # cgroup scopes the containers live in. Without it both disappear when
+      # the last session of the account ends, and the containers with them.
+      ansible.builtin.command:
+        argv:
+          - loginctl
+          - enable-linger
+          - "{{ vllm_container_user }}"
+        creates: "/var/lib/systemd/linger/{{ vllm_container_user }}"
+
+    - name: Wait for the service account's runtime directory
+      ansible.builtin.wait_for:
+        path: "/run/user/{{ vllm_run_uid }}"
+        timeout: 60
+
+    - name: Point the service account's image storage at the data volume
+      # Rootless images and containers default to
+      # ~/.local/share/containers/storage. vllm_rootless_storage_root moves
+      # them (a vLLM image is 25 GB); empty keeps the default.
+      when: vllm_rootless_storage_root | length > 0
+      block:
+        - name: Create the service account's storage and config directories
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: directory
+            owner: "{{ vllm_run_user }}"
+            group: "{{ vllm_run_group }}"
+            mode: "{{ item.mode }}"
+          loop:
+            - { path: "{{ vllm_run_home }}/.config", mode: "0755" }
+            - { path: "{{ vllm_run_home }}/.config/containers", mode: "0755" }
+            - { path: "{{ vllm_rootless_storage_root }}", mode: "0700" }
+          loop_control:
+            label: "{{ item.path }}"
+
+        - name: Write the service account's storage.conf
+          ansible.builtin.copy:
+            dest: "{{ vllm_run_home }}/.config/containers/storage.conf"
+            content: |
+              # Managed by Ansible (role: vllm_compute).
+              [storage]
+              driver = "overlay"
+              graphroot = "{{ vllm_rootless_storage_root }}"
+            owner: "{{ vllm_run_user }}"
+            group: "{{ vllm_run_group }}"
+            mode: "0644"
+
+    - name: Check that the service account can reach the Hugging Face cache
+      # Before anything is stopped. Root's containers reach a cache
+      # anywhere; the account cannot enter one below a directory that is
+      # closed to it, typically another user's home (mode 0700). Tests the
+      # directory above the cache, or the nearest one that exists when the
+      # cache is not there yet: entering it needs search permission on the
+      # whole path. The cache itself is handed to the account later.
+      ansible.builtin.shell: |
+        set -u
+        dir={{ vllm_hf_cache_dir | quote }}
+        while [ ! -d "$dir" ] && [ "$dir" != / ]; do dir=$(dirname "$dir"); done
+        [ "$dir" = {{ vllm_hf_cache_dir | quote }} ] && dir=$(dirname "$dir")
+        runuser -u {{ vllm_container_user | quote }} -- test -x "$dir" && echo reachable || echo "blocked at or above $dir"
+      args:
+        executable: /bin/bash
+      register: vllm_hf_cache_reach
+      changed_when: false
+      # Read-only, and the answer matters in a dry run too.
+      check_mode: false
+
+    - name: Require a Hugging Face cache the service account can reach
+      ansible.builtin.assert:
+        that:
+          - "'reachable' in vllm_hf_cache_reach.stdout"
+        fail_msg: >-
+          The service account {{ vllm_container_user }} cannot reach
+          vllm_hf_cache_dir ({{ vllm_hf_cache_dir }}):
+          {{ vllm_hf_cache_reach.stdout | trim }}. A directory on the way
+          is closed to it, usually another user's home. Nothing has been
+          stopped or changed yet. Move the cache somewhere the account can
+          enter and point vllm_hf_cache_dir at it (on the same filesystem
+          `mv` is instant and nothing is downloaded again), or give the
+          account search permission on the closed directory
+          (setfacl -m u:{{ vllm_container_user }}:x <dir>), or set
+          vllm_container_rootless: false to keep this node rootful.
+        quiet: true
+
+    # --- one-time move from rootful -------------------------------------------
+    # A node deployed before rootless still has units that run as root and
+    # containers in root's store holding the ports. Stop those units here;
+    # the tasks after this rewrite them with User=<account> and start them
+    # again. A node that is already rootless has neither, so nothing happens.
+    - name: Find the role's units that still run as root
+      ansible.builtin.shell: |
+        for unit in /etc/systemd/system/{{ vllm_vllm_service_name }}.service \
+                    /etc/systemd/system/{{ vllm_ray_service_name }}.service \
+                    /etc/systemd/system/vllm-aux-*.service \
+                    /etc/systemd/system/vllm-flux-*.service \
+                    /etc/systemd/system/vllm-launcher.service \
+                    /etc/systemd/system/vllm-launcher-auth.service \
+                    /etc/systemd/system/vllm-log-shipper.service; do
+            [ -f "$unit" ] || continue
+            grep -q -x 'User={{ vllm_container_user }}' "$unit" || basename "$unit" .service
+        done | sort -u
+      args:
+        executable: /bin/bash
+      register: vllm_rootful_units
+      # Read-only, and later tasks need the answer: run in check mode too.
+      check_mode: false
+      changed_when: false
+
+    - name: Stop the units that still run as root
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop: "{{ vllm_rootful_units.stdout_lines }}"
+
+    - name: Find containers left in root's store
+      ansible.builtin.command:
+        argv:
+          - "{{ vllm_container_cli }}"
+          - ps
+          - --all
+          - --format
+          - "{{ '{{.Names}}' }}"
+      register: vllm_rootful_containers
+      # Read-only, and later tasks need the answer: run in check mode too.
+      check_mode: false
+      changed_when: false
+
+    - name: Remove the role's containers from root's store
+      # Only names the role's own units give their containers.
+      ansible.builtin.command:
+        argv:
+          - "{{ vllm_container_cli }}"
+          - rm
+          - --force
+          - "{{ item }}"
+      loop: >-
+        {{ vllm_rootful_containers.stdout_lines
+           | select('match', '^(' ~ (vllm_container_name | regex_escape)
+                             ~ '-(serve|ray|launcher|launcher-auth|aux-.+|flux-.+)|vllm-log-shipper)$')
+           | list }}
+      changed_when: true

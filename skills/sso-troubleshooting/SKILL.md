@@ -26,6 +26,8 @@ verify afterward.
 | LiteLLM | "authentication database unreachable" | OIDC config incomplete / missing client secret / wrong `DATABASE_URL` | Rerun playbook; verify `GENERIC_CLIENT_ID: litellm`, secret from vault, `PROXY_BASE_URL: https://litellm.<domain>` |
 | Grafana | "Login failed - Failed to get token" | Missing `GF_OIDC_CLIENT_SECRET` or user not in a mapped group | Rerun playbook; assign group in Keycloak |
 | Any | Redirect URI mismatch on Keycloak error page | Client's allowed redirect differs from real URL | Redirects are declared in `keycloak_apps` (vars.yml); rerun and compare with the error page |
+| Any | "Invalid redirect uri" on the Keycloak page after Log out | The app's `post_logout_redirect_uri` is not listed on the client (exact match) | The app's signout URL in `docker-compose.yml.j2` and the client's `post_logout_redirect_uris` in `keycloak_apps` (vars.yml) must be the same URL; align and rerun |
+| Open WebUI | Still signed in after logging out of another app | Back-channel logout not delivered | Client needs `backchannel_logout_url` (vars.yml) with front-channel logout off; `ENABLE_OAUTH_BACKCHANNEL_LOGOUT: "true"`; Keycloak must reach `http://open-webui:8080` |
 | Keycloak admin | 403 on `/admin` | IP allowlist (`KEYCLOAK_ADMIN_IP_RANGE`) | Set the correct range in `.env` |
 
 ## Verify (after a heal)

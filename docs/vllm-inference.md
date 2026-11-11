@@ -80,10 +80,13 @@ Key points:
 |---|---|
 | `defaults/main.yml` | Every variable with a default + full explanations. The reference for what each knob does. |
 | `tasks/main.yml` | Task flow: validate config → detect GPUs → resolve topology → firewall → services → flux → aux → LiteLLM render (in that order). |
+| `tasks/container_runtime.yml` | How every container is started: the init process (tini) and, on podman nodes, the unprivileged service account the containers run as (see [Rootless containers and tini](#rootless-containers-and-tini)). Runs before every task file that deploys a unit. |
 | `tasks/services.yml` | Primary-model scripts, units, startup, health waits. |
 | `tasks/flux.yml` | Flux list merge/validation, per-model scripts and units, cleanup of removed models, health waits. |
 | `tasks/aux.yml` | Aux list merge/validation with per-node placement, per-model scripts and units, cleanup of removed or re-hosted models, health waits. |
 | `tasks/firewall.yml` | Creates the `vllm-cluster` firewalld zone via the `ansible.posix.firewalld` module, restricts to `vllm_firewall_zone_source`, admits the `ssh` service (source binding routes ALL subnet traffic into the zone — without it management SSH is cut off), opens the pinned Ray + API + flux + aux ports. |
+| `tasks/launcher_placement.yml` | Decides which nodes run an LLM Launcher and whether it owns the primary model slot (runs before `services.yml`). |
+| `tasks/launcher.yml` | LLM Launcher GUI and its oauth2-proxy gate: image build, secrets, scripts and units, firewall, health waits, teardown (see [LLM Launcher](#llm-launcher-web-control-panel-per-inference-server)). |
 | `tasks/litellm_registration.yml` | Renders `litellm/vllm-models.yaml` in the repo (delegated to localhost). |
 | `templates/vllm-serve.sh.j2` | `vllm serve` launch script with the rendered parallelism flags. |
 | `templates/ray-start.sh.j2` | Ray daemon launch script (head/worker). |
@@ -342,6 +345,225 @@ This is a safety stop, not a repair for malformed prompts. It may return a parti
 
 ---
 
+## LLM Launcher (web control panel per inference server)
+
+The role can put a browser GUI in front of each independent inference server: [Local-LLM-Launcher-GUI](https://github.com/jimdawdy-hub/Local-LLM-Launcher-GUI) (MIT), pinned to a commit (`vllm_launcher_version`, v0.6.1). It searches and downloads Hugging Face models, shows every `vllm serve` setting as a form control with a green/yellow/red rating against the node's GPU and a plain-language reason, starts and stops servers, shows their logs, and saves launch settings as favorites. It is off by default (`vllm_launcher_enabled`).
+
+The launcher only manages the machine it runs on, so placement follows the topology:
+
+| `vllm_deployment_mode` | Launchers | Why |
+|---|---|---|
+| `standalone` | One on every `vllm_compute` node | Every node is its own inference server |
+| `ray` | One, on the `vllm_ray_head` node | The head drives the single sharded server |
+
+`vllm_launcher_hosts` (a list of inventory hostnames) overrides the rule. A node that stops qualifying has its launcher units removed on the next run.
+
+### Request path
+
+```
+ browser ── https://launcher-<node>.<domain> ──▶ Traefik (stack host, TLS)
+                                                   │ http://<node>:4180
+                                                   ▼
+        compute node:  vllm-launcher-auth (oauth2-proxy)  ◀── signs in against Keycloak
+                                   │ http://127.0.0.1:8765      on the stack host (auth.<domain>)
+                                   ▼
+                       vllm-launcher (GUI + API, loopback only)
+                                   │ child processes
+                                   ▼
+                       vllm serve … (the models started from the GUI)
+```
+
+- **`vllm-launcher`** is a container built on the node from the node's own vLLM image (`vllm_launcher_base_image`, default `vllm_image`), so the `vllm` it starts is the same build the Ansible units run. It mounts the same Hugging Face cache, so models the node already has show up as installed. It runs with host networking and listens on `127.0.0.1:8765` only; that port is never opened in the firewall. Its state (settings, favorites, benchmark records, server logs) lives in `vllm_launcher_data_dir` (`/opt/vllm/launcher/data`, mode `0700`).
+- **`vllm-launcher-auth`** is oauth2-proxy (same version and settings as the voice gate in `docker-compose.yml`) on port 4180, the only way in from the network. It owns the OAuth flow, admits the roles in `vllm_launcher_allowed_roles` (`launcher:launcher_admin`), and forwards to the launcher. The port opens in the `vllm-cluster` firewalld zone. `--add-host` pins `auth.<domain>` to the stack host (`vllm_launcher_keycloak_host_ip`, default `vllm_controller_host`), so the node needs no DNS for it.
+- **Traefik on the stack host** publishes each gate as `https://launcher-<inventory hostname>.<domain>` from a file-provider config that `playbooks/site.yml` renders (`traefik/dynamic/launcher.yml` in the deployed tree). The same run creates the `launcher` Keycloak client with one redirect URI per portal and the `launcher_admin` client role, mapped to the `platform-admins` and `admin` groups.
+- **Sign-in chip and Log out**: the image build adds two files next to the launcher's compiled frontend and two tags to its `index.html` (`files/vllm-launcher-patch-ui.py`). The script reads `/oauth2/userinfo`, shows the signed-in user in the top bar, and links Log out to `/oauth2/sign_out?rd=<Keycloak end_session_endpoint>`, the same single-logout mechanism as the voice portal.
+- **No chat**: the launcher is a control panel, not a chat client. Its "Test chat" box and its "Open WebUI" panel (which would start a second Open WebUI on the node with no login) are switched off; see [Chat is off in the launcher](#chat-is-off-in-the-launcher).
+
+Only admins get in on purpose. The launcher starts processes, accepts free-text engine arguments, downloads models onto the node's disk, and can hold a Hugging Face token, while the realm allows self-registration. Set `vllm_launcher_allowed_roles: []` to admit every signed-in user.
+
+### Enabling it
+
+Order matters: the gates need the Keycloak client and its secret, which the stack playbook creates.
+
+1. **Stack side.** In `ansible/group_vars/all/vars.yml` set `launcher_enabled: true`. Portals default to every `vllm_compute` host of the stack inventory at its `ansible_host`. When the nodes are deployed from a different inventory (`tests/vllm-remote`) or the stack inventory holds placeholder addresses, name the real ones as inventory vars in `inventory/hosts.local.yml` (gitignored):
+
+   ```yaml
+   all:
+     vars:
+       launcher_nodes: [vllm-node-01]
+       launcher_node_addresses:
+         vllm-node-01: 192.0.2.20   # address the stack host reaches the node on
+   ```
+
+   The names must be the inventory hostnames `inference.yml` deploys under: each gate answers as `launcher-<its inventory hostname>.<domain>`, and Keycloak only accepts redirect URIs it was given.
+2. **DNS.** Add a record for each `launcher-<node>.<domain>` next to the other service names. A `*.<domain>` certificate already covers them.
+3. **Run `playbooks/site.yml`.** It generates `launcher_oidc_client_secret`, creates the client and role mappings, renders the Traefik routes and writes `LAUNCHER_OIDC_CLIENT_SECRET` and `LAUNCHER_SSL_INSECURE_SKIP_VERIFY` into `.env`.
+4. **Node side.** Set `vllm_launcher_enabled: true` in the group_vars the node is deployed from (`ansible/group_vars/vllm_compute/vars.yml`, or `ansible/tests/vllm-remote/group_vars/vllm_compute/vars.yml` for the remote node) and run `playbooks/inference.yml` (`tests/vllm-remote/run.sh inference`).
+
+The node play resolves the stack's domain, realm, client secret and TLS-verify setting in order: `vllm_launcher_domain` / `_keycloak_realm` / `_oidc_client_secret` / `_ssl_insecure_skip_verify` → the controller environment (`DOMAIN`, `KEYCLOAK_REALM`, `LAUNCHER_OIDC_CLIENT_SECRET`, `LAUNCHER_SSL_INSECURE_SKIP_VERIFY`; the vllm-remote runner sources the deployed `.env`) → the deployed `.env`, read from the stack host in the inventory or from the controller itself when the inventory has none. It fails before touching the node when the domain or secret is missing.
+
+A run on a launcher node: installs `git` if missing → checks out the source → builds `localhost/vllm-launcher:<commit>` (the launcher runs from its source tree and nothing is installed when the vLLM image already ships its dependencies, which `vllm/vllm-openai` does, so the build needs no network) → generates the gate's cookie secret once → renders scripts and units → opens port 4180 and `vllm_launcher_model_ports` → starts both units → waits for `/api/about` and `/ping`.
+
+### Tuning the node's server from the GUI
+
+By default the launcher runs next to the Ansible-managed units and shares the GPU with them. On a node whose GPU `vllm-serve` already fills, the GUI rates every launch red until the primary slot is handed over:
+
+```yaml
+vllm_launcher_owns_primary: true   # group var, or a host var for one node
+```
+
+`vllm-serve` then stays installed but stopped and disabled, its `/health` wait is skipped, and the GPU and `vllm_port` are free for the GUI. Flip it back and the next run restores the Ansible-managed server. Standalone mode only.
+
+To serve through LiteLLM and Open WebUI exactly as before, launch from the GUI with:
+
+| Launch form field | Value | Why |
+|---|---|---|
+| Port | `vllm_port` (8000) | The endpoint LiteLLM already has registered |
+| Served model name | `vllm_served_model_name` | LiteLLM sends this name; a different one answers 404 |
+| API key | leave empty | `vllm_launcher_enforce_api_key` already starts every server with the node's key |
+
+Save it as a favorite to relaunch in one click. A model under a new name, or on another port (pick one from `vllm_launcher_model_ports`, 8100-8109), is reachable from the stack host but is not registered with LiteLLM: add it in the LiteLLM UI (`http://<node>:<port>/v1`, the node's API key).
+
+### Chat is off in the launcher
+
+People talk to models through Open WebUI or an API client (opencode, an IDE), so the launcher's two chat paths are off by default (`vllm_launcher_chat_enabled: false`):
+
+| Launcher feature | What it did | Now |
+|---|---|---|
+| **Test chat** on a server card | Sent a prompt to the server through `POST /api/servers/<id>/chat` | Button hidden; the request answers 403 |
+| **Open WebUI** panel on the Dashboard | Started a second Open WebUI on the node, bound to the network with no login | Panel hidden; `/api/openwebui/launch` and `/stop` answer 403 |
+
+Two layers, both in the image:
+
+- **The API** is what enforces it. The image starts through `files/vllm-launcher-entry.py` (`/opt/llm-launcher/overlay/stack_entry.py`), which replaces those routes before the launcher builds its app. The 403 names Open WebUI and API clients. It fails closed: if a newer launcher moved the routes, the build stops in `patch_ui.py` and the entry point refuses to start, each naming the fix.
+- **The page** is tidied by the build: a style rule hides the Open WebUI panel, the page script hides the "Test chat" button by its label, and the three hints that said "run a test chat" point at Open WebUI.
+
+To check a model after launching it, send it a message from Open WebUI, or `curl` it through LiteLLM. The Benchmark button reads timings from the server log, so it works after any request, whoever sent it.
+
+`vllm_launcher_chat_enabled: true` brings both back. Changing it rebuilds the image and restarts the launcher, which stops the models it started. Note that the test chat sends no API key, so it also needs `vllm_launcher_enforce_api_key: false`.
+
+### What the launcher does not do
+
+- **It does not see the Ansible units.** It lists only servers it started. `vllm-serve`, `vllm-flux-*` and `vllm-aux-*` stay under `systemctl`.
+- **Nothing restarts a GUI-started model.** They are child processes of the launcher container: a reboot, a `systemctl restart vllm-launcher`, or a playbook run that rebuilds the image or changes its script stops them, and they stay down until relaunched. A run that changes nothing leaves them alone.
+- **It is not a chat client.** Test chat and the Open WebUI panel are off (see above); test through Open WebUI, or `curl` through LiteLLM.
+- **No automatic LiteLLM registration** (see the table above).
+- **Its servers' logs are not shipped to Loki.** The log shipper reads the `vllm-serve` unit's journal; a GUI-started server logs to a file under `vllm_launcher_data_dir`, shown in the GUI's Servers tab. Metrics are unaffected: the collector scrapes `/metrics` on `vllm_port` whoever started the server.
+- **vLLM only.** The image carries no llama.cpp, SGLang or TGI, and the launcher's Docker-based modes are unavailable inside the container. `vllm_launcher_extra_build_steps` appends Dockerfile lines to add an engine (`llama-server` on `PATH` enables llama.cpp).
+- **Ray mode is limited.** The form has no pipeline-parallel field and the memory advice counts only the head's GPU, so the sharded primary stays under Ansible (`vllm_launcher_owns_primary` is refused). The head's launcher is for downloads and extra single-node models.
+- **Engine source updates are off.** The launcher only allows them from a direct loopback connection, which a request through the gate never is.
+
+### Verification
+
+```bash
+# on the node
+systemctl status vllm-launcher vllm-launcher-auth
+curl -s http://127.0.0.1:8765/api/about                                 # launcher version
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4180/ping     # 200: gate up
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8765/api/openwebui/launch   # 403: chat is off
+
+# on the stack host: an anonymous request is sent to Keycloak
+curl -sk -o /dev/null -w '%{http_code} %{redirect_url}\n' https://launcher-vllm-node-01.<domain>/
+# 302 https://auth.<domain>/realms/platform/protocol/openid-connect/auth?...
+```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `inference.yml` stops at "has no stack domain or no OIDC client secret" | `site.yml` has not run with `launcher_enabled: true`, or the node play cannot read the deployed `.env` | Run `site.yml` first; or set `vllm_launcher_domain` and `vllm_launcher_oidc_client_secret` |
+| Portal answers 503 / "no available server" | Traefik's `/ping` check on `<node>:4180` fails: gate down, port closed, or wrong address | `systemctl status vllm-launcher-auth` on the node; check `launcher_node_addresses` and the `vllm-cluster` zone source |
+| Keycloak shows "Invalid parameter: redirect_uri" | The portal's hostname is not on the `launcher` client: the stack inventory and the node inventory name the node differently | Make `launcher_nodes` match the node's inventory hostname, rerun `site.yml` |
+| 403 after signing in | The user lacks `launcher_admin` | Add the user to `platform-admins` or `admin` in Keycloak |
+| Gate log shows `x509: certificate signed by unknown authority` | `auth.<domain>` serves a certificate the proxy does not trust | `oauth2_proxy_ssl_insecure_skip_verify: true` on the stack (rendered as `LAUNCHER_SSL_INSECURE_SKIP_VERIFY`), rerun both playbooks |
+| Every launch is rated red, no free VRAM | `vllm-serve` holds the GPU | `vllm_launcher_owns_primary: true` for that node |
+| No "Test chat" button, no Open WebUI panel | Chat is off in the launcher by design | Chat through Open WebUI; `vllm_launcher_chat_enabled: true` brings them back |
+| `vllm-launcher` exits with "cannot switch chat off" (or the image build stops in `patch_ui.py`) | `vllm_launcher_version` points at a launcher that moved its chat endpoints | Update the paths in `files/vllm-launcher-entry.py` and `files/vllm-launcher-patch-ui.py`, or set `vllm_launcher_chat_enabled: true` |
+| Models started from the GUI are gone | The launcher container restarted (reboot, image rebuild, changed unit) | Relaunch from Favorites |
+
+Every variable is documented in `roles/vllm_compute/defaults/main.yml` (`vllm_launcher_*`) and `roles/openwebui_stack/defaults/main.yml` (`launcher_*`).
+
+---
+
+## Rootless containers and tini
+
+Two settings in `tasks/container_runtime.yml` apply to every container the role starts: the model servers, Ray, the launcher and its gate, the exporters and the log shipper.
+
+### tini as the init process
+
+Each container starts under an init process as PID 1 (`vllm_container_init: true`). It forwards the stop signal to the server and reaps the processes a server leaves behind. Without one, a server that ignores SIGTERM as PID 1 is only stopped by the kill after the timeout: on the test node a container stopped in 0.25 s with tini and in 5 s (killed) without.
+
+| CLI | What `--init` runs | What the role does |
+|---|---|---|
+| docker | tini (`docker-init`) | Passes `--init` |
+| podman | catatonit | Installs `tini-static` (`vllm_container_init_package`) and passes `--init --init-path /usr/bin/tini-static` (`vllm_container_init_path`) |
+
+It has to be the static build: podman mounts the host's binary into the container, and a dynamically linked tini only starts in images that carry its libraries. Inside the container PID 1 shows as `podman-init`, which is the name podman mounts it under. Set `vllm_container_init_path: ""` to use catatonit, or `vllm_container_init: false` for none.
+
+### Rootless podman
+
+On a podman node the containers run as an unprivileged service account instead of root (`vllm_container_rootless`, on by default wherever `vllm_container_cli` is `podman`). Root inside a container is then that account on the host, and an image that runs as its own non-root user lands on one of the account's subordinate UIDs. A process that breaks out of a container holds no root and no sudo. Docker nodes stay as they are: the docker daemon itself runs as root.
+
+What the role sets up:
+
+| Piece | Detail |
+|---|---|
+| Service account | `vllm_container_user` (`vllm`): created when missing, no password, no login shell. An existing account is used unchanged. Do not point it at an account with sudo rights |
+| Subordinate IDs | From `useradd`; added with `usermod` for an account that has none |
+| Lingering | `loginctl enable-linger`: the account's user manager and `/run/user/<uid>` exist from boot, without a login. The containers' cgroup scopes live there, so without lingering they would stop when the account's last session ends |
+| Units | Still system units with the same names, so `systemctl status vllm-serve`, `journalctl -u vllm-serve` and the log shipper's journal match are unchanged. They gain `User=`, `Group=`, `Environment=XDG_RUNTIME_DIR=/run/user/<uid>`, `Delegate=yes` and an ordering on `user@<uid>.service` |
+| Logs | `Delegate=yes` keeps podman inside the unit's cgroup. Without it podman moves itself into a scope of the account's user manager and journald files the server's output under `user@<uid>.service`: `journalctl -u vllm-serve` shows only start and stop lines, and the log shipper sends nothing. The containers run with `--log-driver none`, because podman's own journald logging would then file every line a second time under the same unit (and `passthrough` files it under the account's scope again). So the log is in the journal only: `podman logs` shows nothing for these containers |
+| Stop | Every unit has `SuccessExitStatus=143`: tini exits 143 when it stops the server on `systemctl stop`, which is a clean stop, not a failure |
+| `NoNewPrivileges` | Off on the unit, passed to the container instead (`--security-opt no-new-privileges`). On the unit it blocks `newuidmap`, which podman needs to set up the user namespace: after a reboot every start fails with `newuidmap: write to uid_map failed` |
+| GPU | CDI (`vllm_container_gpu_flag: "--device nvidia.com/gpu=all"`), which needs no root |
+| Files | Launch scripts and the gate's `auth.env` stay root-owned and are group-readable by the account (it can run them, not rewrite them). `vllm_hf_cache_dir` and the launcher's data directory belong to the account |
+| Image store | The account's own (`~/.local/share/containers/storage`; move it with `vllm_rootless_storage_root`). Tasks that call podman themselves (the launcher image build, the Ray check, a registry login) go through `vllm_container_argv`, which runs podman as the account |
+| Exporters | System units from `templates/vllm-exporter.service.j2` in place of the root quadlets, under the same `<name>.service` names |
+| Log shipper | Reads `/var/log/journal` through the `systemd-journal` group (`--group-add keep-groups`) |
+
+**Moving an existing node.** The first run with rootless on does it in place:
+
+1. Creates the account and enables lingering.
+2. Stops the role's units that still run as root and removes their containers from root's store (other containers are not touched).
+3. Hands `vllm_hf_cache_dir` to the account (one `chown -R`; the weights are not downloaded again).
+4. Rewrites the scripts and units and starts them. The account's image store is empty, so this start pulls the images again, 25 GB for a vLLM image. The model is down for the length of that pull plus the normal load time.
+
+Afterwards root's copies of the images are unused; remove them with `sudo podman rmi <image>` to get the space back. Check free space first: a pull needs room for the image in the account's store on top of root's copy.
+
+To skip the download, copy the image from root's store into the account's before the run (the account must exist: create it with `useradd`, or let a first run stop at the pull). podman spools the whole image in its temp directory on both sides, `/var/tmp` by default, so point `TMPDIR` at a volume with room for twice the image; on the test node the default filled the root filesystem and the copy failed:
+
+```bash
+sudo install -d -m 1777 /home/podman-tmp
+sudo env TMPDIR=/home/podman-tmp podman save docker.io/vllm/vllm-openai:latest \
+  | sudo -u vllm env -C / TMPDIR=/home/podman-tmp XDG_RUNTIME_DIR=/run/user/$(id -u vllm) podman load
+sudo rm -rf /home/podman-tmp
+```
+
+Set `vllm_container_rootless: false` to keep a node rootful.
+
+**Checks on a rootless node:**
+
+```bash
+systemctl show -p User,Group vllm-serve                         # User=vllm
+sudo -u vllm XDG_RUNTIME_DIR=/run/user/$(id -u vllm) podman ps  # the role's containers
+sudo podman ps                                                  # none of them here
+loginctl show-user vllm -p Linger                               # Linger=yes
+```
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Unit fails with `newuidmap: write to uid_map failed: Operation not permitted` | `NoNewPrivileges=true` on a rootless unit (a hand-edited unit or drop-in) | Remove it; the container already runs with `no-new-privileges` |
+| `podman ps` as root shows nothing while the model answers | Expected: the containers are in the service account's store | Use the `sudo -u vllm ... podman ps` form above |
+| `journalctl -u vllm-serve` shows only "Started"/"Stopped", and no vLLM logs reach Grafana | The unit lost `Delegate=yes`, so the output is filed under `user@<uid>.service` | Rerun the playbook; meanwhile `journalctl _SYSTEMD_UNIT=user@$(id -u vllm).service` has it |
+| Every log line appears twice in Grafana | A container was started without `--log-driver none` | Rerun the playbook so the launch scripts are rewritten |
+| `podman logs vllm-serve` is empty | Expected with `--log-driver none` | `journalctl -u vllm-serve` |
+| Containers stop when nobody is logged in, or after a reboot the units fail with "no such file or directory: /run/user/<uid>" | Lingering is off for the account | `sudo loginctl enable-linger vllm`, or rerun the playbook |
+| Model load fails with permission errors under the Hugging Face cache | Files in `vllm_hf_cache_dir` still belong to root | Rerun the playbook (it hands the tree over), or `sudo chown -R vllm: <dir>` |
+| `Error: short-name ... did not resolve` or pulls the image again on every start | The image is in root's store, not the account's | Normal on the first rootless start; later starts use the account's copy |
+| The log shipper logs "permission denied" on the journal | The account is not in `systemd-journal` | Rerun the playbook; it adds the group |
+
+---
+
 ## Setup
 
 ### 1. Prepare each node (one-time, outside the role)
@@ -444,6 +666,10 @@ The models then appear in Open WebUI's model dropdown.
 | Tear flux down | `vllm_flux_enabled: false` → re-run |
 | Tear aux down | `vllm_aux_enabled: false` → re-run |
 | Monitoring off | `vllm_monitoring_enabled: false` → re-run (exporter quadlets stay until removed by hand) |
+| Tune a node's model from the browser | `vllm_launcher_enabled: true` (+ `vllm_launcher_owns_primary: true` to free the GPU) → re-run → `https://launcher-<node>.<domain>` |
+| Give the primary model back to Ansible | `vllm_launcher_owns_primary: false` → re-run (stop the GUI-started server first; it holds the port) |
+| Update the launcher | Set `vllm_launcher_version` to a newer commit → re-run (rebuilds the image and restarts the launcher, which stops GUI-started models) |
+| Tear the launcher down | `vllm_launcher_enabled: false` → re-run (units, scripts and ports removed; data directory and image stay) |
 
 ### Security notes
 
@@ -451,6 +677,7 @@ The models then appear in Open WebUI's model dropdown.
 - The zone source binding is greedy: firewalld routes every packet from that subnet into `vllm-cluster`, so the role admits `ssh` there. If you remove that task or swap the zone's source, management hosts in the subnet lose SSH to the node on the next reload — recover from the node's console.
 - A first run pulls the model from Hugging Face before `/health` passes; the wait is `vllm_health_wait_retries` × 10s (default 60). Raise it in group_vars for slow links or large models, or pre-download with `huggingface-cli download`.
 - Model weights must exist at the same path or HF id on every node; pin the same vLLM image version cluster-wide.
+- The LLM Launcher has no login of its own. It listens on the node's loopback only and is reachable solely through its oauth2-proxy gate, which admits the `launcher_admin` role. The hop from Traefik on the stack host to the gate (port 4180) is plain HTTP on the compute segment, like the vLLM API. Servers started from the GUI bind `0.0.0.0` (`vllm_launcher_lan_access`) and carry the node's API key (`vllm_launcher_enforce_api_key`); turning the key off leaves the firewall zone as their only protection.
 
 ### Monitoring (exporters + Grafana dashboard)
 

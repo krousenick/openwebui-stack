@@ -14,22 +14,24 @@
 #     while its switch is off, so the off state needs its own filter.
 #
 # Neither is global. The task reads which models can reason from LiteLLM
-# (model_info.supports_reasoning) and attaches the switch to exactly those
+# (model_info.supports_reasoning, container-scripts/
+# litellm_reasoning_models.py) and attaches the switch to exactly those
 # models' Workspace entries (meta.filterIds), so it never shows on a model
 # where it does nothing. The off-state companion is attached only where
 # LiteLLM also reports supports_none_reasoning_effort: sending "none" to a
 # model that cannot switch thinking off would fail the request, so there an
 # off switch means "send no effort" and the provider default applies.
 #
-# Everything goes through the admin API (files/openwebui_reasoning_sync.py),
-# which loads the functions into the running app, so no container recreate:
+# Everything goes through the admin API (container-scripts/
+# openwebui_reasoning_sync.py), which loads the functions into the running
+# app, so no container recreate:
 #
 #   POST /api/v1/functions/create | /id/{id}/update | /id/{id}/toggle
 #   POST /api/v1/models/create | /model/update
 #
 # Reruns converge: a model that stops being reasoning-capable loses the two
 # managed filter ids, nothing else on its entry changes, and preset models
-# are never touched. --check runs the read-only half and reports what would
+# are never touched. --check reads the live state and reports what would
 # change. Rerun after playbooks/inference.yml registers or retires a
 # reasoning model (playbooks/openwebui_reasoning.yml runs just this file).
 #
@@ -47,71 +49,37 @@
       litellm_master_key when openwebui_reasoning_discover_models is true.
 
 - name: Read the reasoning-capable models from LiteLLM
-  ansible.builtin.command:
-    argv:
-      - docker
-      - exec
-      - -i
-      - "{{ compose_project_name }}_litellm"
-      - python3
-      - -c
-      - |
-        import json, sys, urllib.request
-        key = sys.stdin.read().strip()
-        request = urllib.request.Request(
-            'http://localhost:4000/model/info',
-            headers={'Authorization': 'Bearer ' + key},
-        )
-        reasoning, can_disable = set(), set()
-        for entry in json.load(urllib.request.urlopen(request, timeout=60)).get('data', []):
-            name, info = entry.get('model_name'), entry.get('model_info') or {}
-            if not name or info.get('supports_reasoning') is not True:
-                continue
-            reasoning.add(name)
-            if info.get('supports_none_reasoning_effort') is True:
-                can_disable.add(name)
-        print(json.dumps({'reasoning': sorted(reasoning), 'can_disable': sorted(can_disable)}))
-    stdin: "{{ litellm_master_key }}"
-  register: openwebui_reasoning_litellm
-  changed_when: false
-  # Read-only, so it also runs under --check to feed the dry run below.
-  check_mode: false
-  no_log: true
+  ansible.builtin.import_tasks:
+    file: container_script.yml
+  vars:
+    container_script: litellm_reasoning_models.py
+    container_script_service: litellm
+    container_script_env:
+      LITELLM_MASTER_KEY: "{{ litellm_master_key }}"
   when:
     - openwebui_reasoning_switch_enabled | bool
     - openwebui_reasoning_discover_models | bool
 
 - name: Build the Thinking switch model lists
+  # The report is empty when discovery was skipped above, which leaves the
+  # hand-picked lists.
   ansible.builtin.set_fact:
     openwebui_reasoning_switch_models: >-
-      {{ (openwebui_reasoning_discovered.reasoning + openwebui_reasoning_models_extra)
+      {{ (container_script_report.reasoning | default([]) + openwebui_reasoning_models_extra)
          | unique | difference(openwebui_reasoning_models_exclude) | sort }}
     openwebui_reasoning_off_models: >-
-      {{ (openwebui_reasoning_discovered.can_disable + openwebui_reasoning_off_models_extra)
+      {{ (container_script_report.can_disable | default([]) + openwebui_reasoning_off_models_extra)
          | unique | difference(openwebui_reasoning_models_exclude) | sort }}
-  vars:
-    openwebui_reasoning_discovered: >-
-      {{ (openwebui_reasoning_litellm.stdout | default('', true) | trim
-          or '{"reasoning": [], "can_disable": []}') | from_json }}
 
 - name: Sync the Thinking switch into Open WebUI
-  ansible.builtin.command:
-    argv:
-      - docker
-      - exec
-      - -i
-      - "{{ compose_project_name }}_open-webui"
-      - python3
-      - -c
-      - "{{ lookup('ansible.builtin.file', 'openwebui_reasoning_sync.py') }}"
-    # base64: a bare JSON string would be parsed back into a dict by the
-    # templating layer and reach the container as a Python repr. It also
-    # keeps the API key out of argv, which a failed task would print.
-    stdin: "{{ openwebui_reasoning_payload | to_json | b64encode }}"
+  ansible.builtin.import_tasks:
+    file: container_script.yml
   vars:
-    openwebui_reasoning_payload:
-      api_key: "{{ openwebui_api_admin_key }}"
-      dry_run: "{{ ansible_check_mode | bool }}"
+    container_script: openwebui_reasoning_sync.py
+    container_script_service: open-webui
+    container_script_env:
+      OPENWEBUI_API_KEY: "{{ openwebui_api_admin_key }}"
+    container_script_payload:
       enabled: "{{ openwebui_reasoning_switch_enabled | bool }}"
       default_on: "{{ openwebui_reasoning_switch_default_on | bool }}"
       switch_id: reasoning_switch
@@ -133,46 +101,22 @@
             Turns model thinking on at the level picked in the switch's
             settings (low, medium or high)
           content: "{{ lookup('ansible.builtin.file', 'functions/reasoning_switch.py') }}"
-  register: openwebui_reasoning_sync
-  # The script always exits 0 and reports through its JSON summary; the
-  # next task turns a failure into a readable message (this one is
-  # no_log because its stdin carries the admin API key).
-  failed_when: false
-  changed_when: >-
-    not ansible_check_mode
-    and ((openwebui_reasoning_sync.stdout | default('', true) | trim or '{}')
-         | from_json).get('changed', []) | length > 0
-  check_mode: false
-  no_log: true
 
 - name: Report the Thinking switch sync
-  ansible.builtin.assert:
-    that:
-      - openwebui_reasoning_sync.rc | default(1) == 0
-      - openwebui_reasoning_summary.failed | default('no summary') | length == 0
-    fail_msg: >-
-      Thinking switch sync failed:
-      {{ openwebui_reasoning_summary.failed | default('', true)
-         or (openwebui_reasoning_sync.stderr | default('no output', true))[-800:] }}
-    success_msg: >-
-      Thinking switch on {{ openwebui_reasoning_summary.attached | default([]) | join(', ') | default('no models', true) }}
-      (off state sends none on {{ openwebui_reasoning_off_models
-        | intersect(openwebui_reasoning_summary.attached | default([])) | join(', ') | default('no models', true) }});
-      {{ 'would change' if ansible_check_mode else 'changed' }}:
-      {{ openwebui_reasoning_summary.changed | default([]) | join('; ') | default('nothing', true) }}
-  vars:
-    openwebui_reasoning_summary: >-
-      {{ (openwebui_reasoning_sync.stdout | default('', true) | trim or '{}') | from_json }}
+  ansible.builtin.debug:
+    msg: >-
+      Thinking switch on
+      {{ container_script_report.attached | default([]) | join(', ') | default('no models', true) }}
+      (off state sends none on
+      {{ openwebui_reasoning_off_models | intersect(container_script_report.attached | default([]))
+         | join(', ') | default('no models', true) }}).
 
 - name: Warn when a reasoning model is not served by Open WebUI yet
   ansible.builtin.debug:
     msg: >-
       WARNING: Open WebUI does not list
-      {{ openwebui_reasoning_summary.missing | join(', ') }} as a base
+      {{ container_script_report.missing | join(', ') }} as a base
       model, so the Thinking switch was not attached there. Rerun once
       the model shows in the chat picker; a Workspace preset with the
       same id is never modified.
-  vars:
-    openwebui_reasoning_summary: >-
-      {{ (openwebui_reasoning_sync.stdout | default('', true) | trim or '{}') | from_json }}
-  when: openwebui_reasoning_summary.missing | default([]) | length > 0
+  when: container_script_report.missing | default([]) | length > 0

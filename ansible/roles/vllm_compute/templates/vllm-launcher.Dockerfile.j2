@@ -1,0 +1,58 @@
+# Managed by Ansible (role: vllm_compute). LLM Launcher image for this node.
+#
+# Local-LLM-Launcher-GUI ({{ vllm_launcher_repo }} @ {{ vllm_launcher_version[:12] }})
+# installed on top of the node's vLLM image, so `vllm` on PATH inside the
+# container is the same build the Ansible-managed units run. The GUI starts
+# `vllm serve` as child processes of this container.
+FROM {{ vllm_launcher_base_image_fq }}
+
+# Some vLLM images (Red Hat's) default to a non-root user; the install and
+# the /root/.cache/huggingface mount both assume root, like the vLLM units.
+USER root
+
+# The launcher is pure Python and runs straight from its source tree: the
+# PYTHONPATH entry holds nothing but the local_llm_launcher package, so it
+# shadows no module of the vLLM processes that inherit it.
+#
+# LAUNCHER_STACK_CHAT (vllm_launcher_chat_enabled) is read twice: by
+# patch_ui.py below, which hides the launcher's chat controls in the page,
+# and by the entry point at every start, which refuses the chat requests.
+# Anything but "enabled" means off.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    LOCAL_LLM_LAUNCHER_HOME=/data \
+    PYTHONPATH=/opt/llm-launcher/src/src \
+    LAUNCHER_STACK_CHAT={{ 'enabled' if vllm_launcher_chat_enabled | bool else 'disabled' }}
+
+COPY src/ /opt/llm-launcher/src/
+COPY overlay/ /opt/llm-launcher/overlay/
+
+# Nothing is installed when the base image already has the launcher's
+# dependencies, which the vLLM images do (fastapi, uvicorn, huggingface_hub,
+# psutil and httpx are vLLM dependencies): the build then needs no network
+# and leaves the image's pinned packages alone. The check only looks the
+# modules up without importing them, so it also passes on a FIPS host where
+# an Ubuntu-based image cannot create a TLS context during the build. A base
+# image that lacks one gets a normal install from PyPI.
+RUN set -eu; \
+    missing="$(python3 -c "import importlib.util as u; print(' '.join(m for m in ('fastapi', 'uvicorn', 'huggingface_hub', 'psutil', 'httpx') if u.find_spec(m) is None))")"; \
+    if [ -n "$missing" ]; then \
+        echo "base image lacks: $missing - installing the launcher's dependencies"; \
+        export PIP_BREAK_SYSTEM_PACKAGES=1 UV_BREAK_SYSTEM_PACKAGES=1; \
+        if python3 -m pip --version >/dev/null 2>&1; then \
+            python3 -m pip install --no-cache-dir /opt/llm-launcher/src; \
+        else \
+            uv pip install --python "$(command -v python3)" /opt/llm-launcher/src; \
+        fi; \
+    fi; \
+    python3 /opt/llm-launcher/overlay/patch_ui.py
+{% for step in vllm_launcher_extra_build_steps %}
+
+{{ step }}
+{% endfor %}
+
+# stack_entry.py starts the launcher like `python3 -m local_llm_launcher`,
+# after switching its chat routes off when LAUNCHER_STACK_CHAT says so. The
+# run script appends --no-browser, --port and --allow-host.
+ENTRYPOINT ["python3", "/opt/llm-launcher/overlay/stack_entry.py"]
+CMD ["--no-browser"]

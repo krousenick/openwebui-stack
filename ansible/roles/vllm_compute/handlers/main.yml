@@ -10,10 +10,13 @@
     daemon_reload: true
 
 - name: Restart vllm-serve
+  # Not on a node whose primary model slot the launcher owns: there the
+  # unit stays stopped, and a changed script must not start it.
   ansible.builtin.systemd:
     name: "{{ vllm_vllm_service_name }}"
     state: restarted
     daemon_reload: true
+  when: not (vllm_launcher_primary_owned | default(false) | bool)
 
 - name: Restart flux services
   ansible.builtin.systemd:

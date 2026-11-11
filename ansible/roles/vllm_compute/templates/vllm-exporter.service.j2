@@ -1,0 +1,27 @@
+[Unit]
+# Managed by Ansible (role: vllm_compute). Prometheus exporter run by
+# rootless podman as {{ vllm_run_user }}. A rootful podman node uses a
+# quadlet for the same container instead (tasks/monitoring.yml).
+Description=vLLM node monitoring exporter ({{ item.name }})
+Wants=network-online.target user@{{ vllm_run_uid }}.service
+After=network-online.target user@{{ vllm_run_uid }}.service
+
+[Service]
+Type=simple
+User={{ vllm_run_user }}
+Group={{ vllm_run_group }}
+Environment=XDG_RUNTIME_DIR=/run/user/{{ vllm_run_uid }}
+# Keeps podman in this unit's cgroup, so its output stays under this unit
+# in the journal (see vllm-serve.service).
+Delegate=yes
+ExecStartPre=-/usr/bin/podman pull --quiet {{ vllm_exporter_image_fq }}
+ExecStart=/usr/bin/podman run --rm --name {{ item.name }}{{ (' ' ~ vllm_container_init_flags) if vllm_container_init_flags | length > 0 else '' }} --security-opt no-new-privileges --log-driver none --publish {{ item.port }}:{{ item.container_port }}{% if item.name == 'vllm-node-exporter' %} -v /:/host:ro -v /proc:/host/proc:ro -v /sys:/host/sys:ro{% endif %}{% if item.name == 'vllm-dcgm-exporter' or item.flavor | default('') == 'nvidia-smi' %} --device nvidia.com/gpu=all{% endif %}{% if item.flavor | default('') == 'nvidia-smi' %} -e NVIDIA_DRIVER_CAPABILITIES=utility{% endif %} {{ vllm_exporter_image_fq }}{{ (' ' ~ (item.extra | join(' '))) if item.extra else '' }}
+ExecStop=/bin/bash -c 'podman rm -f {{ item.name }} || true'
+ExecStopPost=/bin/bash -c 'podman rm -f {{ item.name }} || true'
+Restart=always
+RestartSec=10
+# The init process exits 143 (128 + SIGTERM) on `systemctl stop`.
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target

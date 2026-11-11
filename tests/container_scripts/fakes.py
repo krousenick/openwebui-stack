@@ -1,0 +1,282 @@
+"""Fake LiteLLM and Open WebUI admin APIs for the container script tests.
+
+Each fake is a real HTTP server on a local port with in-memory state, so
+the scripts run unmodified: only --url points somewhere else.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import io
+import json
+import pathlib
+import re
+import threading
+import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
+from urllib.parse import parse_qs, unquote, urlsplit
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = REPO_ROOT / "container-scripts"
+TOKEN = "test-token"
+
+
+@dataclasses.dataclass
+class Request:
+    method: str
+    path: str
+    query: dict[str, str]
+    headers: Any
+    body: bytes
+
+    def json(self) -> Any:
+        return json.loads(self.body) if self.body else None
+
+
+class FakeService:
+    """An in-memory HTTP API on a local port (a free one by default). Subclasses route requests in handle()."""
+
+    def __init__(self, port: int = 0) -> None:
+        service = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def serve(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                url = urlsplit(self.path)
+                request = Request(
+                    method=self.command,
+                    path=unquote(url.path),
+                    query={key: values[0] for key, values in parse_qs(url.query).items()},
+                    headers=self.headers,
+                    body=self.rfile.read(length) if length else b"",
+                )
+                service.requests.append(request)
+                status, payload = service.handle(request)
+                raw = b"" if payload is None else json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            do_GET = do_POST = do_PUT = do_DELETE = serve
+
+            def log_message(self, *args: Any) -> None:
+                pass
+
+        self.requests: list[Request] = []
+        self.server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+    def handle(self, request: Request) -> tuple[int, Any]:
+        raise NotImplementedError
+
+    def authorized(self, request: Request) -> bool:
+        return request.headers.get("Authorization") == f"Bearer {TOKEN}"
+
+    def writes(self) -> list[str]:
+        """Every non-GET request so far, as "METHOD path"."""
+        return [f"{request.method} {request.path}" for request in self.requests if request.method != "GET"]
+
+    def forget_requests(self) -> None:
+        self.requests.clear()
+
+
+def parse_multipart(request: Request) -> dict[str, bytes]:
+    boundary = request.headers["Content-Type"].split("boundary=")[1].encode()
+    fields = {}
+    for part in request.body.split(b"--" + boundary):
+        head, separator, content = part.partition(b"\r\n\r\n")
+        if not separator:
+            continue
+        name = re.search(rb'name="([^"]+)"', head).group(1).decode()
+        fields[name] = content.removesuffix(b"\r\n")
+    return fields
+
+
+def repack_digest(upload: bytes) -> tuple[str, bytes]:
+    """Digest an uploaded skill zip the way the proxy's discovery index does.
+
+    Written from the documented repack rules, independently of the script,
+    so a matching digest proves the script predicts the index correctly.
+    """
+    with zipfile.ZipFile(io.BytesIO(upload)) as archive:
+        (member,) = [name for name in archive.namelist() if name.endswith("/SKILL.md")]
+        source = archive.read(member)
+    info = zipfile.ZipInfo("SKILL.md", date_time=(1980, 1, 1, 0, 0, 0))
+    info.create_system = 3
+    info.external_attr = 0o644 << 16
+    repacked = io.BytesIO()
+    with zipfile.ZipFile(repacked, "w") as archive:
+        archive.writestr(info, source, compress_type=zipfile.ZIP_DEFLATED)
+    return hashlib.sha256(repacked.getvalue()).hexdigest(), source
+
+
+class FakeLiteLLM(FakeService):
+    def __init__(self, port: int = 0) -> None:
+        super().__init__(port)
+        self.index_enabled = True
+        self.search_enabled = True
+        self.skills: dict[str, dict[str, Any]] = {}
+        self.plugins: dict[str, dict[str, Any]] = {}
+        self.models: list[dict[str, Any]] = []
+        self.minted = 0
+
+    def handle(self, request: Request) -> tuple[int, Any]:
+        method, path = request.method, request.path
+        if path == "/.well-known/agent-skills/index.json":
+            if not self.index_enabled:
+                return 404, {"detail": "Not Found"}
+            entries = [
+                {
+                    "name": skill["display_title"],
+                    "type": "skill-md",
+                    "description": skill["description"],
+                    "url": f"/v1/skills/{skill['id']}/archive",
+                    "digest": "sha256:" + skill["digest"],
+                }
+                for skill in self.skills.values()
+            ]
+            # Key order as the live proxy serializes it: "$schema" comes
+            # first, which a prefix test for '{"skills"' would miss.
+            return 200, {"$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json", "skills": entries}
+        if not self.authorized(request):
+            return 401, {"error": "invalid proxy key"}
+        if path == "/model/info":
+            return 200, {"data": self.models}
+        if path == "/v1/skills" and method == "GET":
+            skills = list(self.skills.values())
+            if "query" in request.query:
+                if not self.search_enabled:
+                    return 500, {"error": "no embedding model"}
+                skills = [s for s in skills if request.query["query"] in s["display_title"]]
+                skills = skills[: int(request.query["top_k"])]
+            return 200, {"data": [{"id": s["id"], "display_title": s["display_title"]} for s in skills]}
+        if path == "/v1/skills" and method == "POST":
+            fields = parse_multipart(request)
+            digest, source = repack_digest(fields["files[]"])
+            self.minted += 1
+            skill = {
+                "id": f"skill_{self.minted}",
+                "display_title": fields["display_title"].decode(),
+                "description": fields["description"].decode(),
+                "digest": digest,
+                "source": source.decode(),
+            }
+            self.skills[skill["id"]] = skill
+            return 200, {"id": skill["id"]}
+        if path.startswith("/v1/skills/") and method == "DELETE":
+            return (200, {"deleted": True}) if self.skills.pop(path.rsplit("/", 1)[1], None) else (404, None)
+        if path == "/claude-code/plugins" and method == "POST":
+            entry = request.json()
+            if entry["name"] in self.plugins:
+                return 409, {"error": "exists"}
+            self.plugins[entry["name"]] = entry
+            return 200, entry
+        if path.startswith("/claude-code/plugins/"):
+            name = path.rsplit("/", 1)[1]
+            if name not in self.plugins:
+                return 404, {"error": "not found"}
+            if method == "PUT":
+                major, minor, patch = self.plugins[name]["version"].split(".")
+                self.plugins[name] = {"name": name, **request.json(), "version": f"{major}.{minor}.{int(patch) + 1}"}
+            return 200, self.plugins[name]
+        return 404, {"detail": f"no route for {method} {path}"}
+
+    def titles(self) -> list[str]:
+        return sorted(skill["display_title"] for skill in self.skills.values())
+
+
+class FakeOpenWebUI(FakeService):
+    def __init__(self, port: int = 0) -> None:
+        super().__init__(port)
+        self.served: list[dict[str, Any]] = []
+        self.config: dict[str, Any] = {"DEFAULT_MODELS": "", "MODEL_ORDER_LIST": ["kept"]}
+        self.ignore_config_writes = False
+        self.skills: dict[str, dict[str, Any]] = {}
+        self.skill_lookup_by_id = True
+        self.functions: dict[str, dict[str, Any]] = {}
+        self.model_rows: dict[str, dict[str, Any]] = {}
+
+    def handle(self, request: Request) -> tuple[int, Any]:
+        if not self.authorized(request):
+            return 401, {"detail": "Unauthorized"}
+        method, path = request.method, request.path
+        if path == "/api/models":
+            return 200, {"data": self.served}
+        if path == "/api/v1/configs/models":
+            if method == "POST" and not self.ignore_config_writes:
+                self.config = request.json()
+            return 200, self.config
+        if path.startswith("/api/v1/skills"):
+            return self.handle_skills(method, path.removeprefix("/api/v1/skills"), request)
+        if path.startswith("/api/v1/functions"):
+            return self.handle_functions(method, path.removeprefix("/api/v1/functions"), request)
+        if path == "/api/v1/models/all":
+            return 200, list(self.model_rows.values())
+        if path == "/api/v1/models/create":
+            row = request.json()
+            self.model_rows[row["id"]] = row
+            return 200, row
+        if path == "/api/v1/models/model/update":
+            form = request.json()
+            self.model_rows[form["id"]].update(name=form["name"], meta=form["meta"], params=form["params"])
+            return 200, self.model_rows[form["id"]]
+        return 404, {"detail": f"no route for {method} {path}"}
+
+    def handle_skills(self, method: str, path: str, request: Request) -> tuple[int, Any]:
+        if path == "/":
+            return 200, list(self.skills.values())
+        if path == "/create":
+            form = request.json()
+            if form["id"] in self.skills:
+                return 400, {"detail": "id taken"}
+            self.skills[form["id"]] = {**form, "version_id": "v1"}
+            return 200, self.skills[form["id"]]
+        skill_id = path.split("/")[2]
+        if skill_id not in self.skills:
+            return 404, {"detail": "not found"}
+        if path.endswith("/update"):
+            form = request.json()
+            skill = self.skills[skill_id]
+            if form["expected_version_id"] != skill["version_id"]:
+                return 409, {"detail": "version conflict"}
+            skill.update(
+                name=form["name"],
+                description=form["description"],
+                content=form["content"],
+                version_id=f"v{int(skill['version_id'][1:]) + 1}",
+            )
+            return 200, skill
+        return (200, self.skills[skill_id]) if self.skill_lookup_by_id else (404, {"detail": "not found"})
+
+    def handle_functions(self, method: str, path: str, request: Request) -> tuple[int, Any]:
+        if path == "/create":
+            form = request.json()
+            self.functions[form["id"]] = {**form, "is_active": False, "is_global": False}
+            return 200, self.functions[form["id"]]
+        function_id = path.split("/")[2]
+        if function_id not in self.functions:
+            return 401, {"detail": "NOT_FOUND"}
+        function = self.functions[function_id]
+        if path.endswith("/update"):
+            function.update(request.json())
+        elif path.endswith("/toggle/global"):
+            function["is_global"] = not function["is_global"]
+        elif path.endswith("/toggle"):
+            function["is_active"] = not function["is_active"]
+        return 200, function
+
+
+def write_skill(root: pathlib.Path, package: str, frontmatter: str, *, name: str | None = None, body: str = "") -> None:
+    """Write root/<package>/SKILL.md; the frontmatter name defaults to the package name."""
+    (root / package).mkdir(parents=True, exist_ok=True)
+    text = f"---\nname: {name or package}\n{frontmatter}\n---\n\n# {package}\n{body}"
+    (root / package / "SKILL.md").write_text(text, encoding="utf-8", newline="\n")

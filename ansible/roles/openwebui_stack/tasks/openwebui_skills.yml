@@ -2,16 +2,12 @@
 # Publish the centralized skills (./skills SKILL.md packages) into the
 # Open WebUI workspace so every chat user can $mention them or bind them
 # to models. Open WebUI skills live in its own database with version
-# history, so this goes through the real API instead of writing rows:
+# history, so this goes through the real API instead of writing rows; see
+# container-scripts/openwebui_skills_sync.py for the endpoints.
 #
-#   POST /api/v1/skills/create  - create (400 when the id is taken)
-#   POST /api/v1/skills/id/{id}/update - replace content; requires
-#        expected_version_id matching the stored row's version_id
-#
-# Idempotency: skill id = the SKILL.md frontmatter name. When the id
-# already exists, the task PUTs the content only when it differs from
-# the stored version (compared through GET /api/v1/skills/id/{id}), so a
-# rerun with unchanged skills touches nothing.
+# Idempotency: skill id = the SKILL.md frontmatter name. An existing skill
+# is updated only when its stored content differs from the checkout's
+# SKILL.md, so a rerun with unchanged skills touches nothing.
 #
 # Auth: Open WebUI API keys are random client-generated secrets stored in
 # the api_key table (there is no server-side mint endpoint usable without
@@ -84,68 +80,15 @@
   retries: 30
   delay: 5
   changed_when: false
+  # Read-only, so it also runs under --check; skipped there, the until
+  # would retry an empty result 30 times and fail the dry run.
+  check_mode: false
 
-- name: Publish each skill into the Open WebUI workspace
-  ansible.builtin.command:
-    argv:
-      - docker
-      - exec
-      - -e
-      - "OPENWEBUI_API_KEY={{ openwebui_api_admin_key }}"
-      - "{{ compose_project_name }}_open-webui"
-      - python3
-      - -c
-      - |
-        import json, sys, urllib.request, pathlib, urllib.error, urllib.parse, os
-        name, desc, path, key = sys.argv[1], sys.argv[2], sys.argv[3], os.environ['OPENWEBUI_API_KEY']
-        content = pathlib.Path(path).read_text()
-
-        def call(method, url, payload=None):
-            data = json.dumps(payload).encode() if payload is not None else None
-            req = urllib.request.Request(url, data=data, method=method)
-            req.add_header('Authorization', 'Bearer ' + key)
-            req.add_header('Content-Type', 'application/json')
-            try:
-                with urllib.request.urlopen(req) as resp:
-                    body = resp.read()
-                    return resp.status, json.loads(body) if body else {}
-            except urllib.error.HTTPError as e:
-                body = e.read()
-                try:
-                    return e.code, json.loads(body) if body else {}
-                except ValueError:
-                    return e.code, {'detail': body.decode(errors='replace')[:500]}
-
-        base = 'http://localhost:8080/api/v1/skills'
-        status, current = call('GET', base + '/id/' + urllib.parse.quote(name, safe=''))
-        if status == 404:
-            status, listing = call('GET', base + '/')
-            current = next((skill for skill in listing if skill.get('id') == name), None) if status == 200 else None
-            status = 200 if current else 404
-        if status == 200:
-            if current.get('content') == content:
-                print('unchanged')
-                sys.exit(0)
-            status, updated = call('POST', base + '/id/' + name + '/update', {
-                'id': name, 'name': current.get('name', name),
-                'description': desc, 'content': content,
-                'expected_version_id': current.get('version_id'),
-                'commit_message': 'Synced from openwebui-stack skills/ checkout'})
-            if status != 200:
-                print('update failed: ' + json.dumps(updated)); sys.exit(1)
-            print('updated')
-        else:
-            status, created = call('POST', base + '/create', {
-                'id': name, 'name': name, 'description': desc, 'content': content})
-            if status != 200:
-                print('create failed: ' + json.dumps(created)); sys.exit(1)
-            print('created')
-      - "{{ item.name }}"
-      - "{{ item.description }}"
-      - "/app/skills/{{ item.package }}/SKILL.md"
-  loop: "{{ skills_gateway_skills }}"
-  register: openwebui_skills_publish
-  changed_when: "'created' in openwebui_skills_publish.stdout_lines or 'updated' in openwebui_skills_publish.stdout_lines"
-  failed_when: >-
-    openwebui_skills_publish.rc != 0
-    or 'failed' in openwebui_skills_publish.stdout
+- name: Publish the skill packages into the Open WebUI workspace
+  ansible.builtin.import_tasks:
+    file: container_script.yml
+  vars:
+    container_script: openwebui_skills_sync.py
+    container_script_service: open-webui
+    container_script_env:
+      OPENWEBUI_API_KEY: "{{ openwebui_api_admin_key }}"

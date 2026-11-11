@@ -24,6 +24,7 @@
       - "--exclude=*.key"
       - "--exclude=*.pem"
       - "--exclude=litellm/config.yaml"
+      - "--exclude=__pycache__"
   loop:
     - otel
     - grafana
@@ -35,6 +36,7 @@
     - blender
     - freecad
     - skills
+    - container-scripts
   delegate_to: localhost
   # Synchronize's delegated mode builds its rsync from the delegate host's
   # connection settings (localhost: agent identities, no key), not the

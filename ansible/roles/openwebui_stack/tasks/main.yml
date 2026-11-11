@@ -35,6 +35,14 @@
   tags:
     - always
 
+# After the sync: it creates traefik/dynamic in the deployed tree.
+- name: Publish the LLM Launcher portals through Traefik
+  ansible.builtin.import_tasks:
+    file: launcher.yml
+  tags:
+    - launcher
+    - environment
+
 - name: Render the LiteLLM config
   ansible.builtin.import_tasks:
     file: litellm_config.yml

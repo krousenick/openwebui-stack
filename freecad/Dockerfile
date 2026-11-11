@@ -59,6 +59,7 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.
         nodejs \
         npm \
         git \
+        tini \
     && rm -rf /var/lib/apt/lists/*
 
 # uv installs the freecad-mcp server (python >=3.12; FreeCAD's bundled
@@ -117,4 +118,12 @@ RUN chmod +x /opt/start.sh
 
 EXPOSE 8000
 
+# tini is PID 1 so orphaned processes get reaped. start.sh ends in
+# `exec supergateway`, and the gateway starts the stdio MCP server through a
+# shell for each request and stops the pair together; the server is then
+# orphaned onto PID 1. Node only waits on children it spawned itself, so
+# with the gateway as PID 1 every request leaves a defunct process behind.
+# Do not also set `init: true` on the compose service: tini would not be
+# PID 1 and warns about it on every start.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/opt/start.sh"]

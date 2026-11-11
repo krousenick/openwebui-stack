@@ -67,11 +67,20 @@
 
 - name: Probe the vLLM KV capacity line
   # The engine logs the real KV token capacity and worst-case concurrency
-  # at startup; grepping the container logs gives the measured number,
-  # not the config-math estimate.
-  ansible.builtin.shell: >-
-    {{ vllm_container_cli | default('podman') }} logs vllm-serve 2>&1
-    | grep -E "GPU KV cache size" | tail -1
+  # at startup; grepping the server's log gives the measured number, not
+  # the config-math estimate. The unit's journal first: the container's
+  # output lands there whoever runs the container, while `podman logs` as
+  # root finds nothing on a node whose containers run rootless (they are in
+  # the service account's store). The container log is the fallback.
+  ansible.builtin.shell: |
+    line=$(journalctl -b -u {{ vllm_vllm_service_name | default('vllm-serve') }} --no-pager -o cat 2>/dev/null \
+        | grep -E "GPU KV cache size" | tail -1)
+    if [ -z "$line" ]; then
+        line=$({{ vllm_container_cli | default('podman') }} logs vllm-serve 2>&1 | grep -E "GPU KV cache size" | tail -1)
+    fi
+    echo "$line"
+  args:
+    executable: /bin/bash
   register: vllm_eval_kv_line
   changed_when: false
   failed_when: false

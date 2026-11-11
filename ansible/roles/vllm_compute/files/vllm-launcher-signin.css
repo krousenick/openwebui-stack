@@ -1,0 +1,73 @@
+/* Managed by Ansible (role: vllm_compute). Sign-in chip and Log out link for
+   the LLM Launcher portal. Colors come from the launcher's own theme
+   variables, so the chip follows its light and dark themes. */
+
+.stack-auth {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-body, system-ui, sans-serif);
+}
+
+.stack-auth__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 6px 12px;
+  border-radius: 99px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2, #4b5563);
+  background: var(--accent-light, #eff6ff);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stack-auth__node {
+  color: var(--ink-3, #9ca3af);
+  font-weight: 500;
+}
+
+.stack-auth__logout {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border, #e5e7eb);
+  color: var(--ink-2, #4b5563);
+  background: none;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.stack-auth__logout:hover,
+.stack-auth__logout:focus-visible {
+  color: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+}
+
+/* Fallback when the launcher's top bar is not found (layout changed in a
+   newer release): float in the corner instead of disappearing. */
+.stack-auth--floating {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 40;
+  padding: 6px 8px;
+  border-radius: var(--radius, 10px);
+  background: var(--surface, #ffffff);
+  border: 1px solid var(--border, #e5e7eb);
+  box-shadow: var(--shadow-lg, 0 4px 16px rgba(0, 0, 0, 0.06));
+}
+
+@media (max-width: 720px) {
+  .stack-auth__chip {
+    max-width: 140px;
+  }
+
+  .stack-auth__node {
+    display: none;
+  }
+}

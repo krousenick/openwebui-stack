@@ -1,14 +1,18 @@
 ---
 - name: Require Brave Search settings
+  # No model provider key is required here: the Brave MCP server is wired
+  # into LiteLLM's MCP gateway and Open WebUI's tool servers, and every
+  # function-calling model the proxy serves (Gemini, Claude, Bedrock, vLLM)
+  # reaches it the same way. Requiring gemini_api_key failed the run on
+  # Anthropic-only deployments and left the Claude models without search.
   ansible.builtin.assert:
     that:
       - brave_search_api_key | length > 0
-      - gemini_api_key | length > 0
       - litellm_master_key | length > 0
       - openwebui_db_user | length > 0
       - openwebui_db_password | length > 0
       - openwebui_db_name | length > 0
-    fail_msg: "Brave Search requires its API key, Gemini key, LiteLLM key, and Open WebUI database settings."
+    fail_msg: "Brave Search requires its API key, LiteLLM key, and Open WebUI database settings."
 
 - name: Record current Brave configuration
   ansible.builtin.command:
