@@ -21,3 +21,7 @@ domain: example.com
 # litellm_gemini_models_enabled: true
 # litellm_anthropic_models_enabled: true
 # litellm_bedrock_models_enabled: true
+
+# Claude Code on your own Claude plan through LiteLLM, for usage tracking
+# (README "Claude Code on a Claude subscription"). Needs no key.
+# litellm_claude_subscription_enabled: true

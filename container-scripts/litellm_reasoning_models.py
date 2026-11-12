@@ -11,6 +11,9 @@ one of them is, and it accepts reasoning_effort "none" when every one of
 them does. A router with a target that cannot reason, a target that is not
 served, or no readable target list is left out.
 
+Rows whose model_info.stack_hidden is true are skipped: no chat app can call
+them (the Claude subscription passthrough's names), so they get no switch.
+
 Environment: LITELLM_MASTER_KEY.
 Report keys: reasoning (model names, routers included), can_disable (the
 subset that accepts reasoning_effort "none", from
@@ -66,7 +69,9 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     router_pools: dict[str, set[str]] = {}
     for entry in (api.get("/model/info") or {}).get("data") or []:
         name, info = entry.get("model_name"), entry.get("model_info") or {}
-        if not name:
+        # Not for chat apps (the Claude subscription passthrough's names, see
+        # litellm_claude_subscription.py): no switch, and not a router target.
+        if not name or info.get("stack_hidden") is True:
             continue
         targets = router_targets(entry.get("litellm_params") or {})
         if targets is not None:

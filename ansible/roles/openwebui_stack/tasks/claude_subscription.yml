@@ -1,0 +1,64 @@
+---
+# Claude Code on a Claude subscription through LiteLLM, for usage tracking
+# (litellm_claude_subscription_enabled). Two steps:
+#
+#   1. container-scripts/litellm_claude_subscription.py (litellm container)
+#      keeps one `anthropic/*` deployment with no API key in LiteLLM's model
+#      database (POST /model/new, /model/delete), or none when the switch is
+#      off. LiteLLM forwards a caller's own claude.ai sign-in (the
+#      Authorization header Claude Code sends when ANTHROPIC_BASE_URL points
+#      at the proxy and it has no gateway credential) to direct anthropic/
+#      deployments, adds the OAuth beta header, and logs the request with
+#      used_client_oauth_token. Needs LiteLLM 1.81.14 or later; the Logs
+#      filter by credential needs 1.105.0.
+#   2. container-scripts/openwebui_hidden_models.py (open-webui container)
+#      hides the names the wildcard expands to (~26, one per Claude model in
+#      LiteLLM's cost map) from Open WebUI's picker with inactive Workspace
+#      entries. Open-source LiteLLM cannot keep a model out of the master
+#      key's /v1/models (team-only models are an Enterprise feature), and no
+#      chat app can call these: they need the caller's subscription token.
+#
+# The deployment's model_info carries stack_hidden, which LiteLLM copies
+# into every expanded row; step 2 hides exactly those names, and the
+# reasoning discovery (litellm_reasoning_models.py) gives them no Thinking
+# switch. New Claude releases reach LiteLLM's cost map with image updates;
+# rerun this (site.yml --tags claude-subscription) to hide the new names.
+#
+# Runs with the switch off too: step 1 removes the deployment and step 2
+# deletes the entries it made, so the stack returns to its earlier state.
+
+- name: Keep the Claude subscription passthrough in LiteLLM
+  ansible.builtin.import_tasks:
+    file: container_script.yml
+  vars:
+    container_script: litellm_claude_subscription.py
+    container_script_service: litellm
+    container_script_args:
+      - --state
+      - "{{ 'present' if litellm_claude_subscription_enabled | bool else 'absent' }}"
+    container_script_env:
+      LITELLM_MASTER_KEY: "{{ litellm_master_key }}"
+
+- name: Record the model names no chat app can use
+  ansible.builtin.set_fact:
+    claude_subscription_hidden_models: "{{ container_script_report.hidden_models | default([]) }}"
+
+- name: Hide those names from the Open WebUI chat picker
+  ansible.builtin.import_tasks:
+    file: container_script.yml
+  vars:
+    container_script: openwebui_hidden_models.py
+    container_script_service: open-webui
+    container_script_env:
+      OPENWEBUI_API_KEY: "{{ openwebui_api_admin_key }}"
+    container_script_payload:
+      models: "{{ claude_subscription_hidden_models }}"
+
+- name: Report Open WebUI entries the playbook does not own
+  ansible.builtin.debug:
+    msg: >-
+      These names stay visible in Open WebUI because an admin made an entry
+      for them: {{ container_script_report.unmanaged | join(', ') }}.
+      Switch them off in Admin > Settings > Models, or delete the entries
+      and rerun.
+  when: container_script_report.unmanaged | default([]) | length > 0

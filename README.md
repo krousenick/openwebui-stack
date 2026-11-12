@@ -347,6 +347,40 @@ Defaults (`opencode_default_model: litellm/gemini-4-argon`, `small_model: litell
 
 **Claude models.** With `litellm_anthropic_models_enabled: true` the role also overrides opencode's built-in `anthropic` provider (`opencode_anthropic_enabled`, which follows that flag) so it calls the proxy's Anthropic-native `https://litellm.<domain>/v1/messages` with the same per-user key. Claude then gets the Messages API as-is (adaptive thinking, prompt caching, native tool use) instead of the OpenAI-format translation, and spend still lands on the user's virtual key. `opencode_anthropic_models` whitelists the picker to the Claude `model_name`s the proxy serves. The same models also appear under `litellm/` through discovery; prefer the `anthropic/` entries. When Gemini is off, the defaults become `anthropic/claude-opus-5-5` and `anthropic/claude-haiku-5-5`.
 
+### Claude Code on a Claude subscription (usage tracking)
+
+Claude Code signed in with your own Claude plan (Pro or Max) can go through LiteLLM, so each of its requests is logged with its tokens next to the rest of the stack's usage. The plan's sign-in stays the credential: LiteLLM forwards Claude Code's `Authorization` header (the plan's OAuth token) to Anthropic and adds the OAuth beta header, and the stack holds no Anthropic key. Anthropic documents this for Claude Code behind a gateway (`ANTHROPIC_BASE_URL` set, no gateway credential; see [Claude Code's gateway docs](https://code.claude.com/docs/en/llm-gateway)), and its [terms](https://code.claude.com/docs/en/legal-and-compliance) limit plan sign-ins to your own use of Claude Code and Anthropic's apps. Never point Open WebUI, another app or another person at a plan's sign-in; without the caller's own token the passthrough cannot answer anyway.
+
+Turn it on with `litellm_claude_subscription_enabled: true` (in `vars.local.yml`; the role default is false), then run:
+
+```bash
+cd ansible && ansible-playbook -i inventory/hosts.yml -i inventory/hosts.local.yml playbooks/site.yml --tags claude-subscription
+```
+
+The task registers an `anthropic/*` deployment with no API key through LiteLLM's model API (no LiteLLM restart) and hides the names it expands to, about 26 Claude models, from Open WebUI's picker. They get no Thinking switch.
+
+Then give your Claude Code a LiteLLM key of its own (LiteLLM UI → Virtual Keys, or `POST /key/generate` with `"models": ["anthropic/*"]`) and set, in its user settings (`~/.claude/settings.json`) or your shell:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://litellm.<domain>",
+    "ANTHROPIC_CUSTOM_HEADERS": "x-litellm-api-key: Bearer <your LiteLLM key>"
+  }
+}
+```
+
+Leave `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `apiKeyHelper` unset: any of them replaces the plan's sign-in and bills per token. Sign in to Claude Code with your Claude account as usual.
+
+Usage then shows in the LiteLLM UI under Logs (filter by Credential: Client OAuth token), per key and model; the spend-log metadata carries `used_client_oauth_token=true`. Cost figures are at API list prices, not what the plan charges.
+
+Before you move every session over:
+
+- Claude Code then depends on the stack: when LiteLLM, or the route to it, is down, Claude Code is too.
+- The default content filter (`default-content-filter`) applies to this traffic like any other. It masks email addresses and blocks requests that contain AWS keys, GitHub tokens or US SSNs, which stalls a session that reads such a file. A key created with `disable_global_guardrails` skips it.
+- `/v1/messages/count_tokens` does not use the plan's token, so `/context` shows estimates.
+- New Claude models reach LiteLLM's cost map with image updates. Rerun `--tags claude-subscription` to hide their names too.
+
 ## Configuration
 
 ### Environment Variables

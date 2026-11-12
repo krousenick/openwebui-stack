@@ -184,6 +184,21 @@ litellm_gemini_models_enabled: false
 # nothing useful without a key. Set true in group_vars once the key exists.
 litellm_anthropic_models_enabled: false
 
+# Claude Code on your own Claude subscription (Pro/Max) through LiteLLM, so
+# its token use is logged (tasks/claude_subscription.yml). true registers an
+# `anthropic/*` deployment with no API key through LiteLLM's model API;
+# LiteLLM forwards each caller's own claude.ai sign-in to Anthropic and logs
+# the request (Logs > Credential: Client OAuth token; spend shown at API
+# list prices). Only Claude Code can use it: started with ANTHROPIC_BASE_URL
+# at the proxy, no ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN, and a LiteLLM key
+# in ANTHROPIC_CUSTOM_HEADERS (x-litellm-api-key). Anthropic's terms allow
+# this for your own unmodified Claude Code signed in with your own plan,
+# never for routing other apps or other people through a plan (README
+# "Claude Code on a Claude subscription"). The ~26 names the wildcard
+# expands to are hidden in Open WebUI and get no Thinking switch. false
+# removes the deployment and the hidden entries.
+litellm_claude_subscription_enabled: false
+
 # LiteLLM `auto` model (auto_router/complexity_router): which model_name
 # answers each complexity tier. A tier value is one model_name or a list
 # (random pick per request). All four tiers are required; {} drops the

@@ -135,6 +135,21 @@ def test_a_router_config_delivered_as_a_json_string_is_read(litellm):
     assert discover(litellm, entry)["can_disable"] == ["auto", "gemma", "qwen"]
 
 
+def test_rows_no_chat_app_can_use_get_no_switch(litellm):
+    # The Claude subscription passthrough's expanded names: reasoning-capable
+    # in the cost map, but only Claude Code (with its own sign-in) can call them.
+    hidden = {"supports_reasoning": True, "supports_none_reasoning_effort": True, "stack_hidden": True}
+    report = discover(
+        litellm,
+        {"model_name": "anthropic/claude-opus-9", "model_info": {"id": "passthrough", **hidden}},
+        adaptive_router("pool", "gemma", "anthropic/claude-opus-9"),
+    )
+    assert "anthropic/claude-opus-9" not in report["reasoning"]
+    assert "anthropic/claude-opus-9" not in report["can_disable"]
+    # A router that can land on a hidden name is not a reasoning target either.
+    assert "pool" not in report["routers"]
+
+
 def test_first_run_installs_the_functions_and_attaches_them(workspace, sync):
     report = sync()
 

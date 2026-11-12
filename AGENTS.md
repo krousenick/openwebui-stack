@@ -177,6 +177,16 @@ Open WebUI 0.13.3 lists the switch only in the chat input's `+` menu unless the 
 
 opencode needs no plugin: `/variants` and `ctrl+t` are built in, and the levels are the variants `opencode-plugin-litellm` builds from the `supports_<level>_reasoning_effort` flags (`vllm_reasoning_efforts`). The role only seeds `tui.json` with a key for the picker (`opencode_variant_picker_keybind`, never overwriting an existing file). Details in `docs/vllm-inference.md` "The Thinking switch in Open WebUI".
 
+### Claude Code subscription passthrough (usage tracking)
+
+`litellm_claude_subscription_enabled` (`tasks/claude_subscription.yml`, tag `claude-subscription`) lets the user's own Claude Code, signed in with their own Pro/Max plan, go through LiteLLM so its tokens are logged. `container-scripts/litellm_claude_subscription.py` keeps one `anthropic/*` deployment with no API key in LiteLLM's model database; LiteLLM (1.81.14+) forwards the caller's `Authorization` (the plan's OAuth token) to direct `anthropic/` deployments and logs `used_client_oauth_token=true`. The client sets `ANTHROPIC_BASE_URL` to the proxy root and its LiteLLM key in `ANTHROPIC_CUSTOM_HEADERS` (`x-litellm-api-key`), with no API-key variable. Setup and caveats in README "Claude Code on a Claude subscription".
+
+**Critical implementation notes:**
+- Anthropic's terms allow a plan's sign-in only for the user's own Claude Code and Anthropic's apps. Never wire Open WebUI, opencode or another client to it, and never build anything that obtains, stores or replays a plan's OAuth token (ruvnet/ruflo#605, opencode-gemini-auth-style flows). Gemini CLI OAuth in third-party software is a Google policy violation, and Google stopped serving consumer plans through it on 2026-06-18.
+- The wildcard expands to one name per Claude model in LiteLLM's cost map (~26) in the master key's `/v1/models` and `/model/info`, which is what Open WebUI and the reasoning discovery read. Team-only models would scope it but need LiteLLM Enterprise (`/model/new` with `model_info.team_id` answers 403); `model_group_alias` `hidden` covers alias names only. So the deployment's `model_info` carries `stack_hidden: true`, which LiteLLM copies into every expanded row: `litellm_reasoning_models.py` skips such rows, and `container-scripts/openwebui_hidden_models.py` keeps an inactive Workspace entry (`meta.stackHidden`) per name, which drops it from the picker for everyone. It leaves admin-made entries alone and deletes its own when a name goes.
+- After `/model/new` or `/model/delete` the script rereads `/model/info` until the change shows: a worker that has not loaded the database yet would report the old names.
+- The stack's chat-completion hooks (Brave injector, context compaction) skip Claude Code's `anthropic_messages` calls; `default-content-filter` does not (the user chose to keep it on 2026-11-12; a key with `disable_global_guardrails` skips it).
+
 ### LLM Launcher portals (web GUI per vLLM inference server)
 
 ```bash
@@ -327,6 +337,8 @@ Task files hold no inline Python. Every Python job of the `openwebui_stack` role
 | `openwebui_default_models.py` | open-webui | `openwebui_default_models.yml` |
 | `openwebui_reasoning_sync.py` | open-webui | `openwebui_reasoning.yml` |
 | `openwebui_interface_defaults.py` | open-webui | `openwebui_interface_defaults.yml` |
+| `litellm_claude_subscription.py` | litellm | `claude_subscription.yml` |
+| `openwebui_hidden_models.py` | open-webui | `claude_subscription.yml` |
 
 Shared code: `stack_api.py` (HTTP client, argument parser, exit contract) and `skill_packages.py` (SKILL.md discovery and the frontmatter rules).
 

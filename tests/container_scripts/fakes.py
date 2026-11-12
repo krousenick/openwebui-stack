@@ -131,6 +131,16 @@ class FakeLiteLLM(FakeService):
         # False: PATCH answers 200 but /model/info keeps the old entry, like a
         # worker that has not reloaded the database yet.
         self.apply_patches = True
+        # What a wildcard deployment expands to in /model/info: LiteLLM 1.110
+        # (expand_wildcard_deployments_for_model_info) adds one row per known
+        # provider model, copying the deployment's model_info, id included.
+        self.wildcard_names: dict[str, list[str]] = {
+            "anthropic/*": ["anthropic/claude-haiku-9", "anthropic/claude-opus-9"],
+        }
+        # False: /model/new stores the deployment but /model/info does not
+        # show it, like a worker that has not loaded the database change.
+        self.list_new_models = True
+        self.deployments_created = 0
 
     def handle(self, request: Request) -> tuple[int, Any]:
         method, path = request.method, request.path
@@ -157,6 +167,10 @@ class FakeLiteLLM(FakeService):
         patch = re.fullmatch(r"/model/([^/]+)/update", path)
         if patch and method == "PATCH":
             return self.patch_model(patch.group(1), request.json())
+        if path == "/model/new" and method == "POST":
+            return self.add_model(request.json())
+        if path == "/model/delete" and method == "POST":
+            return self.delete_model(request.json().get("id"))
         if path == "/v1/skills" and method == "GET":
             skills = list(self.skills.values())
             if "query" in request.query:
@@ -221,6 +235,25 @@ class FakeLiteLLM(FakeService):
         info.update({key: value for key, value in (body.get("model_info") or {}).items() if value is not None})
         return 200, entry
 
+    def add_model(self, body: dict[str, Any]) -> tuple[int, Any]:
+        """POST /model/new: store the deployment, listed (expanded) unless list_new_models is off."""
+        self.deployments_created += 1
+        model_id = f"deployment-{self.deployments_created}"
+        info = {**(body.get("model_info") or {}), "id": model_id}
+        if self.list_new_models:
+            for name in self.wildcard_names.get(body["model_name"], [body["model_name"]]):
+                params = {**(body.get("litellm_params") or {}), "model": name}
+                self.models.append({"model_name": name, "litellm_params": params, "model_info": dict(info)})
+        return 200, {"model_id": model_id, "model_name": body["model_name"], "model_info": info}
+
+    def delete_model(self, model_id: object) -> tuple[int, Any]:
+        """POST /model/delete: drop every row of that deployment."""
+        kept = [m for m in self.models if (m.get("model_info") or {}).get("id") != model_id]
+        if len(kept) == len(self.models):
+            return 400, {"error": f"model {model_id} not found"}
+        self.models = kept
+        return 200, {"message": f"Model: {model_id} deleted successfully"}
+
 
 # Open WebUI 0.13.3 MfaConfigForm fields; written from its source, not
 # imported from the script under test.
@@ -277,8 +310,16 @@ class FakeOpenWebUI(FakeService):
             return 200, row
         if path == "/api/v1/models/model/update":
             form = request.json()
-            self.model_rows[form["id"]].update(name=form["name"], meta=form["meta"], params=form["params"])
-            return 200, self.model_rows[form["id"]]
+            row = self.model_rows[form["id"]]
+            row.update(name=form["name"], meta=form["meta"], params=form["params"])
+            # 0.13.3 keeps the stored active state unless the form sets it.
+            if "is_active" in form:
+                row["is_active"] = form["is_active"]
+            return 200, row
+        if path == "/api/v1/models/model/delete":
+            if self.model_rows.pop(request.json()["id"], None) is None:
+                return 401, {"detail": "NOT_FOUND"}
+            return 200, True
         return 404, {"detail": f"no route for {method} {path}"}
 
     def handle_admin_config(self, method: str, request: Request) -> tuple[int, Any]:

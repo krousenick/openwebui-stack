@@ -144,6 +144,14 @@
     - openwebui-config
     - openwebui-reasoning
 
+# Runs with the switch off too, to remove what an earlier run added.
+- name: Keep the Claude subscription passthrough for Claude Code
+  ansible.builtin.import_tasks:
+    file: claude_subscription.yml
+  tags:
+    - openwebui-config
+    - claude-subscription
+
 - name: Configure Keycloak SSO
   ansible.builtin.import_tasks:
     file: keycloak.yml
