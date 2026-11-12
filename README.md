@@ -465,6 +465,7 @@ cd ansible && ansible-playbook playbooks/site.yml --tags openwebui-config
 #### Storage & Search
 
 - **Qdrant**: Vector database for semantic search and RAG operations
+- **Text Embeddings Inference** (`text-embeddings`): Hugging Face's embedding server on the stack host's CPU, serving `BAAI/bge-small-en-v1.5` (pinned revision) on an OpenAI-compatible `/v1/embeddings`. LiteLLM lists it as `local-embedding` and semantic skill search uses it by default, so search works without any provider key. About 550 MB of memory, limited to 2 CPUs and 1 GB; the model (about 130 MB) downloads into `text_embeddings_data` on first start. Backend network for LiteLLM, frontend for that download; no Traefik route. Off with `local_embedding_enabled: false`.
 
 #### Observability (LGTM Stack)
 
@@ -935,9 +936,14 @@ WebUI, so a skill must be self-contained: files beside it (`references/`,
    `~/.config/opencode/skills/`, where opencode discovers them through its
    native `skill` tool.
 
-Semantic skill search ranks the proxy store on demand
-(`skill_search_embedding_model: text-embedding` → gemini-embedding-001,
-needs `litellm_gemini_models_enabled: true`).
+Semantic skill search ranks the proxy store on demand. It embeds with
+`litellm_skill_search_embedding_model`, which can name any model LiteLLM
+serves that can embed; by default that is `local-embedding`
+(BAAI/bge-small-en-v1.5 in the `text-embeddings` service on the stack
+host's CPU), so search needs no provider key. With
+`local_embedding_enabled: false` it falls back to Gemini's
+`text-embedding` when the Gemini models are on, otherwise search is off
+and listing skills still works.
 
 ### Consume the skills
 
@@ -1047,9 +1053,9 @@ skill is a Claude/Anthropic Agent Skills package at
 dimension check, ask-before-print rule). It is registered by the same
 Skills Gateway flow as every other skill in `skills/` — see
 [Centralized Skills](#centralized-skills-skills-gateway). Semantic skill
-search ranks it on demand (`litellm_settings.skill_search_embedding_model:
-text-embedding` → gemini-embedding-001), so agents describe what they need
-instead of listing the registry.
+search ranks it on demand (`litellm_settings.skill_search_embedding_model`,
+by default the local `local-embedding` model), so agents describe what
+they need instead of listing the registry.
 
 **Open WebUI** gets the skill the same way as the rest of `skills/` — the
 playbook pushes it into the workspace through the Open WebUI Skills

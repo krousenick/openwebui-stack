@@ -41,8 +41,10 @@
       LITELLM_MASTER_KEY: "{{ litellm_master_key }}"
 
 - name: Show skill search result count
-  # Report-only: semantic search needs skill_search_embedding_model, and
-  # the script reports null instead of failing when it does not answer.
+  # Report-only: semantic search needs skill_search_embedding_model
+  # (litellm_skill_search_embedding_model, by default the local
+  # local-embedding model), and the script reports null instead of failing
+  # when it does not answer.
   ansible.builtin.debug:
     msg: >-
       Skill search returned {{ container_script_report.search.results }}

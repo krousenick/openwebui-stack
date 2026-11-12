@@ -46,13 +46,15 @@ general_settings:
 litellm_settings:
   # Enable streaming
   set_verbose: false
-{% if litellm_gemini_models_enabled | default(false) | bool %}
+{% if litellm_skill_search_embedding_model_effective | length > 0 %}
   # Semantic skill search over the proxy-hosted skill store (/v1/skills with
-  # custom_llm_provider=litellm_proxy). The model_name references the
-  # text-embedding deployment in model_list (gemini-embedding-001), which is
-  # gated on litellm_gemini_models_enabled like the other Gemini models.
+  # custom_llm_provider=litellm_proxy, and the skill_search MCP tool).
+  # LiteLLM calls this model through its router, so any model_name in the
+  # model list that can embed works, including models registered at
+  # runtime. From litellm_skill_search_embedding_model; by default the
+  # local model (local-embedding), else Gemini's text-embedding.
   # https://docs.litellm.ai/docs/skills#semantic-search-over-litellm-hosted-skills
-  skill_search_embedding_model: text-embedding
+  skill_search_embedding_model: {{ litellm_skill_search_embedding_model_effective | to_json }}
 {% endif %}
 {% if skills_public_index_enabled | default(true) | bool %}
   # Agent Skills discovery index: publishes every proxy-hosted skill at
@@ -286,6 +288,20 @@ guardrails:
 {% endmacro %}
 
 model_list:
+{% if local_embedding_enabled | default(false) | bool %}
+  # Local embedding model: Text Embeddings Inference on CPU in the
+  # text-embeddings service (backend network), on its OpenAI-compatible
+  # /v1/embeddings. Needs no provider key; semantic skill search uses it
+  # by default (litellm_skill_search_embedding_model).
+  - model_name: local-embedding
+    litellm_params:
+      model: {{ ('openai/' ~ local_embedding_model) | to_json }}
+      api_base: http://text-embeddings:80/v1
+      api_key: "none"
+    model_info:
+      mode: embedding
+      description: {{ (local_embedding_model ~ ' embeddings on the stack host (CPU)') | to_json }}
+{% endif %}
 {% if litellm_gemini_models_enabled | default(false) | bool %}
   # Google Gemini (Google AI Studio). gemini/ prefix uses GEMINI_API_KEY.
   # Skipped unless litellm_gemini_models_enabled is true (they need
@@ -329,9 +345,9 @@ model_list:
     model_info:
       description: "Gemini 4 Argon - current Gemini model"
 {{ adaptive_model_info('gemini-4-argon') }}
-  # Embedding model for LiteLLM's skill search (semantic ranking over the
-  # proxy-hosted skills in /v1/skills, see litellm_settings below) and any
-  # RAG use. Same GEMINI_API_KEY as the chat models.
+  # Gemini embedding model, same GEMINI_API_KEY as the chat models. Skill
+  # search uses it only when the local model is off or when
+  # litellm_skill_search_embedding_model names it.
   - model_name: text-embedding
     litellm_params:
       model: gemini/gemini-embedding-001

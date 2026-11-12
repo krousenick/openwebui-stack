@@ -7,8 +7,8 @@ skill store (`/v1/skills`, `custom_llm_provider=litellm_proxy`) and the
 registry entry (`/claude-code/plugins/3d-print-pipeline`) is served from the
 proxy's own archive, so Claude Code (`3d-print-pipeline@litellm`), `npx
 skills add`, and any Skills-API agent can fetch it. Semantic search
-(`skill_search_embedding_model: text-embedding`) lets agents find it by
-description. The copy below is kept for human reading; if you edit one,
+(`skill_search_embedding_model`, by default the local `local-embedding`
+model) lets agents find it by description. The copy below is kept for human reading; if you edit one,
 edit both.
 
 ---

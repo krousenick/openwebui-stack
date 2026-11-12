@@ -781,6 +781,58 @@ services:
       - frontend
 {% endif %}
 
+{% if local_embedding_enabled | default(false) | bool %}
+  # ===========================================================================
+  # Local embedding model - Hugging Face Text Embeddings Inference (CPU)
+  # Serves {{ local_embedding_model }} on an OpenAI-compatible
+  # /v1/embeddings at http://text-embeddings:80/v1. LiteLLM lists it as
+  # local-embedding, and semantic skill search uses it by default, so search
+  # needs no provider key. Downloads the pinned model revision from Hugging
+  # Face into text_embeddings_data on first start (frontend network for
+  # egress); LiteLLM reaches it on backend. No Traefik route.
+  # LiteLLM sends every skill text it has not embedded yet in one request,
+  # hence the raised client batch size (TEI's default is 32 inputs).
+  # ===========================================================================
+  text-embeddings:
+    image: "{{ local_embedding_image }}"
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_text-embeddings
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - --model-id
+      - "{{ local_embedding_model }}"
+      - --revision
+      - "{{ local_embedding_model_revision }}"
+      - --hostname
+      - 0.0.0.0
+      - --port
+      - "80"
+      - --max-client-batch-size
+      - "1024"
+      - --json-output
+    environment:
+      # Worker threads; matches the CPU limit below (the image defaults to 8).
+      RAYON_NUM_THREADS: "2"
+    volumes:
+      - text_embeddings_data:/data
+    healthcheck:
+      test: [ "CMD", "curl", "-sf", "http://localhost:80/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+    networks:
+      - backend
+      - frontend
+{% endif %}
+
 {% if printer_mcp_enabled | default(false) | bool and bambu_host | default('') | length > 0 %}
   # ===========================================================================
   # Printer MCP - bambu-printer-mcp + Bambu Studio CLI slicer
@@ -1457,3 +1509,5 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_models
   alloy_data:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_alloy_data
+  text_embeddings_data:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_text_embeddings_data

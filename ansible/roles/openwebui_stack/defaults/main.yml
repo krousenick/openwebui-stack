@@ -371,6 +371,37 @@ openwebui_reasoning_models_exclude: []
 # set false to keep skills visible only to keys with store access.
 skills_public_index_enabled: true
 
+# Local embedding model: Hugging Face Text Embeddings Inference on CPU
+# (compose service text-embeddings), served by LiteLLM as `local-embedding`
+# on its OpenAI-compatible /v1/embeddings. Semantic skill search uses it by
+# default, so search works whichever chat providers are on: Claude has no
+# embedding model and Gemini's needs the Gemini key. bge-small-en-v1.5 is
+# 33M parameters and 384 dimensions, about 130 MB on disk and 550 MB of
+# memory; it is downloaded from Hugging Face into the text_embeddings_data
+# volume on first start. The revision pins the Hugging Face commit, so a
+# fresh download cannot change the vectors. false removes the service and
+# the model.
+local_embedding_enabled: true
+local_embedding_model: BAAI/bge-small-en-v1.5
+local_embedding_model_revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+local_embedding_image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
+
+# Model LiteLLM's semantic skill search embeds with
+# (litellm_settings.skill_search_embedding_model; GET /v1/skills?query= and
+# the skill_search MCP tool). Any model_name the proxy serves that can embed
+# works: local-embedding, Gemini's text-embedding, a Bedrock embedding
+# model, or one registered at runtime such as a vLLM embedding server.
+# Empty picks local-embedding when local_embedding_enabled, else Gemini's
+# text-embedding when litellm_gemini_models_enabled, else none: semantic
+# search is then off, and listing skills still works.
+litellm_skill_search_embedding_model: ""
+
+# Derived, not configured: the model the template renders.
+litellm_skill_search_embedding_model_effective: >-
+  {{ litellm_skill_search_embedding_model
+     or ('local-embedding' if local_embedding_enabled | bool
+         else ('text-embedding' if litellm_gemini_models_enabled | default(false) | bool else '')) }}
+
 # Chat from the LiteLLM admin UI (its Playground and Chat pages). Off:
 # people talk to models through Open WebUI or an API client (opencode, an
 # IDE), and the admin UI stays for keys, models, usage and settings. Two
