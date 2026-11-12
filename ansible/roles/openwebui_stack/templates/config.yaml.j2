@@ -292,7 +292,10 @@ model_list:
   # Local embedding model: Text Embeddings Inference on CPU in the
   # text-embeddings service (backend network), on its OpenAI-compatible
   # /v1/embeddings. Needs no provider key; semantic skill search uses it
-  # by default (litellm_skill_search_embedding_model).
+  # by default (litellm_skill_search_embedding_model). stack_hidden keeps
+  # it out of Open WebUI's chat picker, where it could not chat: every
+  # model_info.stack_hidden row is hidden there by
+  # tasks/claude_subscription.yml, and the Thinking switch skips it.
   - model_name: local-embedding
     litellm_params:
       model: {{ ('openai/' ~ local_embedding_model) | to_json }}
@@ -300,6 +303,7 @@ model_list:
       api_key: "none"
     model_info:
       mode: embedding
+      stack_hidden: true
       description: {{ (local_embedding_model ~ ' embeddings on the stack host (CPU)') | to_json }}
 {% endif %}
 {% if litellm_gemini_models_enabled | default(false) | bool %}
@@ -347,11 +351,15 @@ model_list:
 {{ adaptive_model_info('gemini-4-argon') }}
   # Gemini embedding model, same GEMINI_API_KEY as the chat models. Skill
   # search uses it only when the local model is off or when
-  # litellm_skill_search_embedding_model names it.
+  # litellm_skill_search_embedding_model names it. Hidden from Open WebUI's
+  # chat picker like local-embedding (stack_hidden).
   - model_name: text-embedding
     litellm_params:
       model: gemini/gemini-embedding-001
       api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      mode: embedding
+      stack_hidden: true
 {% endif %}
 {% if litellm_anthropic_models_enabled | default(false) | bool %}
 

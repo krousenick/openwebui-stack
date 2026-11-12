@@ -394,8 +394,10 @@ skills_public_index_enabled: true
 # 33M parameters and 384 dimensions, about 130 MB on disk and 550 MB of
 # memory; it is downloaded from Hugging Face into the text_embeddings_data
 # volume on first start. The revision pins the Hugging Face commit, so a
-# fresh download cannot change the vectors. false removes the service and
-# the model.
+# fresh download cannot change the vectors. It cannot chat, so it carries
+# model_info.stack_hidden and stays out of Open WebUI's chat picker (hidden
+# by tasks/claude_subscription.yml, which hides every stack_hidden row).
+# false removes the service and the model.
 local_embedding_enabled: true
 local_embedding_model: BAAI/bge-small-en-v1.5
 local_embedding_model_revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
