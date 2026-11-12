@@ -220,20 +220,25 @@ class FakeLiteLLM(FakeService):
         key by key, a None value is ignored, and a litellm_params key goes
         only when litellm_params_to_remove names it.
         """
-        entry = next((m for m in self.models if (m.get("model_info") or {}).get("id") == model_id), None)
-        if entry is None:
+        # A wildcard deployment shows as several /model/info rows, all one
+        # deployment in the database: the change reaches every row.
+        entries = [m for m in self.models if (m.get("model_info") or {}).get("id") == model_id]
+        if not entries:
             return 404, {"error": f"Model {model_id} not found on proxy."}
         if not self.apply_patches:
-            return 200, entry
-        if body.get("model_name"):
-            entry["model_name"] = body["model_name"]
-        params = entry.setdefault("litellm_params", {})
-        params.update({key: value for key, value in (body.get("litellm_params") or {}).items() if value is not None})
-        for key in body.get("litellm_params_to_remove") or ():
-            params.pop(key, None)
-        info = entry.setdefault("model_info", {})
-        info.update({key: value for key, value in (body.get("model_info") or {}).items() if value is not None})
-        return 200, entry
+            return 200, entries[0]
+        for entry in entries:
+            if body.get("model_name"):
+                entry["model_name"] = body["model_name"]
+            params = entry.setdefault("litellm_params", {})
+            params.update(
+                {key: value for key, value in (body.get("litellm_params") or {}).items() if value is not None}
+            )
+            for key in body.get("litellm_params_to_remove") or ():
+                params.pop(key, None)
+            info = entry.setdefault("model_info", {})
+            info.update({key: value for key, value in (body.get("model_info") or {}).items() if value is not None})
+        return 200, entries[0]
 
     def add_model(self, body: dict[str, Any]) -> tuple[int, Any]:
         """POST /model/new: store the deployment, listed (expanded) unless list_new_models is off."""

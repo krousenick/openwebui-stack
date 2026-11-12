@@ -17,6 +17,11 @@ Claude model and copy model_info into every row, so each expanded name
 carries stack_hidden. The reasoning discovery skips such rows, and
 tasks/claude_subscription.yml hides the names in Open WebUI.
 
+The deployment also sets disable_background_health_check: LiteLLM's
+background health check has no caller token to forward and would log
+"Missing Anthropic API Key" every run. A deployment an earlier version
+registered gets fields it lacks through PATCH /model/{id}/update.
+
 LiteLLM can answer from a worker that has not loaded a database change
 yet, so after a write the script reads /model/info again until it shows
 the change (--settle-attempts reads, --settle-seconds apart).
@@ -43,6 +48,9 @@ DEPLOYMENT = {
         "description": "Claude Code subscription passthrough: forwards the caller's own claude.ai sign-in, no API key",
         "stack_managed": MARKER,
         "stack_hidden": True,
+        # The background health check (every 5 min) has no caller token to
+        # forward, so it would log "Missing Anthropic API Key" for each probe.
+        "disable_background_health_check": True,
     },
 }
 
@@ -60,6 +68,15 @@ def managed_ids(rows: list[dict[str, Any]]) -> list[str]:
         if (row.get("model_info") or {}).get("stack_managed") == MARKER
     }
     return sorted(i for i in ids if isinstance(i, str) and i)
+
+
+def stale_fields(rows: list[dict[str, Any]], deployment_id: str) -> list[str]:
+    """The DEPLOYMENT model_info keys that deployment lacks or holds a different value for."""
+    info = next(
+        ((row.get("model_info") or {}) for row in rows if (row.get("model_info") or {}).get("id") == deployment_id),
+        {},
+    )
+    return [key for key, value in DEPLOYMENT["model_info"].items() if info.get(key) != value]
 
 
 def hidden_names(rows: list[dict[str, Any]]) -> list[str]:
@@ -96,6 +113,17 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
             api.write(
                 "register the Claude subscription passthrough (anthropic/*)", "POST", "/model/new", json_body=DEPLOYMENT
             )
+        else:
+            # An older deployment: add what this version sets. PATCH merges
+            # model_info key by key and keeps the stored litellm_params.
+            missing = stale_fields(rows, owned[0])
+            if missing:
+                api.write(
+                    f"update the Claude subscription passthrough {owned[0]} ({', '.join(missing)})",
+                    "PATCH",
+                    f"/model/{owned[0]}/update",
+                    json_body={"model_info": {key: DEPLOYMENT["model_info"][key] for key in missing}},
+                )
         for duplicate in owned[1:]:
             api.write(
                 f"remove duplicate passthrough deployment {duplicate}",
@@ -104,7 +132,9 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
                 json_body={"id": duplicate},
             )
         if api.actions and not api.check:
-            rows = settle(api, args, lambda now: len(managed_ids(now)) == 1)
+            rows = settle(
+                api, args, lambda now: len(managed_ids(now)) == 1 and not stale_fields(now, managed_ids(now)[0])
+            )
     else:
         for deployment in owned:
             api.write(

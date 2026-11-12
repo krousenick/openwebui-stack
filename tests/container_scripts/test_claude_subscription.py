@@ -47,6 +47,8 @@ def test_present_registers_one_keyless_hidden_wildcard(litellm):
     (new,) = [request.json() for request in litellm.requests if request.path == "/model/new"]
     assert new == litellm_claude_subscription.DEPLOYMENT
     assert "api_key" not in new["litellm_params"]
+    # Without a caller token the background health check could only fail.
+    assert new["model_info"]["disable_background_health_check"] is True
     assert report["deployment_ids"] == ["deployment-1"]
     # The expanded names, from the marker LiteLLM copies into every row; gemma stays visible.
     assert report["hidden_models"] == NAMES
@@ -73,6 +75,33 @@ def test_absent_without_a_deployment_writes_nothing(litellm):
     report = passthrough(litellm, "absent")
     assert report["changed"] is False
     assert litellm.writes() == []
+
+
+def test_an_older_deployment_gets_the_fields_it_lacks(litellm):
+    older = {**litellm_claude_subscription.DEPLOYMENT}
+    older["model_info"] = {k: v for k, v in older["model_info"].items() if k != "disable_background_health_check"}
+    litellm.add_model(older)
+
+    report = passthrough(litellm, "present")
+
+    assert report["actions"] == [
+        "update the Claude subscription passthrough deployment-1 (disable_background_health_check)"
+    ]
+    (patch,) = [request for request in litellm.requests if request.method == "PATCH"]
+    assert patch.path == "/model/deployment-1/update"
+    assert patch.json() == {"model_info": {"disable_background_health_check": True}}
+    assert all(row["model_info"]["disable_background_health_check"] is True for row in litellm.models)
+    assert report["hidden_models"] == NAMES
+    assert passthrough(litellm, "present")["changed"] is False
+
+
+def test_a_patch_that_does_not_show_is_an_error(litellm):
+    older = {**litellm_claude_subscription.DEPLOYMENT}
+    older["model_info"] = {k: v for k, v in older["model_info"].items() if k != "disable_background_health_check"}
+    litellm.add_model(older)
+    litellm.apply_patches = False
+    with pytest.raises(ScriptError, match="did not show the change"):
+        passthrough(litellm, "present")
 
 
 def test_a_duplicate_deployment_is_removed(litellm):
