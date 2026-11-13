@@ -188,6 +188,31 @@ opencode needs no plugin: `/variants` and `ctrl+t` are built in, and the levels 
 - The deployment also carries `disable_background_health_check: true`. LiteLLM's background health check (`background_health_check_config`, every 300 s) has no caller token to forward, so without it every run logs `Missing Anthropic API Key` for the Claude names and the admin UI may show the deployment unhealthy (found 2026-11-12; routing is unaffected). A deployment an earlier version registered gets missing `model_info` fields through `PATCH /model/{id}/update`, which merges key by key.
 - The stack's chat-completion hooks (Brave injector, context compaction) skip Claude Code's `anthropic_messages` calls; `default-content-filter` does not (the user chose to keep it on 2026-11-12; a key with `disable_global_guardrails` skips it).
 
+### Saved memories (per user, every client)
+
+```bash
+# memory-mcp healthy, the hook loaded, the server listed
+docker compose ps memory-mcp
+docker compose exec litellm printenv LITELLM_WORKER_STARTUP_HOOKS
+KEY=$(grep -m1 "^LITELLM_MASTER_KEY=" .env | cut -d= -f2-)
+curl -sk https://litellm.localhost/v1/mcp/server -H "Authorization: Bearer $KEY" | grep -o '"server_name":"memory"'
+
+# What is stored (admin view)
+curl -sk "https://litellm.localhost/v1/memory?key_prefix=user:" -H "Authorization: Bearer $KEY"
+```
+
+`memory_mcp_enabled` (default true). Memories live in LiteLLM's own memory API (`/v1/memory`, `LiteLLM_MemoryTable`, the admin UI's Memory page), one row per memory: key `user:<owner>:<name>` (owner percent-encoded with `@._+-` kept), `user_id` = owner, `metadata.description` the index line. `memory-mcp` (`container-scripts/memory_mcp_server.py`, a stdlib MCP server run by the litellm image's Python as uid 65534) is LiteLLM's MCP server `memory` with the tools `save`, `get`, `search`, `list`, `delete`. `litellm/memory_callback.py` (startup hook, before the compactor) signs the owner of every call to that server and appends the owner's memory index to chat completions that carry the memory tools, Claude Code's `MEMORY.md` pattern (the user chose index + tools on 2026-11-12). Open WebUI's own memory is off (`ENABLE_MEMORIES` through `openwebui_interface_defaults.py`). README "Saved memories (per user)".
+
+**Critical implementation notes:**
+- The owner never comes from the model or from a header a key holder controls. Master key (`api_key == LITELLM_PROXY_MASTER_KEY_ALIAS`, the alias LiteLLM 1.110 puts on the master key's auth object): `X-OpenWebUI-User-Email`, lowercased. Any other key: the `user_id` stored on the key, from `/key/info` by the key's hash (cached 5 min). Never `user_api_key_dict.user_id`: with `general_settings.user_header_mappings`, LiteLLM's `add_internal_user_from_user_mapping` overwrites it from the request header for every caller. Never `X-OpenWebUI-User-Name`: Open WebUI users can rename themselves (`/api/v1/auths/update/profile`); they cannot change their email. Spend is attributed by the email header for the same reason (`user_header_mappings`, changed 2026-11-12).
+- The signature is HMAC-SHA256 over `stack-memory/v1\n<owner>\n<unix ts>` keyed with `MEMORY_MCP_SIGNING_KEY` (vault `memory_mcp_signing_key`), in the headers `x-stack-memory-owner` (percent-encoded), `-ts` and `-sig`; memory-mcp accepts five minutes of skew. `memory_callback.py` and `memory_mcp_server.py` each define the context string and header names: change both together (`tests/litellm_hooks/test_memory_callback.py` cross-checks them).
+- The hook reaches memory-mcp through LiteLLM's MCP pre-call hook contract: for `call_type == "call_mcp_tool"` the data carries `mcp_server_name`, `mcp_tool_name` and the client headers under `metadata.headers`, and an `extra_headers` dict in the returned data is added to the upstream request (`ProxyLogging.convert_mcp_hook_response_to_kwargs`; LiteLLM's own `mcp_jwt_signer` uses the same path). If a LiteLLM upgrade drops it, every memory call fails closed with "carries no owner signature". `mcp_jwt_signer` itself cannot replace the hook: it cannot trust the email header for the master key only.
+- LiteLLM's memory keys are unique across all users. memory-mcp reads and writes with the master key, which sees every row, so it checks `user_id == owner` on every row it lists, reads, replaces or deletes; a row planted under someone's prefix is ignored and its name refused, never overwritten. LiteLLM 1.110 answers `/v1/memory` with 401 for every key but the master key, an internal user's included ("Only proxy admin can be used ...", tested 2026-11-12), although its docs describe user-scoped access; keep the check anyway in case a release opens the route.
+- Tested end to end on 2026-11-12 against LiteLLM 1.110.0 in throwaway containers (real proxy and Postgres, memory-mcp as uid 65534 read-only, an echo model): the gateway's MCP client works with the stdlib server's JSON responses and no sessions, tool names come back as `memory-save` and so on, the hook's headers reach memory-mcp, a key sending someone else's Open WebUI headers keeps its own owner, and the index reaches only chats that carry the tools.
+- The index goes only into `acompletion`/`completion` requests whose tools include one named `(^|_)memory-(save|get|search|list|delete)$` (LiteLLM `memory-save`, Open WebUI and opencode `memory_memory-save`, Claude Code `mcp__memory__memory-save`), appended to the first system message or as a new first one, cached 30 s per owner and dropped after a `save`/`delete` call through the same worker. Never `anthropic_messages`. An unreachable memory-mcp never fails a chat.
+- Search embeds with `memory_embedding_model_effective` (the skill-search model, `local-embedding` by default) through LiteLLM `/v1/embeddings`; vectors are cached in process by (memory id, updated_at), and it falls back to keyword overlap when embedding fails.
+- Open WebUI connects to `http://litellm:4000/mcp/memory` with the master key (`tasks/mcp/memory.yml`, info.id `memory`, in `models.default_metadata.toolIds`; tag `memory` covers both tasks, which a plain `mcp/main.yml` import otherwise reaches only on a full run). It must keep `ENABLE_FORWARD_USER_INFO_HEADERS: "true"` and must not set `FORWARD_USER_INFO_HEADER_JWT_SECRET`, which replaces the plain headers with one JWT.
+
 ### LLM Launcher portals (web GUI per vLLM inference server)
 
 ```bash
@@ -341,7 +366,7 @@ Task files hold no inline Python. Every Python job of the `openwebui_stack` role
 | `litellm_claude_subscription.py` | litellm | `claude_subscription.yml` |
 | `openwebui_hidden_models.py` | open-webui | `claude_subscription.yml` |
 
-Shared code: `stack_api.py` (HTTP client, argument parser, exit contract) and `skill_packages.py` (SKILL.md discovery and the frontmatter rules).
+Shared code: `stack_api.py` (HTTP client, argument parser, exit contract) and `skill_packages.py` (SKILL.md discovery and the frontmatter rules). Two scripts are services rather than tasks, each run by the litellm image's Python in a compose service of its own: `launcher_follower.py` (`launcher-follower`) and `memory_mcp_server.py` (`memory-mcp`).
 
 **Critical implementation notes:**
 - New Python for a task goes in `container-scripts/<job>.py` with a test in `tests/container_scripts/`, never in a `python3 -c` argument. Standard library only: the scripts run on whatever Python the two images ship (3.12 and 3.13 today).

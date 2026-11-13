@@ -13,6 +13,7 @@ target-version = "py312"
 # eval and CI helpers) predates this config and is left as written.
 include = [
     "container-scripts/**/*.py",
+    "litellm/memory_callback.py",
     "tests/**/*.py",
     "ansible/roles/vllm_compute/files/ray_nodes_ready.py",
     "ansible/roles/vllm_compute/files/vllm-launcher-slot.py",

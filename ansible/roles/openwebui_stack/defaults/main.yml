@@ -62,6 +62,7 @@ stack_secret_names:
   - oauth2_proxy_cookie_secret
   - launcher_oidc_client_secret
   - launcher_status_token
+  - memory_mcp_signing_key
   - keycloak_provisioner_client_secret
   - traefik_dashboard_password
   - code_sandbox_token
@@ -418,6 +419,54 @@ litellm_skill_search_embedding_model_effective: >-
   {{ litellm_skill_search_embedding_model
      or ('local-embedding' if local_embedding_enabled | bool
          else ('text-embedding' if litellm_gemini_models_enabled | default(false) | bool else '')) }}
+
+# Saved memories per user, shared by every client of the gateway: Open
+# WebUI, opencode, Claude Code and other MCP clients with a LiteLLM key
+# (README "Saved memories"). Three pieces, all on this one switch:
+#   - memory-mcp (compose service; container-scripts/memory_mcp_server.py on
+#     the litellm image's Python): the LiteLLM MCP server `memory`, with the
+#     tools save, get, search, list and delete. The memories themselves live
+#     in LiteLLM's own memory store (/v1/memory, the admin UI's Memory page),
+#     one row per memory, key user:<owner>:<name>.
+#   - litellm/memory_callback.py (a startup hook) names the owner of every
+#     memory tool call and signs it with memory_mcp_signing_key (vault);
+#     memory-mcp refuses a call without that signature. Open WebUI users are
+#     their Keycloak email; any other caller is the user_id stored on its
+#     LiteLLM key, so a key that should share memories with its owner's Open
+#     WebUI account needs user_id set to that email.
+#   - the memory index: the same hook adds the user's memory names and
+#     one-line descriptions to chat requests that carry the memory tools,
+#     the way Claude Code loads its MEMORY.md index, and models read full
+#     entries with the tools.
+# Open WebUI gets the tool server on every model (models.default_metadata).
+# false removes the service, the hook and the tool server; the stored
+# memories stay in LiteLLM's database.
+memory_mcp_enabled: true
+
+# The index in chat requests. false keeps the tools and drops the index.
+# max_chars caps it (newest memories first; older ones stay reachable
+# through search and list).
+memory_index_enabled: true
+memory_index_max_chars: 2000
+
+# Limits per user: characters of one memory, and memories in all.
+memory_max_content_chars: 4000
+memory_max_per_user: 500
+
+# Embedding model that memory search ranks by meaning with (any model_name
+# the proxy serves that can embed). Empty uses the skill-search model
+# (litellm_skill_search_embedding_model_effective, local-embedding by
+# default); with none at all, search ranks by keywords only.
+memory_embedding_model: ""
+
+# Open WebUI's own memory (Settings > Personalization > Memory), which only
+# Open WebUI can use. Off while the shared memory is on, so each user has
+# one memory. Set through the admin API on every run
+# (tasks/openwebui_interface_defaults.yml).
+openwebui_builtin_memories_enabled: "{{ not (memory_mcp_enabled | bool) }}"
+
+# Derived, not configured: the model memory-mcp embeds with.
+memory_embedding_model_effective: "{{ memory_embedding_model or litellm_skill_search_embedding_model_effective }}"
 
 # Chat from the LiteLLM admin UI (its Playground and Chat pages). Off:
 # people talk to models through Open WebUI or an API client (opencode, an

@@ -1,26 +1,29 @@
 ---
 # Site-wide defaults for every user's Settings > Interface, from
-# openwebui_default_interface_settings. A user's own choice still wins.
+# openwebui_default_interface_settings, plus Open WebUI's own memory switch
+# (ENABLE_MEMORIES, from openwebui_builtin_memories_enabled: off while the
+# shared memory server is on). A user's own interface choice still wins.
 # Only the listed keys are set; every other key of the defaults, and every
 # other admin setting, keeps its value.
 #
-# The defaults are one field of Open WebUI's admin config, which is saved
-# as a whole: container-scripts/openwebui_interface_defaults.py posts the
-# stored config back with only that field changed, and leaves out the MFA
-# fields, which Open WebUI refuses from an API key (and which would sign
-# every user out if they changed). Open WebUI 0.13 reads the value from its
-# database on every request, so no restart.
+# Both are fields of Open WebUI's admin config, which is saved as a whole:
+# container-scripts/openwebui_interface_defaults.py posts the stored config
+# back with only those fields changed, and leaves out the MFA fields, which
+# Open WebUI refuses from an API key (and which would sign every user out if
+# they changed). Open WebUI 0.13 reads the values from its database on every
+# request, so no restart.
 #
 # Why it exists: Open WebUI 0.13.3 shows an enabled switch (the Thinking
 # switch, tasks/openwebui_reasoning.yml) as a chip beside the + menu only
 # with the per-user setting showInputSelections, which is off by default.
-# Without it the switch is visible only inside the + menu.
+# Without it the switch is visible only inside the + menu. ENABLE_MEMORIES
+# is a ConfigVar: the compose environment only seeds a first boot.
 #
 # Auth reuses the skill-publisher admin API key that openwebui_skills.yml
 # upserts from the vault value openwebui_api_admin_key; that task runs
 # first in tasks/main.yml.
 
-- name: Set the Open WebUI default interface settings
+- name: Set the Open WebUI default interface settings and memory switch
   ansible.builtin.import_tasks:
     file: container_script.yml
   vars:
@@ -29,5 +32,6 @@
     container_script_env:
       OPENWEBUI_API_KEY: "{{ openwebui_api_admin_key }}"
     container_script_payload:
-      settings: "{{ openwebui_default_interface_settings }}"
-  when: openwebui_default_interface_settings | default({}, true) | length > 0
+      settings: "{{ openwebui_default_interface_settings | default({}, true) }}"
+      config:
+        ENABLE_MEMORIES: "{{ openwebui_builtin_memories_enabled | bool }}"

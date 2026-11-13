@@ -15,7 +15,8 @@
 #     assistant message to ~/.local/share/opencode/usage.jsonl with user,
 #     model, token counts, and duration.
 #   - ~/.config/opencode/litellm.key - the user's LiteLLM virtual key
-#     (mode 0600), referenced from the config via {file:...}
+#     (mode 0600), referenced from the config via {file:...}, also for
+#     LiteLLM's `memory` MCP server (saved memories) in opencode.json
 #   - ~/.config/opencode/tui.json - created once (never overwritten, it
 #     also holds the user's theme and other TUI preferences) with a key
 #     binding for the built-in reasoning-level picker
@@ -25,10 +26,26 @@
 # request opencode makes then lands in LiteLLM_SpendLogs attributed to
 # that per-user virtual key, so the LiteLLM UI, /key/list and Grafana show
 # per-user token usage without extra headers.
+#
+# The key's user_id is the entry's email when it has one, else the host
+# username. The email is what joins opencode to the person's Open WebUI
+# account: Open WebUI attributes spend to the signed-in user's email, and
+# saved memories belong to it (memory_mcp_enabled). A key minted earlier
+# with another user_id is re-pointed to the email on the next run.
 
-# List of host users to configure. Each entry needs a username; key_alias
-# and models are optional (models restricts the key's allowed model_names).
+# List of host users to configure. Each entry needs a username; email,
+# key_alias and models are optional (email: the person's Keycloak email,
+# see above; models restricts the key's allowed model_names), e.g.
+#   opencode_users:
+#     - username: jane
+#       email: jane.doe@example.com
 opencode_users: []
+
+# Saved memories: adds LiteLLM's `memory` MCP server
+# (<proxy>/mcp/memory) to opencode.json, authenticated with the user's key,
+# so opencode reads and saves the same memories as the user's Open WebUI
+# account (when the entry has an email). Follows the stack switch.
+opencode_memory_enabled: "{{ memory_mcp_enabled | default(true) | bool }}"
 
 # LiteLLM proxy endpoints.
 opencode_litellm_base_url: "https://litellm.{{ domain | default('localhost') }}"

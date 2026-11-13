@@ -8,9 +8,12 @@
     state: present
   register: opencode_account
 
-- name: Derive LiteLLM key alias
+- name: Derive LiteLLM key alias and owner
   ansible.builtin.set_fact:
     opencode_key_alias: "{{ opencode_user.key_alias | default('opencode-' + opencode_user.username) }}"
+    # The person's email joins the key to their Open WebUI account (spend,
+    # saved memories); without one the key stands for the host user only.
+    opencode_key_user_id: "{{ (opencode_user.email | default('', true) | lower) or opencode_user.username }}"
 
 - name: Read an existing LiteLLM key file
   ansible.builtin.slurp:
@@ -47,7 +50,7 @@
       Content-Type: application/json
     body:
       key_alias: "{{ opencode_key_alias }}"
-      user_id: "{{ opencode_user.username }}"
+      user_id: "{{ opencode_key_user_id }}"
       models: "{{ opencode_user.models | default([]) }}"
       max_budget: "{{ opencode_key_max_budget }}"
       rpm_limit: "{{ opencode_key_rpm }}"
@@ -67,6 +70,29 @@
       {{ (opencode_key_generated.json.key | default('') | trim
           if (opencode_key_generated is not skipped and opencode_key_generated.json.key | default(''))
           else opencode_existing_key) | trim }}
+  no_log: true
+
+# A key kept from an earlier run may name another owner (the host username,
+# before the entry had an email). /key/update changes only user_id; spend
+# already logged stays under the old one.
+- name: Re-point an existing key to the user's owner
+  ansible.builtin.uri:
+    url: "{{ opencode_litellm_base_url }}/key/update"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ opencode_litellm_master_key }}"
+      Content-Type: application/json
+    body:
+      key: "{{ opencode_existing_key }}"
+      user_id: "{{ opencode_key_user_id }}"
+    body_format: json
+    status_code: 200
+    validate_certs: "{{ opencode_litellm_validate_certs }}"
+  when:
+    - opencode_key_generated is skipped
+    - opencode_key_info.status | default(404) == 200
+    - (opencode_key_info.json.info.user_id | default('')) != opencode_key_user_id
+  changed_when: true
   no_log: true
 
 - name: Create the opencode config directory

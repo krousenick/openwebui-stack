@@ -169,7 +169,14 @@ services:
       DEFAULT_USER_ROLE: "user"
       ENABLE_API_KEYS: "true"
       ENABLE_VERSION_UPDATE_CHECK: "false"
+      # The signed-in user goes with every request to LiteLLM and to the tool
+      # servers. LiteLLM attributes spend by it, and its memory hook makes
+      # X-OpenWebUI-User-Email the owner of saved memories.
       ENABLE_FORWARD_USER_INFO_HEADERS: "true"
+      # Open WebUI's own memory, off while the shared one (memory-mcp) is on.
+      # ConfigVar: seeds the first boot only;
+      # tasks/openwebui_interface_defaults.yml sets it on every run.
+      ENABLE_MEMORIES: "{{ 'true' if openwebui_builtin_memories_enabled | bool else 'false' }}"
       ENABLE_COMMUNITY_SHARING: "false"
       ENABLE_CODE_EXECUTION: "false"
       ENABLE_CODE_INTERPRETER: "false"
@@ -255,6 +262,9 @@ services:
 {% if not (litellm_ui_chat_enabled | default(false) | bool) %}
       - ./litellm/ui_chat_block_callback.py:/app/ui_chat_block_callback.py:ro
 {% endif %}
+{% if memory_mcp_enabled | default(true) | bool %}
+      - ./litellm/memory_callback.py:/app/memory_callback.py:ro
+{% endif %}
       - ./litellm/guardrail_categories/prompt_injection_sql.yaml:/app/guardrail_categories/prompt_injection_sql.yaml:ro
       - ./litellm/guardrail_categories/prompt_injection_jailbreak.yaml:/app/guardrail_categories/prompt_injection_jailbreak.yaml:ro
       - ./litellm/guardrail_categories/prompt_injection_system_prompt.yaml:/app/guardrail_categories/prompt_injection_system_prompt.yaml:ro
@@ -307,6 +317,11 @@ services:
       #   brave_mcp           only when the brave-search-mcp container is
       #                       deployed; without the server behind it the
       #                       injected tool cannot execute.
+      #   memory              signs the owner of each saved-memory tool call
+      #                       for memory-mcp, and adds the user's memory index
+      #                       to chat requests that carry the memory tools
+      #                       (memory_mcp_enabled). Before the compactor, so
+      #                       the index counts toward the window.
       #   context_compaction  always on.
 {% set litellm_startup_hooks = [] %}
 {% if not (litellm_ui_chat_enabled | default(false) | bool) %}
@@ -315,11 +330,21 @@ services:
 {% if brave_search_enabled | default(false) | bool and brave_search_api_key | default('') | length > 0 %}
 {%   set _ = litellm_startup_hooks.append('brave_mcp_callback:register_callback') %}
 {% endif %}
+{% if memory_mcp_enabled | default(true) | bool %}
+{%   set _ = litellm_startup_hooks.append('memory_callback:register_callback') %}
+{% endif %}
 {% set _ = litellm_startup_hooks.append('context_compaction_callback:register_callback') %}
       LITELLM_WORKER_STARTUP_HOOKS: "{{ litellm_startup_hooks | join(',') }}"
 {% if not (litellm_ui_chat_enabled | default(false) | bool) %}
       # Named in the refusal the ui_chat_block hook returns.
       UI_CHAT_BLOCK_OPENWEBUI_URL: "https://chatbot.${DOMAIN:-localhost}"
+{% endif %}
+{% if memory_mcp_enabled | default(true) | bool %}
+      # memory_callback.py: the key it signs memory tool calls with (memory-mcp
+      # checks it), and where it reads each user's memory index.
+      MEMORY_MCP_SIGNING_KEY: "${MEMORY_MCP_SIGNING_KEY:?error}"
+      MEMORY_MCP_URL: "http://memory-mcp:8080"
+      MEMORY_INDEX_ENABLED: "{{ 'true' if memory_index_enabled | default(true) | bool else 'false' }}"
 {% endif %}
 
       # Lets the guardrail's prompt_injection_sql category_file point at the
@@ -831,6 +856,54 @@ services:
     networks:
       - backend
       - frontend
+{% endif %}
+
+{% if memory_mcp_enabled | default(true) | bool %}
+  # ===========================================================================
+  # Saved memories - memory-mcp (container-scripts/memory_mcp_server.py)
+  # The MCP server `memory` behind LiteLLM (mcp_servers.memory): five tools
+  # over each user's memories, which live in LiteLLM's own memory store
+  # (/v1/memory, the admin UI's Memory page). LiteLLM's memory_callback.py
+  # signs the owner of every tool call; a call without a valid signature is
+  # refused. Only the image's Python runs: the litellm image is already on
+  # the host. Backend network only; nothing but LiteLLM talks to it.
+  # ===========================================================================
+  memory-mcp:
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_memory-mcp
+    restart: unless-stopped
+    logging: *default-logging
+    entrypoint: [ "python3", "-u", "{{ container_scripts_mount }}/memory_mcp_server.py" ]
+    environment:
+      LITELLM_URL: "http://litellm:4000"
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?error}"
+      MEMORY_MCP_SIGNING_KEY: "${MEMORY_MCP_SIGNING_KEY:?error}"
+      MEMORY_EMBEDDING_MODEL: {{ memory_embedding_model_effective | to_json }}
+      MEMORY_INDEX_MAX_CHARS: "{{ memory_index_max_chars }}"
+      MEMORY_MAX_CONTENT_CHARS: "{{ memory_max_content_chars }}"
+      MEMORY_MAX_PER_USER: "{{ memory_max_per_user }}"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./container-scripts:{{ container_scripts_mount }}:ro
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+    healthcheck:
+      test: [ "CMD", "python3", "{{ container_scripts_mount }}/memory_mcp_server.py", "--healthcheck" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
 {% endif %}
 
 {% if printer_mcp_enabled | default(false) | bool and bambu_host | default('') | length > 0 %}

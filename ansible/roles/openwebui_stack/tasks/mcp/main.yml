@@ -28,6 +28,13 @@
     file: freecad.yml
   when: freecad_mcp_enabled | default(false) | bool
 
+- name: Configure saved memories (memory MCP)
+  ansible.builtin.import_tasks:
+    file: memory.yml
+  when: memory_mcp_enabled | default(true) | bool
+  tags:
+    - memory
+
 # The models volume is shared by the pipeline above (and code-sandbox); it
 # must be uid-1000 writable or every export from chat fails. Runs whenever
 # any 3D-pipeline writer is enabled; printer-only setups never write.
@@ -73,3 +80,5 @@
 - name: Set global model default tools for enabled MCP servers
   ansible.builtin.import_tasks:
     file: tool_defaults.yml
+  tags:
+    - memory

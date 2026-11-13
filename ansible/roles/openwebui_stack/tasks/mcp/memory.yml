@@ -1,0 +1,115 @@
+---
+# Saved memories: the Open WebUI tool server connection for LiteLLM's
+# `memory` MCP server (memory-mcp). The service, the LiteLLM mcp_servers
+# entry and the memory_callback.py startup hook live in docker-compose.yml
+# and litellm/config.yaml. Open WebUI connects with the master key and,
+# because ENABLE_FORWARD_USER_INFO_HEADERS is on, sends the signed-in user's
+# X-OpenWebUI-User-Email with every tool call; memory_callback.py makes that
+# address the owner of the memories the call reads or writes.
+
+- name: Require the memory tool server settings
+  ansible.builtin.assert:
+    that:
+      - litellm_master_key | length > 0
+      - openwebui_db_user | length > 0
+      - openwebui_db_password | length > 0
+      - openwebui_db_name | length > 0
+    fail_msg: "Saved memories require the LiteLLM key and Open WebUI database settings."
+
+- name: Read current Open WebUI tool server connections
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+      - -tAc
+      - SELECT value::text FROM config WHERE key = 'tool_server.connections'
+  register: memory_tool_server_current
+  changed_when: false
+  # Check mode skips this command, leaving stdout empty; the merge task
+  # then falls back to an empty list instead of failing to parse "".
+  failed_when: false
+  no_log: true
+
+- name: Build the memory tool server connection
+  ansible.builtin.set_fact:
+    memory_connection:
+      - type: mcp
+        url: http://litellm:4000/mcp/memory
+        path: ""
+        auth_type: bearer
+        key: "{{ litellm_master_key }}"
+        config:
+          enable: true
+        info:
+          id: memory
+          name: Memory
+          description: Your saved memories, shared with opencode and other clients through LiteLLM
+  no_log: true
+
+- name: Merge the memory connection into the desired tool server list
+  ansible.builtin.set_fact:
+    # Keep the other connections (Brave, Playwright, ...) and replace only
+    # the entry whose info.id is memory. Empty stdout (check mode, or no
+    # connections row yet) reads as an empty list.
+    memory_tool_server_desired: >-
+      {{ ((memory_tool_server_current.stdout | trim | default('', true) or '[]')
+         | from_json
+         | selectattr('info.id', 'defined')
+         | rejectattr('info.id', 'equalto', 'memory')
+         | list
+         | union(memory_connection)
+         | sort(attribute='info.id')) }}
+  no_log: true
+
+- name: Update the persisted memory tool server connection
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+    stdin: |
+      UPDATE config SET value = '{{ memory_tool_server_desired | to_json | replace("'", "''") }}'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'tool_server.connections';
+  register: memory_config_update
+  # Compare parsed structures, not raw strings: psql emits JSON with its own
+  # key order and spacing that never matches to_json byte-for-byte, which
+  # would restart Open WebUI on every run.
+  changed_when: >-
+    ((memory_tool_server_current.stdout | trim | default('', true) or '[]') | from_json | map(attribute='info.id') | list | sort)
+    != (memory_tool_server_desired | map(attribute='info.id') | list | sort)
+    or ((memory_tool_server_current.stdout | trim | default('', true) or '[]') | from_json | map('to_json') | list | sort)
+    != (memory_tool_server_desired | map('to_json') | list | sort)
+  no_log: true
+
+# Open WebUI reads the connections at startup. memory-mcp and LiteLLM read
+# nothing from this row, so only Open WebUI is recreated.
+- name: Recreate Open WebUI to load the memory tool server
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - open-webui
+    state: present
+    recreate: always
+    wait: true
+    wait_timeout: 180
+  when: memory_config_update is changed

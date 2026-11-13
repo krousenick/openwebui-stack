@@ -31,6 +31,9 @@ launcher_status_token: CHANGE_ME
 keycloak_provisioner_client_secret: CHANGE_ME
 traefik_dashboard_password: CHANGE_ME
 code_sandbox_token: CHANGE_ME
+# Saved memories: LiteLLM's memory hook signs each memory tool call's owner
+# with it and memory-mcp checks the signature.
+memory_mcp_signing_key: CHANGE_ME
 
 # Admin API key for Open WebUI automation (skill publishing). Generated
 # client-side (sk- + hex), stored in the api_key table for the dedicated

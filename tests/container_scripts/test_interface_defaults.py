@@ -1,4 +1,4 @@
-"""Default interface settings (Show Input Selections) against a fake Open WebUI."""
+"""Default interface settings (Show Input Selections) and admin-config switches against a fake Open WebUI."""
 
 from __future__ import annotations
 
@@ -9,13 +9,14 @@ from fakes import MFA_FIELDS
 from stack_api import ScriptError
 
 SHOW_SELECTIONS = {"showInputSelections": True}
+NO_MEMORIES = {"ENABLE_MEMORIES": False}
 
 
 @pytest.fixture
 def set_defaults(openwebui, stdin_payload):
-    def run(settings: dict, *extra: str) -> dict:
+    def run(settings: dict, *extra: str, config: dict | None = None) -> dict:
         openwebui.forget_requests()
-        stdin_payload({"settings": settings})
+        stdin_payload({"settings": settings, **({"config": config} if config is not None else {})})
         return openwebui_interface_defaults.main(["--url", openwebui.url, *extra])
 
     return run
@@ -94,3 +95,41 @@ def test_the_payload_needs_settings(openwebui, set_defaults, settings):
     with pytest.raises(ScriptError, match="settings"):
         set_defaults(settings)
     assert openwebui.requests == []
+
+
+def test_admin_switches_go_in_the_same_save(openwebui, set_defaults):
+    report = set_defaults(SHOW_SELECTIONS, config=NO_MEMORIES)
+    assert report["actions"] == [
+        "set default interface settings showInputSelections=true; set admin config ENABLE_MEMORIES=false"
+    ]
+    assert report["config"] == NO_MEMORIES
+    (form,) = posted_forms(openwebui)
+    assert form["ENABLE_MEMORIES"] is False and form["ENABLE_MEMORY_SYSTEM_CONTEXT"] is True
+    assert openwebui.admin_config["ENABLE_MEMORIES"] is False
+    assert set_defaults(SHOW_SELECTIONS, config=NO_MEMORIES)["changed"] is False
+
+
+def test_a_switch_alone_is_enough(openwebui, set_defaults):
+    report = set_defaults({}, config=NO_MEMORIES)
+    assert report["actions"] == ["set admin config ENABLE_MEMORIES=false"]
+    assert openwebui.admin_config["DEFAULT_INTERFACE_SETTINGS"] == {"chatBubble": False}
+
+
+def test_a_boolean_switch_given_as_text_is_stored_as_a_boolean(openwebui, set_defaults):
+    set_defaults({}, config={"ENABLE_MEMORIES": "False"})
+    assert openwebui.admin_config["ENABLE_MEMORIES"] is False
+    assert set_defaults({}, config={"ENABLE_MEMORIES": "false"})["changed"] is False
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        ({"ENABLE_MFA": False}, "MFA settings cannot be set"),
+        ({"ENABLE_MEMORYS": False}, "not admin config fields"),
+        ({"DEFAULT_INTERFACE_SETTINGS": {}}, 'through "settings"'),
+    ],
+)
+def test_switches_that_cannot_be_set(openwebui, set_defaults, config, message):
+    with pytest.raises(ScriptError, match=message):
+        set_defaults({}, config=config)
+    assert openwebui.writes() == []

@@ -141,6 +141,12 @@ class FakeLiteLLM(FakeService):
         # show it, like a worker that has not loaded the database change.
         self.list_new_models = True
         self.deployments_created = 0
+        # /v1/memory rows by key, and the clock that stamps them.
+        self.memories: dict[str, dict[str, Any]] = {}
+        self.memory_clock = 0
+        # /v1/embeddings: False answers 500, like a model that is down.
+        self.embeddings_enabled = True
+        self.embedded: list[str] = []
 
     def handle(self, request: Request) -> tuple[int, Any]:
         method, path = request.method, request.path
@@ -208,7 +214,87 @@ class FakeLiteLLM(FakeService):
                 major, minor, patch = self.plugins[name]["version"].split(".")
                 self.plugins[name] = {"name": name, **request.json(), "version": f"{major}.{minor}.{int(patch) + 1}"}
             return 200, self.plugins[name]
+        if path == "/v1/memory":
+            return self.list_memories(method, request.query)
+        if path.startswith("/v1/memory/"):
+            return self.memory_row(method, path.removeprefix("/v1/memory/"), request.json())
+        if path == "/v1/embeddings" and method == "POST":
+            return self.embed(request.json())
         return 404, {"detail": f"no route for {method} {path}"}
+
+    # /v1/memory as LiteLLM 1.110 serves it to the master key, written from
+    # the proxy's source (proxy/memory/memory_endpoints.py): keys are unique
+    # across all users, an admin sees and may write every row, a list is
+    # ordered newest update first, and PUT updates value and metadata of an
+    # existing row or creates one, taking user_id from the body (admins only).
+
+    def tick(self) -> str:
+        self.memory_clock += 1
+        minutes, seconds = divmod(self.memory_clock, 60)
+        return f"2026-11-12T10:{minutes:02d}:{seconds:02d}.000Z"
+
+    def add_memory(self, key: str, value: str, *, user_id: str, metadata: Any = None) -> dict[str, Any]:
+        """Store a row as any caller could through the API, e.g. another user's key."""
+        stamp = self.tick()
+        self.memories[key] = {
+            "memory_id": f"mem-{self.memory_clock}",
+            "key": key,
+            "value": value,
+            "metadata": metadata,
+            "user_id": user_id,
+            "team_id": None,
+            "created_at": stamp,
+            "created_by": user_id,
+            "updated_at": stamp,
+            "updated_by": user_id,
+        }
+        return self.memories[key]
+
+    def list_memories(self, method: str, query: dict[str, str]) -> tuple[int, Any]:
+        if method != "GET":
+            return 405, {"detail": "Method Not Allowed"}
+        rows = sorted(self.memories.values(), key=lambda row: row["updated_at"], reverse=True)
+        if "key_prefix" in query:
+            rows = [row for row in rows if row["key"].startswith(query["key_prefix"])]
+        page, size = int(query.get("page", 1)), int(query.get("page_size", 50))
+        return 200, {"memories": rows[(page - 1) * size : page * size], "total": len(rows)}
+
+    def memory_row(self, method: str, key: str, body: Any) -> tuple[int, Any]:
+        row = self.memories.get(key)
+        if method == "GET":
+            return (200, row) if row else (404, {"detail": f"Memory with key '{key}' not found"})
+        if method == "DELETE":
+            if row is None:
+                return 404, {"detail": f"Memory with key '{key}' not found"}
+            del self.memories[key]
+            return 200, {"key": key, "deleted": True}
+        if method != "PUT":
+            return 405, {"detail": "Method Not Allowed"}
+        body = body or {}
+        if body.get("value") is None and "metadata" not in body:
+            return 400, {"detail": "Request body must include at least one of: value, metadata."}
+        if row is None:
+            if body.get("value") is None:
+                return 400, {"detail": "Cannot create a new memory via PUT without a 'value'."}
+            user_id = body.get("user_id") or "default_user_id"
+            return 200, self.add_memory(key, body["value"], user_id=user_id, metadata=body.get("metadata"))
+        if body.get("value") is not None:
+            row["value"] = body["value"]
+        if "metadata" in body:
+            row["metadata"] = body["metadata"]
+        row["updated_at"] = self.tick()
+        return 200, row
+
+    def embed(self, body: dict[str, Any]) -> tuple[int, Any]:
+        """POST /v1/embeddings: a bag-of-words vector per text, so related texts score higher."""
+        if not self.embeddings_enabled:
+            return 500, {"error": {"message": "embedding model unavailable"}}
+        texts = body["input"] if isinstance(body["input"], list) else [body["input"]]
+        self.embedded.extend(texts)
+        return 200, {
+            "model": body["model"],
+            "data": [{"index": index, "embedding": bag_of_words(text)} for index, text in enumerate(texts)],
+        }
 
     def titles(self) -> list[str]:
         return sorted(skill["display_title"] for skill in self.skills.values())
@@ -284,6 +370,8 @@ class FakeOpenWebUI(FakeService):
             "I18N": {},
             "SKILL_CONTENT_MAX_CHARS": None,
             "DEFAULT_INTERFACE_SETTINGS": {"chatBubble": False},
+            "ENABLE_MEMORIES": True,
+            "ENABLE_MEMORY_SYSTEM_CONTEXT": True,
         }
         self.sessions_revoked_on_save = False
         self.skills: dict[str, dict[str, Any]] = {}
@@ -384,6 +472,14 @@ class FakeOpenWebUI(FakeService):
         elif path.endswith("/toggle"):
             function["is_active"] = not function["is_active"]
         return 200, function
+
+
+def bag_of_words(text: str, dimensions: int = 64) -> list[float]:
+    """A stand-in embedding: word counts hashed into a fixed number of buckets."""
+    vector = [0.0] * dimensions
+    for word in re.findall(r"[a-z0-9]+", text.lower()):
+        vector[int(hashlib.sha256(word.encode()).hexdigest(), 16) % dimensions] += 1.0
+    return vector
 
 
 def write_skill(root: pathlib.Path, package: str, frontmatter: str, *, name: str | None = None, body: str = "") -> None:

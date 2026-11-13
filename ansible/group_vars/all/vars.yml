@@ -156,6 +156,12 @@ docker_compose_pull: true
 # search, and the Brave MCP connection.
 brave_search_enabled: true
 
+# Saved memories per user (memory-mcp), one store shared by Open WebUI,
+# opencode, Claude Code and other MCP clients through LiteLLM. Signing key
+# in vault.yml (memory_mcp_signing_key). Turns Open WebUI's own memory off
+# while on. See roles/openwebui_stack/defaults/main.yml.
+memory_mcp_enabled: true
+
 # Chat from the LiteLLM admin UI (Playground and Chat pages). false: models
 # are only reachable for chat through Open WebUI or an API client such as
 # opencode; the admin UI refuses to send prompts. See

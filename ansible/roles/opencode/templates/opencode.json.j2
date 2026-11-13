@@ -27,5 +27,18 @@
     }{% endif %}
 
   },
-  "enabled_providers": {{ (['litellm'] + (['anthropic'] if opencode_anthropic_enabled | bool else [])) | to_json }}
+{% if opencode_memory_enabled | bool %}
+  "mcp": {
+    "memory": {
+      "type": "remote",
+      "url": "{{ opencode_litellm_base_url }}/mcp/memory",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+        "x-litellm-api-key": "Bearer {file:{{ opencode_account.home }}/.config/opencode/litellm.key}"
+      }
+    }
+  },
+{% endif %}
+  "enabled_providers":{{ (['litellm'] + (['anthropic'] if opencode_anthropic_enabled | bool else [])) | to_json }}
 }

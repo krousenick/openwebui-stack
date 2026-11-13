@@ -25,10 +25,17 @@ general_settings:
   # ui_chat_block_callback.py refuses the model calls of both pages.
   enable_chat_ui: {{ litellm_ui_chat_enabled | default(false) | bool | lower }}
 
-  # Open WebUI sends the logged-in user when ENABLE_FORWARD_USER_INFO_HEADERS=true.
-  # The username matches the LiteLLM user_id created by SSO, so Usage attributes spend to that user.
+  # Open WebUI sends the signed-in user with every request
+  # (ENABLE_FORWARD_USER_INFO_HEADERS), and Usage attributes its spend to that
+  # user's email. The email rather than X-OpenWebUI-User-Name: users can
+  # rename themselves in Open WebUI but cannot change their email there. It
+  # is also the owner of their saved memories (memory_callback.py), so a key
+  # minted with user_id set to the same email shows under the same user.
+  # LiteLLM takes this header from any caller and overwrites the key's
+  # user_id with it for that request, which is why memory_callback.py reads
+  # a key's owner from /key/info instead.
   user_header_mappings:
-    - header_name: X-OpenWebUI-User-Name
+    - header_name: X-OpenWebUI-User-Email
       litellm_user_role: internal_user
 
   # OIDC group to team mapping
@@ -576,6 +583,18 @@ mcp_servers:
     # supergateway (stdI/O -> streamable HTTP). FreeCAD 1.1.4 headless via
     # freecadcmd; execute_code / document tools / parts list.
     url: "http://freecad:8000/mcp"
+    transport: "http"
+    auth_type: "none"
+    allow_all_keys: true
+{% endif %}
+{% if memory_mcp_enabled | default(true) | bool %}
+  memory:
+    # Saved memories per user: memory-mcp over LiteLLM's own /v1/memory
+    # store. memory_callback.py names and signs the owner of every tool call
+    # (a pre-call hook's extra_headers); memory-mcp refuses a call without
+    # that signature. Every key may use it, because the owner comes from the
+    # key itself (or, for the master key, from Open WebUI's user header).
+    url: "http://memory-mcp:8080/mcp"
     transport: "http"
     auth_type: "none"
     allow_all_keys: true

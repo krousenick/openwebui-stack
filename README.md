@@ -99,6 +99,7 @@ graph TB
 - **Security**: Network isolation, secure headers, rate limiting, admin IP restriction
 - **Chatterbox TTS**: OpenAI-compatible voice cloning for Open WebUI, with a voice library UI at `voice.<domain>`. This is the only TTS engine in the stack.
 - **Brave Search MCP**: Web search for every chat model. The `brave-search-mcp` container serves the official Brave MCP tools over streamable HTTP, LiteLLM mounts them at `/mcp/brave_search`, and a LiteLLM startup hook (`litellm/brave_mcp_callback.py`) injects them into every `/v1/chat/completions` request. Models call the tools; LiteLLM executes them server-side (`require_approval: never`), so no client-side tool wiring is needed.
+- **Saved memories**: One memory per person, shared by every client of the gateway (Open WebUI, opencode, Claude Code, your agents) and kept in LiteLLM's own memory store. The `memory-mcp` service serves it as LiteLLM's MCP server `memory` (save, get, search, list, delete), a LiteLLM hook signs whose memories each call may touch, and chat requests that carry the tools get a short index of the user's memories, the way Claude Code loads its `MEMORY.md`. See [Saved memories](#saved-memories-per-user).
 - **Voice assistant**: LiteLLM alias `voice-assistant` routes to `gemini-3.5-flash-lite` (rendered only when `litellm_gemini_models_enabled: true`, the same flag that gates the Gemini models). `./scripts/create-voice-key.sh` creates a virtual key that can call only that model and stores it in `.env` as `LITELLM_VOICE_API_KEY`.
 - **Code Sandbox**: Isolated Jupyter container for model-authored Python (STL/mesh generation, plotting, data transforms). Pinned `quay.io/jupyter/scipy-notebook` image with `numpy-stl` and `trimesh` baked in, token-authenticated, backend-network-only (no published port, no Traefik route), 2G/2CPU caps, non-root. Open WebUI's Jupyter code-execution wiring points at it; the legacy in-process engines stay off. See [Secure Code Execution](#secure-code-execution-code-sandbox).
 
@@ -326,6 +327,7 @@ The `opencode` Ansible role installs [OpenCode](https://opencode.ai) on the targ
 # ansible/group_vars/all/vars.yml
 opencode_users:
   - username: jane.doe
+    email: jane.doe@example.com  # optional: joins the key to the person's Open WebUI account
 ```
 
 Then run the playbook (tag `opencode` limits the run to this role):
@@ -337,11 +339,12 @@ cd ansible && ansible-playbook playbooks/site.yml --tags opencode
 Per user, the role:
 
 1. **Installs opencode** globally via npm (`opencode-ai`), installing Node.js first with the OS-appropriate package manager (tdnf on the Photon host, apt/dnf elsewhere) when `opencode_manage_nodejs: true`.
-2. **Mints a per-user LiteLLM virtual key** through `POST /key/generate` with the master key from the deployed `.env`, tagging it `key_alias: opencode-<user>`, `user_id: <user>`, and `metadata: {user: <user>, source: opencode}`. Every request opencode makes is then attributed to that user in the LiteLLM UI and `LiteLLM_SpendLogs`, so `/key/list` spend and the Grafana LiteLLM views resolve usage per person without extra headers. The key lands in `~/.config/opencode/litellm.key` (mode 0600); later runs reuse a still-valid key instead of minting again. Optional `models:` on the user entry restricts the key's allowed models, `opencode_key_max_budget`/`opencode_key_rpm` set spend/rate caps.
+2. **Mints a per-user LiteLLM virtual key** through `POST /key/generate` with the master key from the deployed `.env`, tagging it `key_alias: opencode-<user>`, `user_id: <email>` (the entry's `email`, else `<user>`), and `metadata: {user: <user>, source: opencode}`. With the email, opencode's spend and [saved memories](#saved-memories-per-user) are the same person's as in Open WebUI; a key minted earlier under the username is re-pointed to the email (`POST /key/update`). Every request opencode makes is then attributed to that user in the LiteLLM UI and `LiteLLM_SpendLogs`, so `/key/list` spend and the Grafana LiteLLM views resolve usage per person without extra headers. The key lands in `~/.config/opencode/litellm.key` (mode 0600); later runs reuse a still-valid key instead of minting again. Optional `models:` on the user entry restricts the key's allowed models, `opencode_key_max_budget`/`opencode_key_rpm` set spend/rate caps.
 3. **Auto-discovers models**: the config declares a `litellm` custom provider (`@ai-sdk/openai-compatible`, baseURL `https://litellm.<domain>/v1`) and the [`opencode-plugin-litellm`](https://github.com/yuseferi/opencode-litellm) plugin. The plugin pulls the whole `model_list` from `/v1/models` + `/v1/model/info` (limits, pricing, capability flags) at startup, caches it under `~/.cache/opencode-litellm`, and refreshes in the background — no model list to maintain when you add models to `litellm/config.yaml`. New sessions pick new models up within the 5-minute refresh window. Requires OpenCode ≥ 1.18.29.
 4. **Logs local usage**: `~/.config/opencode/plugins/litellm-usage.js` appends one JSON line per assistant message to `~/.local/share/opencode/usage.jsonl` — `user`, `modelID`, input/output/reasoning/cached tokens, cost, and duration — which cross-references the LiteLLM-side spend for the same turns.
 5. **Binds the reasoning-level picker**: opencode already has one built in. `/variants` opens "Select variant" and `ctrl+t` cycles the levels; the picker has no key of its own, so the role seeds `~/.config/opencode/tui.json` with `variant_list` on `ctrl+x v` (`opencode_variant_picker_keybind`). The file is written only when the user has none, so an existing theme or key map is never replaced. The levels are the model's variants: the discovery plugin builds them from LiteLLM's `supports_<level>_reasoning_effort` flags (`vllm_reasoning_efforts` for a vLLM model), and a model without them shows no picker.
-6. **Handles the Origin CA**: the proxy serves a Cloudflare Origin certificate, and Node's fetch does not use the system trust store. The role detects the OS: on the Photon host it points `NODE_EXTRA_CA_CERTS` at `certs/origin_ca_rsa_root.pem` in the deployed tree; elsewhere it distributes the public CA root from `ansible/roles/opencode/files/` into `~/.config/opencode/`. Set `opencode_node_ca_cert: false` when the proxy has a publicly trusted cert.
+6. **Adds saved memories** (`opencode_memory_enabled`, on with `memory_mcp_enabled`): `opencode.json` lists LiteLLM's `memory` MCP server (`https://litellm.<domain>/mcp/memory`, the user's key in `x-litellm-api-key`, OAuth discovery off), so opencode has the tools `memory_memory-save`, `-get`, `-search`, `-list` and `-delete`.
+7. **Handles the Origin CA**: the proxy serves a Cloudflare Origin certificate, and Node's fetch does not use the system trust store. The role detects the OS: on the Photon host it points `NODE_EXTRA_CA_CERTS` at `certs/origin_ca_rsa_root.pem` in the deployed tree; elsewhere it distributes the public CA root from `ansible/roles/opencode/files/` into `~/.config/opencode/`. Set `opencode_node_ca_cert: false` when the proxy has a publicly trusted cert.
 
 Defaults (`opencode_default_model: litellm/gemini-4-argon`, `small_model: litellm/gemini-3.5-flash-lite`) are set in `ansible/roles/opencode/defaults/main.yml`; any LiteLLM `model_name` works since discovery fills the picker. Run `opencode` and use `/models` to verify the full catalog.
 
@@ -373,6 +376,14 @@ Then give your Claude Code a LiteLLM key of its own (LiteLLM UI → Virtual Keys
 Leave `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `apiKeyHelper` unset: any of them replaces the plan's sign-in and bills per token. Sign in to Claude Code with your Claude account as usual.
 
 Usage then shows in the LiteLLM UI under Logs (filter by Credential: Client OAuth token), per key and model; the spend-log metadata carries `used_client_oauth_token=true`. Cost figures are at API list prices, not what the plan charges.
+
+To give this Claude Code the stack's [saved memories](#saved-memories-per-user), create the key with `"user_id": "<your Keycloak email>"` (or re-point an existing one with `POST /key/update {"key": "...", "user_id": "..."}`) and add the server once:
+
+```bash
+claude mcp add --transport http --scope user memory https://litellm.<domain>/mcp/memory --header "x-litellm-api-key: Bearer <your LiteLLM key>"
+```
+
+Claude Code's own memory (CLAUDE.md, auto memory) stays as it is; the stack's index is not added to its `/v1/messages` requests, so it reaches these memories through the tools.
 
 Before you move every session over:
 
@@ -492,6 +503,7 @@ cd ansible && ansible-playbook playbooks/site.yml --tags openwebui-config
 - **PostgreSQL**: Shared relational database for Open WebUI, LiteLLM, and Keycloak
 - **Valkey**: High-performance Redis alternative for caching and sessions
 - **Brave Search MCP**: Official Brave Search MCP server (`mcp/brave-search`) over streamable HTTP. LiteLLM mounts it at `/mcp/brave_search` and injects the tools into every chat request (see [Web Search](#web-search-brave-search-mcp)). Not published to the internet; only reachable on the backend network.
+- **memory-mcp**: The MCP server `memory` behind LiteLLM (`container-scripts/memory_mcp_server.py`, run by the litellm image's Python as uid 65534 with a read-only filesystem). It stores each user's saved memories in LiteLLM's `/v1/memory` and answers only tool calls that LiteLLM's memory hook signed. Backend network only. See [Saved memories](#saved-memories-per-user).
 - **Playwright MCP cluster**: Five `mcr.microsoft.com/playwright/mcp` replicas behind Traefik, giving concurrent browser automation (clicks, PDFs, devtools) for chat models. MCP sessions live in each replica's process memory, so the Traefik `playwright` service pins every request of a session to one replica with sticky cookies; without it, round-robin routing returns `404 Session not found`. LiteLLM mounts the cluster as `playwright_cluster` via Traefik's non-redirecting `mcp` entrypoint (`http://traefik:8082/mcp`). See [Browser Automation (Playwright MCP cluster)](#browser-automation-playwright-mcp-cluster).
 - **Chatterbox TTS**: Local OpenAI-compatible text-to-speech with voice cloning (`voice.domain.com`). Open WebUI calls `http://chatterbox-tts:4123/v1` on the backend network. The UI and public API share `https://voice.${DOMAIN}`: Traefik sends `/v1`, `/audio`, `/voices`, and the API docs to the API, and everything else to the React frontend. Both public routes use the `voice-auth@file` ForwardAuth middleware. [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/keycloak_oidc/) `v7.15.1` checks the Keycloak `platform` realm and redirects anonymous browsers to `https://auth.${DOMAIN}`. The callback is `https://voice.${DOMAIN}/oauth2/callback`, not `auth.${DOMAIN}`, because that host is Keycloak. Open WebUI keeps calling `http://chatterbox-tts:4123/v1` on the backend network, so speech in chat does not go through the proxy. Set `VOICE_OIDC_CLIENT_SECRET` and `OAUTH2_PROXY_COOKIE_SECRET` before starting the proxy; both are generated by the playbook on first run (tiering in `ansible/group_vars/all/vault.yml`). Re-run `ansible-playbook playbooks/site.yml` so the `voice` client and `voice_user` role exist; `platform-admins` receive that role. Set Ansible `chatterbox_device` to `gpu` or `cpu` (default `gpu` in `ansible/group_vars/all/vars.yml`). The playbook adds profile `chatterbox-gpu` or `chatterbox-cpu`. GPU builds [travisvn/chatterbox-tts-api](https://github.com/travisvn/chatterbox-tts-api) `main` with `docker/Dockerfile.uv.gpu` (CUDA 12.4) and needs the NVIDIA Container Toolkit. CPU uses `docker/Dockerfile.cpu` and does not request a GPU. Do not enable both profiles. Without Ansible: `docker compose --profile chatterbox-gpu up -d` or `--profile chatterbox-cpu`. The first speech request downloads the model into `chatterbox_models` and can take several minutes. Traefik's default `responseHeaderTimeout` is 10s, which closes a speech request before the model returns audio. The `chatterbox@file` serversTransport sets that timeout to `0s` (no limit) for the Chatterbox API service only. Upstream notes that non-CUDA multilingual builds are currently unreliable; use the `stable` branch if the CPU image fails. Upload a voice at the UI, then set **TTS Voice** in Open WebUI to that library name (`CHATTERBOX_TTS_VOICE`). OpenAI voice names with no alias (`alloy`, and the rest) use the built-in sample. `AUDIO_TTS_*` are persisted after the first boot, so later changes belong in **Admin → Settings → Audio**. Integration notes: [Chatterbox TTS](https://docs.openwebui.com/features/chat-conversations/audio/text-to-speech/chatterbox-tts-api-integration). Env names checked against [Open WebUI v0.12.1](https://docs.openwebui.com/reference/env-configuration/). **Signed-in user and logout in the UI:** the Chatterbox navbar shows the oauth2-proxy session's email as a chip plus a Log out link. `ui/script.js` fetches `/oauth2/userinfo` (served by oauth2-proxy on the same origin), and Log out hits `/oauth2/sign_out?rd=`, which clears the proxy cookie and bounces to the Keycloak `end_session_endpoint` with `id_token_hint` (oauth2-proxy substitutes its `{id_token}` placeholder with the session ID token) and `post_logout_redirect_uri=https://voice.<domain>` — a full single logout, not just a cookie clear, so the browser lands on the Keycloak login page instead of silently re-authenticating. These pieces are not part of the upstream checkout: `auth.<domain>` is in `OAUTH2_PROXY_WHITELIST_DOMAINS` (comma-separated; the env list parser treats a space-separated value as one domain), the `voice` Keycloak client carries `post_logout_redirect_uris` (vars.yml `post_logout_redirect_uris`, rendered by `keycloak_app.yml` as `valid_post_logout_redirect_uris`), and the Ansible chatterbox role re-applies the UI patch idempotently after each `git checkout` of `./chatterbox` (`roles/chatterbox/tasks/ui_auth.yml`); the image rebuild bakes the patched UI into the container.
 - **Code Sandbox**: Isolated Jupyter container for model-authored Python. Pinned `quay.io/jupyter/scipy-notebook` image with `numpy-stl` and `trimesh` baked in, token-authenticated (`CODE_SANDBOX_TOKEN` from the vault), backend-network-only, 2G/2CPU limits, non-root with kernel culling. Open WebUI's Jupyter code-execution wiring points at it; the legacy in-process engines stay off. See [Secure Code Execution (Code Sandbox)](#secure-code-execution-code-sandbox).
@@ -1032,6 +1044,72 @@ docker compose exec litellm python3 /opt/stack-scripts/litellm_skills_sync.py \
 `pytest` validates every `skills/*/SKILL.md` against the frontmatter
 rules, locally and in CI (`.github/workflows/python.yml`), so a bad skill
 fails before a deploy.
+
+## Saved memories (per user)
+
+Each person has one memory that every client of the gateway shares: what you ask a model to remember in Open WebUI is there in opencode, in Claude Code and in your own agents, and the other way round. The memories live in LiteLLM's own memory store (`/v1/memory`, the Memory page of the LiteLLM admin UI), so they belong to the gateway rather than to one app. On by default (`memory_mcp_enabled`); Open WebUI's own memory is switched off while it is on, so there is only one.
+
+### How it works
+
+1. **Store.** One row per memory in LiteLLM's `LiteLLM_MemoryTable`: key `user:<owner>:<name>`, the text as the value, a one-line `metadata.description`, and `user_id` set to the owner. LiteLLM 1.110 serves the `/v1/memory` REST API to the master key only (any other key, an internal user's included, gets a 401), so everyone else reaches their memories through the tools.
+2. **Tools.** The `memory-mcp` service (`container-scripts/memory_mcp_server.py`) is LiteLLM's MCP server `memory`, at `https://litellm.<domain>/mcp/memory` for any key and `http://litellm:4000/mcp/memory` for Open WebUI. Its tools are `save` (create, or replace under the same name), `get`, `search`, `list` and `delete`; LiteLLM shows them as `memory-save` and so on. `search` ranks by meaning with the local embedding model (`local-embedding`, `memory_embedding_model`) blended with keyword overlap, and by keywords alone when no embedding model answers.
+3. **Owner.** `litellm/memory_callback.py`, a LiteLLM startup hook, runs before every tool call to the `memory` server and decides whose memories it may touch: for the master key, which Open WebUI uses, the signed-in user's email from `X-OpenWebUI-User-Email`; for any other key, the `user_id` stored on that key. It signs the owner into the upstream call (HMAC-SHA256 with `memory_mcp_signing_key` from the vault), and `memory-mcp` refuses a call without a valid signature. The model never chooses whose memories it sees.
+4. **Index.** Like Claude Code's `MEMORY.md`, which is loaded into every session while the notes behind it are read on demand: a chat request that carries the memory tools gets a short index of the user's memories (name and one-line description, newest first, up to `memory_index_max_chars`) appended to its system prompt, and the model reads full entries with `get` or `search`. Requests without the tools, such as Open WebUI's title and tag requests, get none. A client can opt out per request with `metadata: {"memory_index": false}`; `memory_index_enabled: false` turns the index off everywhere and keeps the tools.
+
+| Caller | Whose memories |
+| --- | --- |
+| Open WebUI (master key with `X-OpenWebUI-User-Email`) | the signed-in user's email, lowercased |
+| Any other LiteLLM key | the `user_id` stored on the key (lowercased when it is an email) |
+| Master key without that header, or a key with no `user_id` | refused with a 403 that says why |
+
+Open WebUI users cannot change their email, but they can rename themselves, so the name header is not used. A key shares memories with its owner's Open WebUI account when its `user_id` is the same email: mint keys for people that way (the opencode role does when its user entry has an `email`), or re-point one with `POST /key/update {"key": "...", "user_id": "you@example.com"}`. A key whose `user_id` is anything else has a memory of its own. For the same reason, Open WebUI's spend is attributed by `X-OpenWebUI-User-Email` (`user_header_mappings`).
+
+### Use it
+
+- **Open WebUI**: the tool server `Memory` is on for every model (`models.default_metadata`). Ask "remember that I prefer metric units"; later chats see the memory in the index.
+- **opencode**: the role adds the server to `opencode.json` (see [opencode](#opencode-terminal-ai-coding-agent)).
+- **Claude Code**: `claude mcp add --transport http --scope user memory https://litellm.<domain>/mcp/memory --header "x-litellm-api-key: Bearer <key>"` (see [Claude Code on a Claude subscription](#claude-code-on-a-claude-subscription-usage-tracking)).
+- **Agents and scripts**: any MCP client at `https://litellm.<domain>/mcp/memory` with a LiteLLM key whose `user_id` is the person's email. An admin script can also use the REST API with the master key (`GET /v1/memory?key_prefix=user:<owner>:`); one that writes there keeps the `user:<owner>:<name>` key shape and sets `user_id` to the owner, or the tools do not see the rows.
+
+Limits: `memory_max_content_chars` (4000) per memory, `memory_max_per_user` (500) memories. Never store secrets: memories are put in front of models.
+
+### Turning it on
+
+A full `site.yml` run wires everything. On a running stack, from the deployed tree, without recreating the other services:
+
+```bash
+(cd ansible && ansible-playbook playbooks/site.yml --tags environment)  # signing key, .env, compose file and LiteLLM config; restarts litellm
+docker compose up -d memory-mcp litellm
+(cd ansible && ansible-playbook playbooks/site.yml --tags memory,openwebui-config)  # tool server, default tools, Open WebUI's memory off
+```
+
+### Verification
+
+```bash
+# memory-mcp is up and LiteLLM lists the server and loads the hook
+docker compose ps memory-mcp
+docker compose exec litellm printenv LITELLM_WORKER_STARTUP_HOOKS   # includes memory_callback:register_callback
+KEY=$(grep -m1 "^LITELLM_MASTER_KEY=" .env | cut -d= -f2-)
+curl -sk https://litellm.<domain>/v1/mcp/server -H "Authorization: Bearer $KEY" | grep -o '"server_name":"memory"'
+
+# Everything stored, as the admin sees it (owner, name, description)
+curl -sk "https://litellm.<domain>/v1/memory?key_prefix=user:&page_size=100" -H "Authorization: Bearer $KEY" \
+  | python3 -c 'import json,sys; [print(m["user_id"], m["key"].rsplit(":",1)[1], (m["metadata"] or {}).get("description","")) for m in json.load(sys.stdin)["memories"]]'
+
+# A call that bypasses LiteLLM's hook is refused
+docker compose exec litellm python3 -c 'import json,urllib.request; r=urllib.request.Request("http://memory-mcp:8080/mcp", data=json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list","arguments":{}}}).encode(), headers={"Content-Type":"application/json"}); print(json.load(urllib.request.urlopen(r))["result"]["content"][0]["text"])'
+# Saved memories are unavailable for this call: the call carries no owner signature, ...
+```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| "...uses the master key without Open WebUI's X-OpenWebUI-User-Email header" | `ENABLE_FORWARD_USER_INFO_HEADERS` is off, or the caller is not Open WebUI | Keep it `"true"` in the compose file; other callers use their own key |
+| "...the LiteLLM key has no user_id" | The key was minted without one | Re-point it: `POST /key/update {"key": "...", "user_id": "<email>"}` |
+| "...carries no owner signature" from memory-mcp | The hook is not loaded, or LiteLLM no longer forwards a pre-call hook's `extra_headers` to MCP servers | Check `LITELLM_WORKER_STARTUP_HOOKS`; calls fail closed until fixed |
+| The index never appears | The request does not carry the memory tools, `memory_index_enabled` is false, or the user has no memories; the index is cached for 30 s per user | Turn the Memory tool on for the chat |
+| Search says "ranked by keywords" | The embedding model does not answer | Check `docker compose ps text-embeddings` and `MEMORY_EMBEDDING_MODEL` |
 
 ## 3D Print Pipeline (Blender / FreeCAD / printer MCP)
 
