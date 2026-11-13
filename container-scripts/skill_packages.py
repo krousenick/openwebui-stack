@@ -1,16 +1,16 @@
 """The SKILL.md packages the playbook publishes (mounted at /app/skills).
 
 A package is a directory holding a SKILL.md whose frontmatter names and
-describes the skill. Only SKILL.md is published: the LiteLLM store, the
-marketplace entry and Open WebUI each hold that one file, so a skill has
-to be self-contained.
+describes the skill. Only SKILL.md is published: the LiteLLM Skill Hub and
+Open WebUI each hold that one file, so a skill has to be self-contained.
 
-The frontmatter name is the key in every consumer: the LiteLLM store's
-display_title, the marketplace entry, the discovery index and the Open
-WebUI skill id. It must therefore be the package directory name; a display
-title such as "Deep Research Protocol (DRP)" would register a second,
-differently named skill and never match the index digest. discover()
-enforces that before anything is published.
+The frontmatter name is the key in every consumer: the Skill Hub's skill
+name (and with it the Claude Code marketplace entry and the discovery
+index) and the Open WebUI skill id. It must therefore be the package
+directory name, as a slug: the hub accepts only lowercase hyphenated
+names and refuses a replacement SKILL.md that declares a different one,
+so a display title such as "Deep Research Protocol (DRP)" could never be
+published. discover() enforces that before anything is published.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ class Skill:
         return self.path.read_text(encoding="utf-8")
 
     def source(self) -> bytes:
-        """SKILL.md byte for byte, the form the LiteLLM archive digests."""
+        """SKILL.md byte for byte, the form uploaded to the Skill Hub and compared with what it stores."""
         return self.path.read_bytes()
 
 

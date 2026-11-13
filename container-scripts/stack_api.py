@@ -34,11 +34,17 @@ import base64
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from typing import Any, NoReturn
+
+# How long to wait before retrying a rate-limited (429) write whose
+# Retry-After gives no usable number of seconds, and the longest wait taken.
+RATE_LIMIT_WAIT = 60.0
+RATE_LIMIT_MAX_WAIT = 300.0
 
 
 class ScriptError(Exception):
@@ -102,6 +108,20 @@ def _decode(raw: bytes) -> Any:
         return {"detail": raw.decode(errors="replace")[:500]}
 
 
+def _payload(status: int, raw: bytes) -> Any:
+    """Decode a body from _send; status 0 carries the transport error's message."""
+    return {"detail": raw.decode(errors="replace")} if status == 0 else _decode(raw)
+
+
+def _retry_after(headers: Mapping[str, str]) -> float:
+    """Seconds a 429 response asks the client to wait, from its Retry-After."""
+    try:
+        seconds = float(headers.get("Retry-After") or "")
+    except ValueError:  # absent, or an HTTP date
+        return RATE_LIMIT_WAIT
+    return min(max(seconds, 1.0), RATE_LIMIT_MAX_WAIT)
+
+
 class Api:
     """JSON-over-HTTP client for one service, with an optional bearer token and fixed headers."""
 
@@ -113,6 +133,7 @@ class Api:
         check: bool = False,
         timeout: float = 120.0,
         headers: Mapping[str, str] | None = None,
+        rate_limit_retries: int = 0,
     ):
         self.base_url = base_url.rstrip("/")
         self.token = token
@@ -120,13 +141,16 @@ class Api:
         self.timeout = timeout
         # Sent with every request, e.g. a Host header for a gate that routes by name.
         self.headers = dict(headers or {})
+        # How often write() retries a request the service answered 429 (rate
+        # limited), each time after the wait its Retry-After asks for.
+        self.rate_limit_retries = rate_limit_retries
         self.actions: list[str] = []
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace, token: str | None = None) -> Api:
-        return cls(args.url, token, check=args.check, timeout=args.timeout)
+    def from_args(cls, args: argparse.Namespace, token: str | None = None, **options: Any) -> Api:
+        return cls(args.url, token, check=args.check, timeout=args.timeout, **options)
 
-    def request(
+    def _send(
         self,
         method: str,
         path: str,
@@ -135,12 +159,11 @@ class Api:
         json_body: Any = None,
         body: bytes | None = None,
         content_type: str | None = None,
-    ) -> tuple[int, Any]:
-        """Send one request and return (status, decoded body).
+    ) -> tuple[int, bytes, Mapping[str, str]]:
+        """Send one request; return (status, raw body, response headers).
 
-        HTTP error statuses are returned, not raised, so a caller can
-        branch on them (a 404 often means "create it"). A transport
-        failure (refused connection, timeout) comes back as status 0.
+        A transport failure (refused connection, timeout) is status 0, with
+        the error message as the body and no headers.
         """
         url = self.base_url + path
         if query:
@@ -156,11 +179,27 @@ class Api:
         request = urllib.request.Request(url, data=body, method=method, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return response.status, _decode(response.read())
+                return response.status, response.read(), response.headers
         except urllib.error.HTTPError as error:
-            return error.code, _decode(error.read())
+            return error.code, error.read(), error.headers
         except OSError as error:
-            return 0, {"detail": str(error)}
+            return 0, str(error).encode(), {}
+
+    def request(self, method: str, path: str, **request: Any) -> tuple[int, Any]:
+        """Send one request and return (status, decoded body).
+
+        HTTP error statuses are returned, not raised, so a caller can
+        branch on them (a 404 often means "create it"). A transport
+        failure (refused connection, timeout) comes back as status 0.
+        Keyword arguments: query, json_body, or body with content_type.
+        """
+        status, raw, _ = self._send(method, path, **request)
+        return status, _payload(status, raw)
+
+    def request_raw(self, method: str, path: str, **request: Any) -> tuple[int, bytes]:
+        """Like request, but return the body undecoded, for content that is not JSON."""
+        status, raw, _ = self._send(method, path, **request)
+        return status, raw
 
     def get(self, path: str, *, query: Mapping[str, str] | None = None) -> Any:
         """GET a resource that must exist; any status outside 2xx is an error."""
@@ -174,11 +213,17 @@ class Api:
 
         Returns the decoded response, or None on a check run, where the
         caller has to do without server-assigned values such as new ids.
+        A 429 answer is retried up to rate_limit_retries times.
         """
         self.actions.append(action)
         if self.check:
             return None
-        status, payload = self.request(method, path, **request)
+        for attempt in range(self.rate_limit_retries + 1):
+            status, raw, headers = self._send(method, path, **request)
+            if status != 429 or attempt == self.rate_limit_retries:
+                break
+            time.sleep(_retry_after(headers))
+        payload = _payload(status, raw)
         if not 200 <= status < 300:
             raise ScriptError(f"{action}: {method} {path} returned {status}: {json.dumps(payload)[:300]}")
         return payload

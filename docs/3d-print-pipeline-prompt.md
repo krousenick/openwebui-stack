@@ -1,15 +1,11 @@
 # 3D print pipeline — model skill
 
 **The canonical skill text lives in `skills/3d-print-pipeline/SKILL.md`**
-(Claude/Anthropic Agent Skills format). The playbook registers that package
-into the LiteLLM Skills Gateway: the zip is uploaded to the proxy-hosted
-skill store (`/v1/skills`, `custom_llm_provider=litellm_proxy`) and the
-registry entry (`/claude-code/plugins/3d-print-pipeline`) is served from the
-proxy's own archive, so Claude Code (`3d-print-pipeline@litellm`), `npx
-skills add`, and any Skills-API agent can fetch it. Semantic search
-(`skill_search_embedding_model`, by default the local `local-embedding`
-model) lets agents find it by description. The copy below is kept for human reading; if you edit one,
-edit both.
+(Claude/Anthropic Agent Skills format). The playbook publishes that package
+to LiteLLM's Skill Hub (`/skill-hub/skills/3d-print-pipeline`), which serves
+it from the proxy's own archive to Claude Code (`3d-print-pipeline@litellm`
+from the marketplace) and to `npx skills add` (the discovery index). The
+copy below is kept for human reading; if you edit one, edit both.
 
 ---
 

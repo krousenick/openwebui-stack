@@ -1,19 +1,21 @@
 ---
-# Skills Gateway: register the skills shipped in ./skills (SKILL.md
-# packages) with LiteLLM's proxy-hosted skill store and the Claude Code
-# marketplace (https://docs.litellm.ai/docs/skills_gateway).
+# Skills Gateway: publish the skills shipped in ./skills (SKILL.md
+# packages) to LiteLLM's Skill Hub, which also feeds the Claude Code
+# marketplace and the Agent Skills discovery index
+# (https://docs.litellm.ai/docs/skills_gateway).
 #
 # The work is done by container-scripts/litellm_skills_sync.py in the
-# litellm container. Its docstring describes the two stores, the archive
-# digest comparison that makes a rerun with unchanged skills a no-op, and
-# the report it returns. It validates every skill's frontmatter first
-# (container-scripts/skill_packages.py) and publishes nothing from a
-# checkout with a bad package.
+# litellm container. Its docstring describes the upload routes, the
+# SKILL.md comparison that makes a rerun with unchanged skills a no-op, the
+# one-time move off the legacy skill store, and the report it returns. It
+# validates every skill's frontmatter first (container-scripts/
+# skill_packages.py) and publishes nothing from a checkout with a bad
+# package.
 #
-# Only SKILL.md is published: the upload zip and the digest hold that one
-# file, and Open WebUI stores a skill as a single document. A skill must
-# therefore be self-contained; files beside SKILL.md (references/,
-# scripts/) reach opencode only, through its directory copy.
+# Only SKILL.md is published: the hub upload holds that one file, and Open
+# WebUI stores a skill as a single document. A skill must therefore be
+# self-contained; files beside SKILL.md (references/, scripts/) reach
+# opencode only, through its directory copy.
 
 - name: Require Skills Gateway settings
   ansible.builtin.assert:
@@ -28,25 +30,31 @@
     mode: "0644"
   when: hostvars[inventory_hostname].ansible_connection | default('ssh') != 'local'
 
-- name: Sync the skill packages into the LiteLLM skill store and marketplace
+- name: Publish the skill packages to the LiteLLM Skill Hub
   ansible.builtin.import_tasks:
     file: container_script.yml
   vars:
     container_script: litellm_skills_sync.py
     container_script_service: litellm
     container_script_args:
+      # The proxy builds its archive URLs from PROXY_BASE_URL, the same
+      # address; the script checks the marketplace and index use it.
       - --archive-base-url
       - "https://litellm.{{ domain }}"
     container_script_env:
       LITELLM_MASTER_KEY: "{{ litellm_master_key }}"
 
-- name: Show skill search result count
-  # Report-only: semantic search needs skill_search_embedding_model
-  # (litellm_skill_search_embedding_model, by default the local
-  # local-embedding model), and the script reports null instead of failing
-  # when it does not answer.
+- name: Show what the Skill Hub serves
+  # Report-only. served is null under --check; a view is null when it is
+  # off (skills_public_index_enabled) or requires a key.
   ansible.builtin.debug:
     msg: >-
-      Skill search returned {{ container_script_report.search.results }}
-      skill(s) for "{{ container_script_report.search.query }}".
-  when: container_script_report.search | default(none) is mapping
+      {{ container_script_report.skills | length }} skill(s) in the Skill Hub,
+      {{ container_script_report.skills | rejectattr('hub', 'equalto', 'unchanged') | list | length }}
+      changed; the Claude Code marketplace serves
+      {{ 'none (it requires a key)' if served.marketplace is none else served.marketplace }},
+      the discovery index
+      {{ 'none (it is off or requires a key)' if served.index is none else served.index }}.
+  vars:
+    served: "{{ container_script_report.served }}"
+  when: container_script_report.served | default(none) is mapping

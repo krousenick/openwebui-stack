@@ -69,7 +69,8 @@ Each is at `https://grafana.example.com/d/<uid>`.
 | Open WebUI API | `https://chatbot.example.com/api/chat/completions`, `/api/models` | An Open WebUI API key (Settings, Account) |
 | MCP servers through the LiteLLM gateway | `https://litellm.example.com/mcp/<server>`: `brave_search`, `playwright_cluster`, `blender`, `freecad`, and `printer` when enabled | A LiteLLM key |
 | Skills discovery index (`npx skills add`) | `https://litellm.example.com/.well-known/agent-skills/index.json` | None |
-| Skills store and Claude Code marketplace | `https://litellm.example.com/v1/skills`, `/claude-code/plugins/<name>` | A LiteLLM key |
+| Skill Hub (skills, versions, SKILL.md) | `https://litellm.example.com/skill-hub/skills`, `/skill-hub/skills/<name>`, `/versions`, `/content` | A LiteLLM key |
+| Claude Code marketplace | `https://litellm.example.com/claude-code/marketplace.json` | None |
 | OpenID Connect discovery | `https://auth.example.com/realms/platform/.well-known/openid-configuration` | None |
 | Health checks | `https://chatbot.example.com/health`, `https://litellm.example.com/health/liveliness` and `/health/readiness`, `https://grafana.example.com/api/health` | None |
 
