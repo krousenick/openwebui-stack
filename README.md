@@ -981,6 +981,27 @@ Agent Skills format, agentskills.io). One checkout, three consumers:
 | `guardrail-tuning` | Editing the content-filter category overrides without losing injection defenses |
 | `web-search-verify` | End-to-end Brave MCP verification: container, startup hook, injected tools, streaming path |
 | `deep-research` | Multi-source research into a cited narrative report: decompose the question, research each subtopic into sourced notes, write the report from the notes. Parallel subagents in Claude Code and opencode; the same stages in sequence in Open WebUI chats (Brave and Playwright MCP tools) |
+| `code-review` | Correctness review of a diff, branch, PR, or pasted code: parallel reviewer subagents by area, every finding verified with a concrete failing scenario, ranked report |
+| `security-review` | Security review of a change: threat model, one reviewer per lens (injection, files and network, web, auth, secrets, infrastructure, dependencies), only findings with an attack path |
+| `simplify` | Behavior-preserving cleanup of changed code (reuse, simplification, efficiency, altitude), applied and re-checked with the project's tests |
+| `dataviz` | Chart form, honest encoding, a colorblind-safe palette for light and dark themes; matplotlib, Chart.js in an HTML artifact, Mermaid charts |
+| `artifact-design` | Self-contained HTML pages and widgets for Open WebUI's Artifacts panel or as files: tokens, dark mode, layout, accessible controls, the sandboxed iframe's limits |
+| `artifact-diagramming` | Architecture, sequence, state, and data-model diagrams in Mermaid (rendered in Open WebUI chats) or themed inline SVG |
+| `skill-creator` | Writing and testing a skill for this gateway: the frontmatter rules, a description that triggers, a self-contained body for all three clients |
+| `docx` | Word documents with python-docx: create, read in order, edit with tracked changes and comments |
+| `xlsx` | Excel workbooks and CSV with openpyxl and pandas: live formulas, formats, tables, validation, charts, formula checks |
+| `pptx` | PowerPoint decks with python-pptx: 16:9 layouts, statement titles, native charts, tables, notes; edit, reorder, delete slides |
+| `pdf` | PDFs: reportlab reports with Unicode fonts and page numbers; pypdf text extraction, merge, split, stamp, encrypt, forms |
+
+The last eleven port Claude Code's built-in skills of the same names to
+this stack, rewritten for its three clients. The reviewer and planner
+roles that Claude Code runs as subagents stay skills here: each skill
+starts the client's own subagents where it has them (Claude Code `Agent`,
+opencode `subagent`) and runs the same steps in one chat in Open WebUI.
+LiteLLM's Agent Gateway (`/v1/agents`) registers remote A2A services, not
+prompts, so there is nothing to register there. The four document skills
+create files in Open WebUI only when the user turns on Code Interpreter
+(see [Secure Code Execution](#secure-code-execution-code-sandbox)).
 
 ### How it works
 
