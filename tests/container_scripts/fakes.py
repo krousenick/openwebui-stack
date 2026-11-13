@@ -196,7 +196,9 @@ class FakeLiteLLM(FakeService):
         self.search_enabled = True
         self.skills: dict[str, dict[str, Any]] = {}
         self.plugins: dict[str, dict[str, Any]] = {}
-        # Skill Hub rows by name (see the hub methods at the end).
+        # Skill Hub rows by name (see the hub methods at the end). Rows the
+        # /claude-code/plugins routes registered wait in self.plugins until a
+        # hub view reads them (hub_row).
         self.hub: dict[str, dict[str, Any]] = {}
         self.hub_enabled = True  # False: an older proxy without /skill-hub
         self.hub_clock = 0
@@ -246,6 +248,10 @@ class FakeLiteLLM(FakeService):
             return self.delete_model(request.json().get("id"))
         if path == "/skill-hub/skills" or path.startswith("/skill-hub/skills/"):
             return self.handle_hub(method, path.removeprefix("/skill-hub/skills"), request)
+        plugin = re.fullmatch(r"/claude-code/plugins(?:/([^/]+))?", path)
+        answered = self.plugin_route_on_hub_row(method, plugin.group(1), request) if plugin else None
+        if answered is not None:
+            return answered
         if path == "/v1/skills" and method == "GET":
             skills = list(self.skills.values())
             if "query" in request.query:
@@ -343,13 +349,84 @@ class FakeLiteLLM(FakeService):
     # and its visibility and bumps the patch version, and each publication
     # is kept as a version. Uploads and replacements share a rate limit (10
     # a minute per user). A row holds its own archive once it carries
-    # agent_skill metadata; the rows the earlier publisher registered through
-    # /claude-code/plugins point at the legacy store instead (add_marketplace_row).
+    # agent_skill metadata; the rows registered through /claude-code/plugins
+    # (add_marketplace_row, or the routes in handle) point elsewhere, such as
+    # the legacy store. A PUT there rebuilds the manifest from its body, so
+    # the row loses its archive; LiteLLM keeps it only for an unchanged
+    # source, which the publisher never sends. GET and PUT there on a hub
+    # row are answered by plugin_route_on_hub_row.
 
     def hub_stamp(self) -> str:
         self.hub_clock += 1
         minutes, seconds = divmod(self.hub_clock, 60)
         return f"2026-11-12T12:{minutes:02d}:{seconds:02d}.000000Z"
+
+    def hub_row(self, name: str) -> dict[str, Any] | None:
+        """The table row for a name, taking over an entry the /claude-code/plugins routes registered."""
+        if name not in self.hub and name in self.plugins:
+            entry = self.plugins.pop(name)
+            stamp = self.hub_stamp()
+            self.hub[name] = {
+                "id": f"hub-{self.hub_clock}",
+                "name": name,
+                "version": entry.get("version"),
+                "description": entry.get("description"),
+                "enabled": True,
+                "manifest": dict(entry),
+                "content": None,
+                "skill_md": None,
+                "created_at": stamp,
+                "updated_at": stamp,
+                "versions": [{"version": entry.get("version"), "manifest": dict(entry)}],
+            }
+        return self.hub.get(name)
+
+    def table(self) -> list[dict[str, Any]]:
+        """Every row, by name."""
+        for name in list(self.plugins):
+            self.hub_row(name)
+        return sorted(self.hub.values(), key=lambda row: row["name"])
+
+    def plugin_route_on_hub_row(self, method: str, name: str | None, request: Request) -> tuple[Any, ...] | None:
+        """/claude-code/plugins for a name the hub holds; None leaves the request to those routes in handle."""
+        if name is None:
+            if method == "POST" and (request.json() or {}).get("name") in self.hub:
+                return 409, {"error": "exists"}
+            return None
+        row = self.hub_row(name)
+        if row is None:
+            return None
+        if method == "GET":
+            return 200, {
+                "id": row["id"],
+                "name": name,
+                "version": row["version"],
+                "description": row["description"],
+                "source": row["manifest"].get("source"),
+                "keywords": row["manifest"].get("keywords"),
+                "enabled": row["enabled"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        if method == "PUT":
+            # A full replace: the manifest is rebuilt from the body, the patch
+            # version bumped, and the row's own archive dropped.
+            body = request.json()
+            major, minor, patch = row["version"].split(".")
+            version = f"{major}.{minor}.{int(patch) + 1}"
+            manifest = {"name": name, **{key: value for key, value in body.items() if value}, "version": version}
+            row.update(
+                version=version,
+                description=body.get("description"),
+                manifest=manifest,
+                content=None,
+                skill_md=None,
+                updated_at=self.hub_stamp(),
+            )
+            row["versions"].append({"version": version, "manifest": manifest})
+            plugin = {"id": row["id"], "name": name, "version": version, "source": body.get("source")}
+            return 200, {"status": "success", "action": "updated", "plugin": {**plugin, "enabled": row["enabled"]}}
+        return None
 
     def hub_view(self, row: dict[str, Any]) -> dict[str, Any]:
         """A row as GET /skill-hub/skills shows it (SkillHubSkill)."""
@@ -387,7 +464,7 @@ class FakeLiteLLM(FakeService):
         name, _, action = path.strip("/").partition("/")
         if action == "upload" and method == "PUT":
             return self.hub_upload(request, name)
-        row = self.hub.get(name)
+        row = self.hub_row(name)
         if row is None:
             return 404, {"detail": "Skill not found"}
         if action == "" and method == "GET":
@@ -404,9 +481,10 @@ class FakeLiteLLM(FakeService):
         if not 1 <= limit <= 100:
             return 422, {"detail": "limit must be between 1 and 100"}
         needle = query.get("query", "").casefold()
+        table = self.table()
         rows = [
             row
-            for row in sorted(self.hub.values(), key=lambda row: row["name"])
+            for row in table
             if needle
             in " ".join((row["name"], row["description"] or "", *(row["manifest"].get("keywords") or ()))).casefold()
         ]
@@ -415,7 +493,7 @@ class FakeLiteLLM(FakeService):
             "skills": [self.hub_view(row) for row in rows[offset : offset + size]],
             "count": len(rows),
             "next_offset": offset + size if offset + size < len(rows) else None,
-            "tags": sorted({word for row in self.hub.values() for word in row["manifest"].get("keywords") or ()}),
+            "tags": sorted({word for row in table for word in row["manifest"].get("keywords") or ()}),
         }
 
     def hub_upload(self, request: Request, name: str | None) -> tuple[Any, ...]:
@@ -429,7 +507,7 @@ class FakeLiteLLM(FakeService):
         declared = skill_md_fields(files["SKILL.md"]) if files else {}
         if not declared.get("name") or not declared.get("description"):
             return 422, {"detail": "Upload a valid Agent Skill with name and description in SKILL.md"}
-        row = self.hub.get(name or declared["name"])
+        row = self.hub_row(name or declared["name"])
         if name is None and row is not None:
             return 409, {"detail": f"A skill named '{row['name']}' already exists. Update the existing skill instead."}
         if name is not None:
@@ -497,7 +575,7 @@ class FakeLiteLLM(FakeService):
             not keyed and (not self.index_enabled or self.marketplace_auth_required)
         ):
             return 401, {"error": "invalid proxy key"}
-        row = self.hub.get(name)
+        row = self.hub_row(name)
         if row is None or (not keyed and not row["enabled"]):
             return 404, {"detail": "Skill not found"}
         if "agent_skill" not in row["manifest"]:
@@ -509,7 +587,7 @@ class FakeLiteLLM(FakeService):
         if self.marketplace_auth_required and not self.authorized(request):
             return 401, {"error": "Authentication required"}, {"WWW-Authenticate": "Bearer"}
         plugins = []
-        for row in sorted(self.hub.values(), key=lambda row: row["name"]):
+        for row in self.table():
             if row["enabled"] and "source" in row["manifest"]:
                 entry = {"name": row["name"], "source": row["manifest"]["source"], "version": row["version"]}
                 if row["description"]:
@@ -545,7 +623,7 @@ class FakeLiteLLM(FakeService):
         ]
         hub = [
             row
-            for row in sorted(self.hub.values(), key=lambda row: row["name"])
+            for row in self.table()
             if row["enabled"] and "agent_skill" in row["manifest"] and not self.marketplace_auth_required
         ]
         for row, name in zip(hub, deduplicated([row["name"] for row in hub], frozenset(legacy_names)), strict=True):

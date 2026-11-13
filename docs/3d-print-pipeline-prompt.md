@@ -2,10 +2,13 @@
 
 **The canonical skill text lives in `skills/3d-print-pipeline/SKILL.md`**
 (Claude/Anthropic Agent Skills format). The playbook publishes that package
-to LiteLLM's Skill Hub (`/skill-hub/skills/3d-print-pipeline`), which serves
-it from the proxy's own archive to Claude Code (`3d-print-pipeline@litellm`
-from the marketplace) and to `npx skills add` (the discovery index). The
-copy below is kept for human reading; if you edit one, edit both.
+to LiteLLM (its legacy skill store or its Skill Hub, `litellm_skills_store`),
+which serves it from the proxy's own archive to Claude Code
+(`3d-print-pipeline@litellm` from the marketplace) and to `npx skills add`
+(the discovery index). Semantic search (`skill_search_embedding_model`, by
+default the local `local-embedding` model) lets agents find it by
+description while the legacy store holds it. The copy below is kept for
+human reading; if you edit one, edit both.
 
 ---
 

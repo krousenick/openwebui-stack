@@ -1,19 +1,19 @@
 ---
 # Skills Gateway: publish the skills shipped in ./skills (SKILL.md
-# packages) to LiteLLM's Skill Hub, which also feeds the Claude Code
-# marketplace and the Agent Skills discovery index
-# (https://docs.litellm.ai/docs/skills_gateway).
+# packages) to LiteLLM, where they feed the Claude Code marketplace and the
+# Agent Skills discovery index (https://docs.litellm.ai/docs/skills_gateway).
+# litellm_skills_store picks the place: the legacy proxy-hosted skill store,
+# the Skill Hub, or both (defaults/main.yml has the trade-offs).
 #
 # The work is done by container-scripts/litellm_skills_sync.py in the
-# litellm container. Its docstring describes the upload routes, the
-# SKILL.md comparison that makes a rerun with unchanged skills a no-op, the
-# one-time move off the legacy skill store, and the report it returns. It
-# validates every skill's frontmatter first (container-scripts/
-# skill_packages.py) and publishes nothing from a checkout with a bad
-# package.
+# litellm container. Its docstring describes each mode, what makes a rerun
+# with unchanged skills a no-op, how a change of mode moves the skills, and
+# the report it returns. It validates every skill's frontmatter first
+# (container-scripts/skill_packages.py) and publishes nothing from a
+# checkout with a bad package.
 #
-# Only SKILL.md is published: the hub upload holds that one file, and Open
-# WebUI stores a skill as a single document. A skill must therefore be
+# Only SKILL.md is published: the uploads hold that one file, and Open WebUI
+# stores a skill as a single document. A skill must therefore be
 # self-contained; files beside SKILL.md (references/, scripts/) reach
 # opencode only, through its directory copy.
 
@@ -21,7 +21,10 @@
   ansible.builtin.assert:
     that:
       - litellm_master_key | length > 0
-    fail_msg: "Skills Gateway requires the LiteLLM master key."
+      - litellm_skills_store in ['legacy', 'hub', 'both']
+    fail_msg: >-
+      Skills Gateway requires the LiteLLM master key, and litellm_skills_store
+      must be legacy, hub or both (it is {{ litellm_skills_store }}).
 
 - name: Stage the skill packages on the deployment host
   ansible.builtin.copy:
@@ -30,31 +33,46 @@
     mode: "0644"
   when: hostvars[inventory_hostname].ansible_connection | default('ssh') != 'local'
 
-- name: Publish the skill packages to the LiteLLM Skill Hub
+- name: Publish the skill packages to LiteLLM
   ansible.builtin.import_tasks:
     file: container_script.yml
   vars:
     container_script: litellm_skills_sync.py
     container_script_service: litellm
     container_script_args:
-      # The proxy builds its archive URLs from PROXY_BASE_URL, the same
-      # address; the script checks the marketplace and index use it.
+      - --store
+      - "{{ litellm_skills_store }}"
+      # Base of the legacy store's archive URLs; the hub builds its own from
+      # PROXY_BASE_URL, the same address. The script checks the marketplace
+      # and the index serve from it.
       - --archive-base-url
       - "https://litellm.{{ domain }}"
     container_script_env:
       LITELLM_MASTER_KEY: "{{ litellm_master_key }}"
 
-- name: Show what the Skill Hub serves
+- name: Show what the marketplace and the discovery index serve
   # Report-only. served is null under --check; a view is null when it is
   # off (skills_public_index_enabled) or requires a key.
   ansible.builtin.debug:
     msg: >-
-      {{ container_script_report.skills | length }} skill(s) in the Skill Hub,
-      {{ container_script_report.skills | rejectattr('hub', 'equalto', 'unchanged') | list | length }}
-      changed; the Claude Code marketplace serves
+      {{ container_script_report.skills | length }} skill(s) in the
+      {{ container_script_report.store }} store,
+      {{ container_script_report.actions | length }} change(s); the Claude Code marketplace serves
       {{ 'none (it requires a key)' if served.marketplace is none else served.marketplace }},
       the discovery index
       {{ 'none (it is off or requires a key)' if served.index is none else served.index }}.
   vars:
     served: "{{ container_script_report.served }}"
   when: container_script_report.served | default(none) is mapping
+
+- name: Show skill search result count
+  # Report-only: semantic search ranks the legacy store (store legacy or
+  # both) and embeds with skill_search_embedding_model
+  # (litellm_skill_search_embedding_model, by default the local
+  # local-embedding model). The script reports null instead of failing when
+  # it does not answer.
+  ansible.builtin.debug:
+    msg: >-
+      Skill search returned {{ container_script_report.search.results }}
+      skill(s) for "{{ container_script_report.search.query }}".
+  when: container_script_report.search | default(none) is mapping

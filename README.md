@@ -940,39 +940,53 @@ Each `skills/<name>/SKILL.md` (frontmatter `name` must match the directory,
 playbook — no MCP server needs to be enabled, skills are plain
 instructions. The playbook stops on a `name` that is not the directory
 name as a lowercase hyphenated slug, or a `description` outside 1–1024
-characters. Only `SKILL.md` is published to the Skill Hub and Open
-WebUI, so a skill must be self-contained: files beside it (`references/`,
-`scripts/`) reach opencode only. That is the stack's rule, not a hub
-limit: a hub package could carry such files to Claude Code and
+characters. Only `SKILL.md` is published to LiteLLM and Open WebUI, so a
+skill must be self-contained: files beside it (`references/`, `scripts/`)
+reach opencode only. That is the stack's rule, not a LiteLLM limit: a
+Skill Hub package could carry such files to Claude Code and
 `npx skills add`, but Open WebUI stores one document per skill, and a
 skill that works fully in two clients and partly in the third is worse
 than one file that works in all three.
 
-1. **LiteLLM Skill Hub** (`tasks/mcp/skills_gateway.yml`, logic in
-   `container-scripts/litellm_skills_sync.py`): each skill is a stored
-   archive with version history in the proxy's Postgres.
-   `POST /skill-hub/skills/upload` creates it (version 1.0.0, public);
-   when the SKILL.md the hub returns at `/skill-hub/skills/<name>/content`
-   differs from the checkout's, `PUT /skill-hub/skills/<name>/upload`
-   stores the new one as the next patch version. Unchanged skills are left
-   alone, so a rerun writes nothing. The hub keeps what an admin sets in
-   its UI (domain, namespace, tags, and an unpublished skill stays
-   private), and the playbook never deletes a hub skill. The hub takes 10
-   uploads a minute per user, so a run with more waits for the next
-   minute. One registry feeds two more views:
-   - the **Claude Code marketplace** (`/claude-code/marketplace.json`),
-     each entry downloading from
-     `https://litellm.<domain>/claude-code/plugins/<name>/archive/<sha256>.zip`;
-   - the **Agent Skills discovery index**
-     (`/.well-known/agent-skills/index.json`, each entry at
-     `/skill-hub/skills/<name>/archive`), on while
-     `litellm_settings.public_skills_index: true` (rendered from
-     `templates/config.yaml.j2`, toggle `skills_public_index_enabled`).
+1. **LiteLLM** (`tasks/mcp/skills_gateway.yml`, logic in
+   `container-scripts/litellm_skills_sync.py`), in the place
+   `litellm_skills_store` names. Either way LiteLLM serves the skills to
+   the **Claude Code marketplace** (`/claude-code/marketplace.json`) and
+   the **Agent Skills discovery index**
+   (`/.well-known/agent-skills/index.json`, on while
+   `litellm_settings.public_skills_index: true`, rendered from
+   `templates/config.yaml.j2`, toggle `skills_public_index_enabled`):
+   - `legacy`, the default until a choice is made (see "Choosing the
+     store" below): the proxy-hosted skill store (`POST /v1/skills` with
+     `custom_llm_provider=litellm_proxy`, in the proxy's Postgres), and a
+     marketplace row per skill registered through the `/claude-code/plugins`
+     routes, which LiteLLM now marks deprecated, with its archive at
+     `https://litellm.<domain>/v1/skills/<id>/archive`. The store has no
+     update endpoint, so a skill whose archive digest differs from the one
+     the discovery index publishes is deleted and uploaded again.
+   - `hub`: LiteLLM's Skill Hub, the path it recommends, which keeps each
+     skill as a stored archive with version history.
+     `POST /skill-hub/skills/upload` creates it (version 1.0.0, public);
+     when the SKILL.md the hub returns at `/skill-hub/skills/<name>/content`
+     differs from the checkout's, `PUT /skill-hub/skills/<name>/upload`
+     stores the new one as the next patch version. The hub keeps what an
+     admin sets in its UI (domain, namespace, tags, and an unpublished
+     skill stays private), and the playbook never deletes a hub skill. Its
+     registry feeds the marketplace (archives at
+     `/claude-code/plugins/<name>/archive/<sha256>.zip`) and the index
+     (`/skill-hub/skills/<name>/archive`); LiteLLM builds those URLs from
+     `PROXY_BASE_URL`. It takes 10 uploads a minute per user, so a run with
+     more waits for the next minute. The first `hub` run moves each skill
+     out of the legacy layout (state `migrated`, version 1.0.1, its domain
+     and tags kept) and deletes the legacy store's copies.
+   - `both`: the hub, plus a copy of each skill kept in the legacy store.
 
-   LiteLLM builds those URLs from `PROXY_BASE_URL`, so nothing leaves the
-   network and every source is https. After each run the script reads
-   both views without a key and fails unless each public skill is served
-   once, from the hub, under `https://litellm.<domain>`.
+   Every mode leaves unchanged skills alone, so a rerun writes nothing,
+   and a change of `litellm_skills_store` moves the skills over on the
+   next run, in any direction. After each run the script reads the
+   marketplace and the index without a key and fails unless each public
+   skill is served from where the mode puts it, under
+   `https://litellm.<domain>`.
 2. **Open WebUI workspace** (`tasks/openwebui_skills.yml`, logic in
    `container-scripts/openwebui_skills_sync.py`): the playbook pushes
    each SKILL.md through Open WebUI's Skills API
@@ -986,26 +1000,26 @@ than one file that works in all three.
    `~/.config/opencode/skills/`, where opencode discovers them through its
    native `skill` tool.
 
-**Moving off the legacy skill store.** Until the Skill Hub, the publisher
-uploaded each skill to LiteLLM's proxy-hosted store (`POST /v1/skills`
-with `custom_llm_provider=litellm_proxy`) and registered its marketplace
-entry through the `/claude-code/plugins` management routes, which LiteLLM
-now marks deprecated. Those entries are hub rows whose archive lives in
-the old store, so the first run of the current publisher uploads each
-skill into the hub (state `migrated`, version 1.0.1, its domain and tags
-kept) and then deletes the old store's copies: the discovery index lists
-old-store skills first and renames a hub skill whose name one of them
-holds (`stack-ops-2`), so keeping them would list every skill twice.
+**Choosing the store.** Two LiteLLM 1.110 behaviours decide it. Semantic
+skill search (`GET /v1/skills?custom_llm_provider=litellm_proxy&query=…`
+and LiteLLM's `skill_search` MCP tool) ranks only the legacy store; the
+hub's own `GET /skill-hub/skills?query=…` matches words in names,
+descriptions and tags. And the discovery index lists legacy-store skills
+first and renames a hub skill whose name one of them holds
+(`stack-ops-2`). So:
 
-LiteLLM 1.110's semantic skill search
-(`GET /v1/skills?custom_llm_provider=litellm_proxy&query=…` and its
-`skill_search` MCP tool) ranks only that old store, so with the copies
-gone it finds nothing. The hub's own search,
-`GET /skill-hub/skills?query=…`, matches words in names, descriptions and
-tags. The `skill_search_embedding_model` setting
-(`litellm_skill_search_embedding_model`, by default `local-embedding`,
-BAAI/bge-small-en-v1.5 in the `text-embeddings` service on the stack
-host's CPU) stays in place for when LiteLLM searches hub skills.
+| `litellm_skills_store` | Semantic search | Discovery index | Versions, LiteLLM's recommended API |
+|---|---|---|---|
+| `legacy` | yes | each skill once | no; deprecated marketplace routes |
+| `hub` | finds nothing | each skill once | yes |
+| `both` | yes | each skill twice (`name`, `name-2`) | yes |
+
+Semantic search embeds with `litellm_skill_search_embedding_model`, by
+default `local-embedding` (BAAI/bge-small-en-v1.5 in the `text-embeddings`
+service on the stack host's CPU), so it needs no provider key. With
+`local_embedding_enabled: false` it falls back to Gemini's
+`text-embedding` when the Gemini models are on; otherwise search is off
+and listing skills still works.
 
 ### Consume the skills
 
@@ -1020,12 +1034,17 @@ npx skills add https://litellm.<domain>
 claude plugin marketplace add https://litellm.<domain>/claude-code/marketplace.json
 claude plugin install stack-ops@litellm
 
-# Skill Hub API directly: list, search, version history, the stored SKILL.md
 KEY=$(grep -m1 "^LITELLM_MASTER_KEY=" .env | cut -d= -f2-)
+# Skill Hub (store hub or both): list, search, version history, the stored SKILL.md
 curl -sk "https://litellm.<domain>/skill-hub/skills" -H "Authorization: Bearer $KEY"
 curl -sk "https://litellm.<domain>/skill-hub/skills?query=sso" -H "Authorization: Bearer $KEY"
 curl -sk "https://litellm.<domain>/skill-hub/skills/stack-ops/versions" -H "Authorization: Bearer $KEY"
 curl -sk "https://litellm.<domain>/skill-hub/skills/stack-ops/content" -H "Authorization: Bearer $KEY"
+# Legacy store (store legacy or both); semantic search needs the embedding model
+curl -sk "https://litellm.<domain>/v1/skills?custom_llm_provider=litellm_proxy" \
+  -H "Authorization: Bearer $KEY"
+curl -sk "https://litellm.<domain>/v1/skills?custom_llm_provider=litellm_proxy&query=diagnose+sso+login&top_k=3" \
+  -H "Authorization: Bearer $KEY"
 ```
 
 Open WebUI users: type `$` in the chat input and pick the skill, or enable
@@ -1037,12 +1056,13 @@ it per chat from the chat input's + menu (Skills).
    the directory name, 1–1024 char `description`).
 2. Rerun the playbook — `--tags skills,environment,compose` covers the
    config render, the skills mounts, and both publishers.
-3. Verify: the skill appears in `GET /skill-hub/skills`, the Claude Code
-   marketplace, the discovery index, Workspace → Skills in Open WebUI,
-   and (after the next opencode run) the `skill` tool listing.
+3. Verify: the skill appears in the Claude Code marketplace, the
+   discovery index, `GET /skill-hub/skills` (every marketplace row is
+   listed there), Workspace → Skills in Open WebUI, and (after the next
+   opencode run) the `skill` tool listing.
 
 The compose template mounts `./skills` read-only into both `litellm`
-(`/app/skills`, source of the Skill Hub uploads) and `open-webui`
+(`/app/skills`, source of the LiteLLM uploads) and `open-webui`
 (`/app/skills`, source for the workspace push).
 
 Both publishers are Python scripts in `container-scripts/`, mounted
@@ -1054,7 +1074,7 @@ list what a real run would change. Preview by hand on the stack host:
 
 ```bash
 docker compose exec litellm python3 /opt/stack-scripts/litellm_skills_sync.py \
-  --archive-base-url https://litellm.<domain> --check
+  --store legacy --archive-base-url https://litellm.<domain> --check
 ```
 
 `pytest` validates every `skills/*/SKILL.md` against the frontmatter
@@ -1168,7 +1188,7 @@ the assistant message whose link returns the binary STL.
     images on the Photon host, renders compose/env/config, merges the
     Open WebUI `tool_server.connections` plus global default tool IDs, and
     registers the `3d-print-pipeline` skill through the Centralized Skills
-    flow (Skill Hub, Claude Code marketplace, Open WebUI workspace).
+    flow (LiteLLM's skill store, Claude Code marketplace, Open WebUI workspace).
 
 ### Verification
 

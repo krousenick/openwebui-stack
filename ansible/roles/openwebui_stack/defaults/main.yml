@@ -388,6 +388,22 @@ openwebui_reasoning_models_exclude: []
 # way (general_settings.claude_code_marketplace_auth_required gates it).
 skills_public_index_enabled: true
 
+# Where tasks/mcp/skills_gateway.yml publishes the skills in LiteLLM
+# (container-scripts/litellm_skills_sync.py --store):
+#   legacy  the proxy-hosted skill store (/v1/skills) plus a Claude Code
+#           marketplace row per skill, registered through the deprecated
+#           /claude-code/plugins routes. Semantic skill search ranks this
+#           store. What the stack did before the Skill Hub.
+#   hub     the Skill Hub (/skill-hub/skills), which LiteLLM recommends:
+#           versioned archives behind the marketplace and the discovery
+#           index. Deletes the legacy store's copies, so semantic skill
+#           search (LiteLLM 1.110 ranks only that store) finds nothing.
+#   both    the hub, plus a copy of each skill kept in the legacy store for
+#           semantic search; the discovery index then lists every skill
+#           twice (name and name-2).
+# Changing it moves the skills over on the next run, in any direction.
+litellm_skills_store: legacy
+
 # Local embedding model: Hugging Face Text Embeddings Inference on CPU
 # (compose service text-embeddings), served by LiteLLM as `local-embedding`
 # on its OpenAI-compatible /v1/embeddings. Semantic skill search uses it by
@@ -407,12 +423,11 @@ local_embedding_image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
 
 # Model LiteLLM's semantic skill search embeds with
 # (litellm_settings.skill_search_embedding_model; GET /v1/skills?query= and
-# the skill_search MCP tool). In LiteLLM 1.110 that search ranks only the
-# legacy skill store, which the Skill Hub publisher empties, so it finds
-# nothing until LiteLLM searches hub skills. Any model_name the proxy
-# serves that can embed works: local-embedding, Gemini's text-embedding, a
-# Bedrock embedding model, or one registered at runtime such as a vLLM
-# embedding server.
+# the skill_search MCP tool), which in LiteLLM 1.110 ranks only the legacy
+# skill store (litellm_skills_store legacy or both). Any model_name the
+# proxy serves that can embed works: local-embedding, Gemini's
+# text-embedding, a Bedrock embedding model, or one registered at runtime
+# such as a vLLM embedding server.
 # Empty picks local-embedding when local_embedding_enabled, else Gemini's
 # text-embedding when litellm_gemini_models_enabled, else none: semantic
 # search is then off, and listing skills still works.

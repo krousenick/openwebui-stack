@@ -70,6 +70,7 @@ Each is at `https://grafana.example.com/d/<uid>`.
 | MCP servers through the LiteLLM gateway | `https://litellm.example.com/mcp/<server>`: `brave_search`, `playwright_cluster`, `blender`, `freecad`, and `printer` when enabled | A LiteLLM key |
 | Skills discovery index (`npx skills add`) | `https://litellm.example.com/.well-known/agent-skills/index.json` | None |
 | Skill Hub (skills, versions, SKILL.md) | `https://litellm.example.com/skill-hub/skills`, `/skill-hub/skills/<name>`, `/versions`, `/content` | A LiteLLM key |
+| Legacy skill store and semantic skill search | `https://litellm.example.com/v1/skills?custom_llm_provider=litellm_proxy` (`&query=...`) | A LiteLLM key |
 | Claude Code marketplace | `https://litellm.example.com/claude-code/marketplace.json` | None |
 | OpenID Connect discovery | `https://auth.example.com/realms/platform/.well-known/openid-configuration` | None |
 | Health checks | `https://chatbot.example.com/health`, `https://litellm.example.com/health/liveliness` and `/health/readiness`, `https://grafana.example.com/api/health` | None |

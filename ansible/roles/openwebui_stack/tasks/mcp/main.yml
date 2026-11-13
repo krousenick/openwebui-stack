@@ -50,8 +50,8 @@
     or freecad_mcp_enabled | default(false) | bool
     or printer_mcp_enabled | default(false) | bool
 
-# Skills Gateway: publish every ./skills SKILL.md package to LiteLLM's
-# Skill Hub, which feeds the Claude Code marketplace. Runs
+# Skills Gateway: publish every ./skills SKILL.md package to LiteLLM
+# (litellm_skills_store), which feeds the Claude Code marketplace. Runs
 # unconditionally: skills are plain instructions, not tied to any MCP
 # server being enabled (each skill's SKILL.md states which tools it
 # assumes, and clients only load it when relevant).
