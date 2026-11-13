@@ -27,17 +27,21 @@
     }{% endif %}
 
   },
-{% if opencode_memory_enabled | bool %}
+{% set opencode_mcp_servers = (['memory'] if opencode_memory_enabled | bool else [])
+                              + (['skills'] if opencode_skills_mcp_enabled | bool else []) %}
+{% if opencode_mcp_servers | length > 0 %}
   "mcp": {
-    "memory": {
+{% for server in opencode_mcp_servers %}
+    "{{ server }}": {
       "type": "remote",
-      "url": "{{ opencode_litellm_base_url }}/mcp/memory",
+      "url": "{{ opencode_litellm_base_url }}/mcp/{{ server }}",
       "enabled": true,
       "oauth": false,
       "headers": {
         "x-litellm-api-key": "Bearer {file:{{ opencode_account.home }}/.config/opencode/litellm.key}"
       }
-    }
+    }{{ ',' if not loop.last }}
+{% endfor %}
   },
 {% endif %}
   "enabled_providers":{{ (['litellm'] + (['anthropic'] if opencode_anthropic_enabled | bool else [])) | to_json }}

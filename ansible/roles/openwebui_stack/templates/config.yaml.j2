@@ -599,3 +599,13 @@ mcp_servers:
     auth_type: "none"
     allow_all_keys: true
 {% endif %}
+{% if skills_mcp_enabled | default(true) | bool %}
+  skills:
+    # The published skills (./skills) as tools: search by meaning, list,
+    # get. Read-only and the same for every caller, so every key may use it;
+    # LiteLLM's own skill_search serves only admin keys.
+    url: "http://skills-mcp:8080/mcp"
+    transport: "http"
+    auth_type: "none"
+    allow_all_keys: true
+{% endif %}

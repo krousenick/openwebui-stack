@@ -175,6 +175,11 @@ litellm_ui_chat_enabled: false
 # WebUI's Jupyter wiring.
 code_sandbox_enabled: true
 
+# Skills tool: the published skills as LiteLLM's `skills` MCP server
+# (search by meaning, list, get) for every key, plus Open WebUI and opencode
+# tool server entries. Set false to remove it.
+skills_mcp_enabled: true
+
 # Open WebUI's code interpreter, run in that sandbox. Users turn it on per
 # chat (Code Interpreter in the chat input); files the model saves under
 # /outputs/<chat id>/ come back as downloads. The sandbox is shared by every

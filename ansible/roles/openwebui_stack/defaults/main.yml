@@ -490,6 +490,25 @@ litellm_skill_search_embedding_model_effective: >-
      or ('local-embedding' if local_embedding_enabled | bool
          else ('text-embedding' if litellm_gemini_models_enabled | default(false) | bool else '')) }}
 
+# Skills tool: every skill in ./skills as the LiteLLM MCP server `skills`
+# (skills-mcp, container-scripts/skills_mcp_server.py) with the tools search
+# (by meaning), list and get, open to every LiteLLM key. It lets agents and
+# clients without skill support of their own find and load the same skills
+# the playbook publishes to LiteLLM, Open WebUI and opencode; LiteLLM's own
+# skill search only serves admin keys (README "Skills tool"). Open WebUI gets
+# it as a tool server on every model, opencode in its config. false removes
+# the service, the server entry and the tool server.
+skills_mcp_enabled: true
+
+# Embedding model skills-mcp ranks by meaning with (any model_name the proxy
+# serves that can embed). Empty uses the skill-search model
+# (litellm_skill_search_embedding_model_effective, local-embedding by
+# default); with none at all, search ranks by keywords only.
+skills_mcp_embedding_model: ""
+
+# Derived, not configured: the model skills-mcp embeds with.
+skills_mcp_embedding_model_effective: "{{ skills_mcp_embedding_model or litellm_skill_search_embedding_model_effective }}"
+
 # Saved memories per user, shared by every client of the gateway: Open
 # WebUI, opencode, Claude Code and other MCP clients with a LiteLLM key
 # (README "Saved memories"). Three pieces, all on this one switch:

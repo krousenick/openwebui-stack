@@ -171,6 +171,16 @@ The compose template mounts `./skills` read-only into `litellm` (`/app/skills`) 
 
 Ported built-in skills: written fresh for the three clients rather than copied from Anthropic's versions, so keep them stack-specific. Agent-shaped work (reviewers, verifiers) stays inside skills that start the client's own subagents (Claude Code `Agent`/`Task`, opencode `subagent`/`task`) and fall back to sequential passes in Open WebUI, as `deep-research` does. LiteLLM's Agent Gateway (`/v1/agents`, `agents:` in config.yaml) only registers remote A2A services by URL, so prompt-defined agents have no home there. Every Python block in `dataviz`, `docx`, `xlsx`, `pptx` and `pdf` was run in order in the sandbox image (2026-11-12) and the files they wrote were reopened and checked; keep them runnable when editing (blocks that write a file set `OUT_DIR` and end with a `SAVED` print).
 
+### Skills tool (skills-mcp)
+
+`skills_mcp_enabled` (default true): `container-scripts/skills_mcp_server.py`, a stdlib MCP server run by the litellm image's Python as uid 65534 (service `skills-mcp`), is LiteLLM's MCP server `skills` (`allow_all_keys: true`) with three read-only tools, `search`, `list` and `get` (LiteLLM names them `skills-search` and so on). It reads `./skills` mounted read-only at `/app/skills` and rereads it when a SKILL.md's size or mtime changes. Open WebUI gets it as the tool server `skills` (`tasks/mcp/litellm_tool_server.yml`, a generic version of `memory.yml`) in `models.default_metadata.toolIds`; opencode in `opencode.json` (`opencode_skills_mcp_enabled`). README "Skills tool".
+
+**Critical implementation notes:**
+- It exists because LiteLLM's own skill features do not reach ordinary keys: `LiteLLMSkillsHandler.list_skills` and `get_skill` filter by `created_by` against the key's owner scopes (`get_resource_owner_scopes`: user_id, `team:`, `org:`, `key:`), admins excepted, and the playbook publishes every skill as the master key's user (`default_user_id`). So `/v1/skills?query=`, attaching a skill by id (`container.skills`, the always-on `SkillsInjectionHook`) and the `skill_search` virtual tool all return nothing to a non-admin key. `skill_search` also needs `object_permission.mcp_tool_search_enabled`, which makes `tools/list` answer four virtual tools instead of the key's MCP servers on every MCP route. Checked in LiteLLM 1.110.0's source on 2026-11-13.
+- No owner check here on purpose: the skills are the stack's shared know-how, and nothing is written. Never add per-user or secret content to `skills/`.
+- Search embeds through LiteLLM `/v1/embeddings` with `SKILLS_EMBEDDING_MODEL` (`skills_mcp_embedding_model_effective`, the skill-search model by default) using the master key, which the service holds for that call only; vectors are cached per (skill, content digest). Without a model or key, or when embedding fails, it ranks by keywords (name and description count fully, body matches half).
+- `get` resolves names by slug against the loaded skills only (`skills/docx/SKILL.md`, `Docx` and `docx` all work); input never becomes a file path.
+
 ### Code interpreter and document downloads
 
 `openwebui_code_interpreter_enabled` (default true, needs `code_sandbox_enabled`) turns on Open WebUI's code interpreter with the jupyter engine pointed at `code-sandbox`; `tasks/code_sandbox.yml` heals `code_interpreter.enable` in the `config` table, while `code_execution.enable` (the Run button on code blocks) stays false. With native function calling (Open WebUI 0.13's default) a chat whose user turned on Code Interpreter gets the builtin `execute_code` tool; its runs appear in the message `output` as `function_call` / `function_call_output` items (legacy function calling: `open_webui:code_interpreter` items).
@@ -407,7 +417,7 @@ Task files hold no inline Python. Every Python job of the `openwebui_stack` role
 | `litellm_claude_subscription.py` | litellm | `claude_subscription.yml` |
 | `openwebui_hidden_models.py` | open-webui | `claude_subscription.yml` |
 
-Shared code: `stack_api.py` (HTTP client, argument parser, exit contract) and `skill_packages.py` (SKILL.md discovery and the frontmatter rules). Two scripts are services rather than tasks, each run by the litellm image's Python in a compose service of its own: `launcher_follower.py` (`launcher-follower`) and `memory_mcp_server.py` (`memory-mcp`).
+Shared code: `stack_api.py` (HTTP client, argument parser, exit contract) and `skill_packages.py` (SKILL.md discovery and the frontmatter rules). Three scripts are services rather than tasks, each run by the litellm image's Python in a compose service of its own: `launcher_follower.py` (`launcher-follower`), `memory_mcp_server.py` (`memory-mcp`) and `skills_mcp_server.py` (`skills-mcp`).
 
 **Critical implementation notes:**
 - New Python for a task goes in `container-scripts/<job>.py` with a test in `tests/container_scripts/`, never in a `python3 -c` argument. Standard library only: the scripts run on whatever Python the two images ship (3.12 and 3.13 today).

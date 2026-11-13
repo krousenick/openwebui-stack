@@ -984,6 +984,52 @@ services:
           cpus: "0.5"
 {% endif %}
 
+{% if skills_mcp_enabled | default(true) | bool %}
+  # ===========================================================================
+  # Skills tool - skills-mcp (container-scripts/skills_mcp_server.py)
+  # The MCP server `skills` behind LiteLLM (mcp_servers.skills): search (by
+  # meaning, through LiteLLM's /v1/embeddings), list and get over the same
+  # ./skills packages the playbook publishes everywhere, read-only. Every
+  # LiteLLM key may call it. Only the image's Python runs; backend network
+  # only, nothing but LiteLLM talks to it.
+  # ===========================================================================
+  skills-mcp:
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_skills-mcp
+    restart: unless-stopped
+    logging: *default-logging
+    entrypoint: [ "python3", "-u", "{{ container_scripts_mount }}/skills_mcp_server.py" ]
+    environment:
+      LITELLM_URL: "http://litellm:4000"
+      # Used for /v1/embeddings only.
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?error}"
+      SKILLS_EMBEDDING_MODEL: {{ skills_mcp_embedding_model_effective | to_json }}
+      SKILLS_DIR: /app/skills
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./container-scripts:{{ container_scripts_mount }}:ro
+      - ./skills:/app/skills:ro
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+    healthcheck:
+      test: [ "CMD", "python3", "{{ container_scripts_mount }}/skills_mcp_server.py", "--healthcheck" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+{% endif %}
+
 {% if printer_mcp_enabled | default(false) | bool and bambu_host | default('') | length > 0 %}
   # ===========================================================================
   # Printer MCP - bambu-printer-mcp + Bambu Studio CLI slicer

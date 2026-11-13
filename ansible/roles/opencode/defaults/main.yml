@@ -47,6 +47,11 @@ opencode_users: []
 # account (when the entry has an email). Follows the stack switch.
 opencode_memory_enabled: "{{ memory_mcp_enabled | default(true) | bool }}"
 
+# Skills tool: adds LiteLLM's `skills` MCP server (<proxy>/mcp/skills:
+# search by meaning, list, get) to opencode.json with the user's key, next
+# to the skill files opencode_sync_skills copies. Follows the stack switch.
+opencode_skills_mcp_enabled: "{{ skills_mcp_enabled | default(true) | bool }}"
+
 # LiteLLM proxy endpoints.
 opencode_litellm_base_url: "https://litellm.{{ domain | default('localhost') }}"
 

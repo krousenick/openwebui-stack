@@ -35,6 +35,22 @@
   tags:
     - memory
 
+# The skills tool (skills-mcp behind LiteLLM's `skills` MCP server) as an
+# Open WebUI tool server; the service and the LiteLLM entry come from the
+# compose and LiteLLM config templates.
+- name: Configure the skills tool (skills MCP)
+  ansible.builtin.import_tasks:
+    file: litellm_tool_server.yml
+  vars:
+    litellm_tool_server_id: skills
+    litellm_tool_server_name: Skills
+    litellm_tool_server_description: >-
+      Search and read the stack's skills, the same ones Claude Code, opencode
+      and agents get through LiteLLM
+  when: skills_mcp_enabled | default(true) | bool
+  tags:
+    - skills
+
 # The models volume is shared by the pipeline above (and code-sandbox); it
 # must be uid-1000 writable or every export from chat fails. Runs whenever
 # any 3D-pipeline writer is enabled; printer-only setups never write.
@@ -85,3 +101,4 @@
     file: tool_defaults.yml
   tags:
     - memory
+    - skills

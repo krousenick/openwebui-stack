@@ -49,7 +49,8 @@
          + (['server:mcp:printer_3d'] if printer_mcp_enabled | default(false) | bool else [])
          + (['server:mcp:blender'] if blender_mcp_enabled | default(false) | bool else [])
          + (['server:mcp:freecad'] if freecad_mcp_enabled | default(false) | bool else [])
-         + (['server:mcp:memory'] if memory_mcp_enabled | default(true) | bool else []) }}
+         + (['server:mcp:memory'] if memory_mcp_enabled | default(true) | bool else [])
+         + (['server:mcp:skills'] if skills_mcp_enabled | default(true) | bool else []) }}
   no_log: true
 
 - name: Merge the tool IDs into the current default metadata

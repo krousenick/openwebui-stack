@@ -367,7 +367,8 @@ Per user, the role:
 4. **Logs local usage**: `~/.config/opencode/plugins/litellm-usage.js` appends one JSON line per assistant message to `~/.local/share/opencode/usage.jsonl` — `user`, `modelID`, input/output/reasoning/cached tokens, cost, and duration — which cross-references the LiteLLM-side spend for the same turns.
 5. **Binds the reasoning-level picker**: opencode already has one built in. `/variants` opens "Select variant" and `ctrl+t` cycles the levels; the picker has no key of its own, so the role seeds `~/.config/opencode/tui.json` with `variant_list` on `ctrl+x v` (`opencode_variant_picker_keybind`). The file is written only when the user has none, so an existing theme or key map is never replaced. The levels are the model's variants: the discovery plugin builds them from LiteLLM's `supports_<level>_reasoning_effort` flags (`vllm_reasoning_efforts` for a vLLM model), and a model without them shows no picker.
 6. **Adds saved memories** (`opencode_memory_enabled`, on with `memory_mcp_enabled`): `opencode.json` lists LiteLLM's `memory` MCP server (`https://litellm.<domain>/mcp/memory`, the user's key in `x-litellm-api-key`, OAuth discovery off), so opencode has the tools `memory_memory-save`, `-get`, `-search`, `-list` and `-delete`.
-7. **Handles the Origin CA**: the proxy serves a Cloudflare Origin certificate, and Node's fetch does not use the system trust store. The role detects the OS: on the Photon host it points `NODE_EXTRA_CA_CERTS` at `certs/origin_ca_rsa_root.pem` in the deployed tree; elsewhere it distributes the public CA root from `ansible/roles/opencode/files/` into `~/.config/opencode/`. Set `opencode_node_ca_cert: false` when the proxy has a publicly trusted cert.
+7. **Adds the skills tool** (`opencode_skills_mcp_enabled`, on with `skills_mcp_enabled`): `opencode.json` also lists LiteLLM's `skills` MCP server (`https://litellm.<domain>/mcp/skills`, same key), so opencode can search the published skills by meaning and read them, beside the skill files the role copies into `~/.config/opencode/skills/` (`opencode_sync_skills`). See [Skills tool](#skills-tool-search-and-read-through-litellm).
+8. **Handles the Origin CA**: the proxy serves a Cloudflare Origin certificate, and Node's fetch does not use the system trust store. The role detects the OS: on the Photon host it points `NODE_EXTRA_CA_CERTS` at `certs/origin_ca_rsa_root.pem` in the deployed tree; elsewhere it distributes the public CA root from `ansible/roles/opencode/files/` into `~/.config/opencode/`. Set `opencode_node_ca_cert: false` when the proxy has a publicly trusted cert.
 
 Defaults (`opencode_default_model: litellm/gemini-4-argon`, `small_model: litellm/gemini-3.5-flash-lite`) are set in `ansible/roles/opencode/defaults/main.yml`; any LiteLLM `model_name` works since discovery fills the picker. Run `opencode` and use `/models` to verify the full catalog.
 
@@ -1051,27 +1052,113 @@ and listing skills still works.
 
 ### Consume the skills
 
+Every client gets the same set, published from `skills/`:
+
+| Client | How it gets the skills |
+|---|---|
+| Open WebUI | Pushed into its workspace by the playbook. The model sees every skill's description and loads one when it needs it; users can also type `$` and pick one |
+| Claude Code | LiteLLM's plugin marketplace |
+| Codex, opencode, other Agent Skills clients | `npx skills add` against the discovery index; opencode on hosts in `opencode_users` also gets a copy from the playbook |
+| Any MCP client with a LiteLLM key (agents, Codex, Claude Code) | The skills tool: LiteLLM's `skills` MCP server, with search by meaning, list and get (see [Skills tool](#skills-tool-search-and-read-through-litellm)); Open WebUI and opencode get it too |
+| Admin scripts calling LiteLLM with the master key | Attach a skill by id on `/v1/messages`, with any model; find skills by meaning with the Skills API |
+
 ```bash
-# opencode — synced automatically by the playbook (see above); or manually:
-mkdir -p ~/.config/opencode/skills && cp -r skills/stack-ops ~/.config/opencode/skills/
-
-# Any Agent Skills client — opencode, Claude Code, etc. (discovery index)
-npx skills add https://litellm.<domain>
-
 # Claude Code marketplace (marketplace is always named "litellm")
 claude plugin marketplace add https://litellm.<domain>/claude-code/marketplace.json
 claude plugin install stack-ops@litellm
 
-# Skills API directly (semantic search needs the embedding model)
+# Codex, Claude Code, opencode and other Agent Skills clients (discovery index)
+npx --yes skills@1.7.6 add https://litellm.<domain> --agent codex --copy --yes
+npx skills add https://litellm.<domain>
+
+# opencode by hand (the playbook does this for opencode_users)
+mkdir -p ~/.config/opencode/skills && cp -r skills/stack-ops ~/.config/opencode/skills/
+
+# Skills API: list, and search by meaning (needs the embedding model)
 KEY=$(grep -m1 "^LITELLM_MASTER_KEY=" .env | cut -d= -f2-)
 curl -sk "https://litellm.<domain>/v1/skills?custom_llm_provider=litellm_proxy" \
   -H "Authorization: Bearer $KEY"
 curl -sk "https://litellm.<domain>/v1/skills?custom_llm_provider=litellm_proxy&query=diagnose+sso+login&top_k=3" \
   -H "Authorization: Bearer $KEY"
+
+# Master key or a proxy-admin key, any served model: attach a skill by id and
+# LiteLLM puts its SKILL.md into the system prompt. Look the id up by name each
+# time: it changes whenever the SKILL.md changes.
+ID=$(curl -sk "https://litellm.<domain>/v1/skills?custom_llm_provider=litellm_proxy&limit=100" \
+  -H "Authorization: Bearer $KEY" \
+  | python3 -c 'import json,sys; print(next(s["id"] for s in json.load(sys.stdin)["data"] if s["display_title"] == "stack-ops"))')
+curl -sk https://litellm.<domain>/v1/messages -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" -H "anthropic-version: 2023-06-01" \
+  -d '{"model": "<model>", "max_tokens": 1024,
+       "container": {"skills": [{"type": "custom", "skill_id": "'"$ID"'"}]},
+       "messages": [{"role": "user", "content": "Where is the deployed tree on the Photon host?"}]}'
 ```
 
-Open WebUI users: type `$` in the chat input and pick the skill, or enable
-it per chat from the chat input's + menu (Skills).
+Attaching by id works on `/v1/messages` with the vLLM-served model
+(tested 2026-11-13 on LiteLLM 1.110.0). The same `container` field on
+`/v1/chat/completions` fails there with a 400: LiteLLM's skills hook adds
+tools without the `function` object vLLM requires. If a model calls the
+`litellm_code_execution` tool that the hook also adds, nothing runs: LiteLLM
+executes that code through llm-sandbox, which needs a container runtime
+socket the `litellm` service does not have. Only the legacy store
+(`/v1/skills` with `custom_llm_provider=litellm_proxy`) supports attaching by
+id and search by meaning; LiteLLM's newer Skill Hub supports neither, which is
+why the publisher keeps the legacy store.
+
+Both work only for the master key and proxy-admin keys. LiteLLM shows a
+non-admin key only the skills that key's user, team or organization created,
+and the playbook publishes every skill as the master key's user
+(`default_user_id`), so an ordinary key sees none of them in search and
+cannot attach them. The same applies to LiteLLM's `skill_search` MCP tool,
+which is also offered only to keys with `mcp_tool_search_enabled` (such a
+key then sees four search tools instead of its MCP servers' tools). The
+skills tool below is the way for every other key.
+
+### Skills tool (search and read through LiteLLM)
+
+The `skills-mcp` service (`container-scripts/skills_mcp_server.py`, on by
+default with `skills_mcp_enabled`) is LiteLLM's MCP server `skills`: the
+published skills as three read-only tools that any LiteLLM key may call, at
+`https://litellm.<domain>/mcp/skills`. LiteLLM shows them as `skills-search`,
+`skills-list` and `skills-get`.
+
+| Tool | Does |
+|---|---|
+| `search` | Ranks the skills for a task described in plain words: by meaning with the local embedding model (`skills_mcp_embedding_model`, by default the skill-search model `local-embedding`) blended with keyword overlap, by keywords alone when no embedding model answers. Returns names, scores and what each skill is for |
+| `list` | Every skill with what it is for |
+| `get` | A skill's whole SKILL.md by name, to follow |
+
+It reads the same `skills/` folder the playbook publishes (mounted
+read-only), so every client sees the same set, and it picks up a changed
+skill on the next call. Nothing is written and nothing is per user. The
+service holds the master key only to call `/v1/embeddings`.
+
+- **Open WebUI**: the tool server `Skills` is on for every model
+  (`models.default_metadata`), next to Open WebUI's own skill list.
+- **opencode**: the role adds the server to `opencode.json`
+  (`opencode_skills_mcp_enabled`), next to the skill files it copies.
+- **Claude Code**: `claude mcp add --transport http --scope user skills https://litellm.<domain>/mcp/skills --header "x-litellm-api-key: Bearer <key>"`.
+- **Codex, agents and other MCP clients**: a streamable-HTTP MCP server at
+  `https://litellm.<domain>/mcp/skills` with the header
+  `x-litellm-api-key: Bearer <key>`, any LiteLLM key.
+
+Turning it on in a running stack, from the deployed tree:
+
+```bash
+(cd ansible && ansible-playbook playbooks/site.yml --tags environment)  # compose file and LiteLLM config; restarts litellm
+docker compose up -d skills-mcp
+(cd ansible && ansible-playbook playbooks/site.yml --tags skills)       # Open WebUI tool server and default tools
+```
+
+Check it:
+
+```bash
+docker compose ps skills-mcp
+KEY=$(grep -m1 "^LITELLM_MASTER_KEY=" .env | cut -d= -f2-)
+curl -sk https://litellm.<domain>/mcp/skills -H "x-litellm-api-key: Bearer $KEY" \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "skills-search", "arguments": {"query": "my keycloak login fails"}}}'
+```
 
 ### Adding a skill
 

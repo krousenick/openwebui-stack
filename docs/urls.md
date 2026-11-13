@@ -67,7 +67,7 @@ Each is at `https://grafana.example.com/d/<uid>`.
 | OpenAI-compatible API, every model LiteLLM serves | `https://litellm.example.com/v1` (`/chat/completions`, `/models`, `/embeddings`, ...) | A LiteLLM virtual key, or the master key |
 | Anthropic-compatible API (Claude models) | `https://litellm.example.com/v1/messages` | Same |
 | Open WebUI API | `https://chatbot.example.com/api/chat/completions`, `/api/models` | An Open WebUI API key (Settings, Account) |
-| MCP servers through the LiteLLM gateway | `https://litellm.example.com/mcp/<server>`: `brave_search`, `playwright_cluster`, `blender`, `freecad`, `memory` (saved memories), and `printer` when enabled | A LiteLLM key; `memory` also needs the key to carry a `user_id` |
+| MCP servers through the LiteLLM gateway | `https://litellm.example.com/mcp/<server>`: `brave_search`, `playwright_cluster`, `blender`, `freecad`, `memory` (saved memories), `skills` (search, list and read the published skills), and `printer` when enabled | A LiteLLM key; `memory` also needs the key to carry a `user_id` |
 | Saved memories over REST (admin) | `https://litellm.example.com/v1/memory` (`?key_prefix=user:<owner>:`) | The master key; LiteLLM 1.110 refuses every other key on this route, so other callers use the `memory` MCP server |
 | Skills discovery index (`npx skills add`) | `https://litellm.example.com/.well-known/agent-skills/index.json` | None |
 | Skills store and Claude Code marketplace | `https://litellm.example.com/v1/skills`, `/claude-code/plugins/<name>` | A LiteLLM key |
@@ -112,7 +112,7 @@ The addresses the containers use to reach each other on the Docker networks. Non
 | `http://keycloak:8080/admin/realms/platform/events` | The realm's saved login events, as the `keycloak-login-tracker` service reads them (client `login-tracker`, view-events only); it writes the logins to Loki at `http://lgtm:3100/loki/api/v1/push` |
 | `postgres:5432`, `valkey:6379`, `http://qdrant:6333` | Databases, cache, vector store |
 | `http://lgtm:4317` (gRPC), `http://lgtm:4318` (HTTP) | OpenTelemetry ingest; Grafana on `lgtm:3000`, Loki on `lgtm:3100` |
-| `http://brave-search-mcp:8080/mcp`, `http://blender:8000/mcp`, `http://freecad:8000/mcp`, `http://printer-mcp:3000/mcp`, `http://traefik:8082/mcp` (Playwright), `http://memory-mcp:8080/mcp` | MCP servers behind the LiteLLM gateway |
+| `http://brave-search-mcp:8080/mcp`, `http://blender:8000/mcp`, `http://freecad:8000/mcp`, `http://printer-mcp:3000/mcp`, `http://traefik:8082/mcp` (Playwright), `http://memory-mcp:8080/mcp`, `http://skills-mcp:8080/mcp` | MCP servers behind the LiteLLM gateway |
 | `http://memory-mcp:8080/v1/index` | A user's memory index, as LiteLLM's memory hook reads it (signed like the tool calls) |
 | `http://code-sandbox:8888` | Jupyter for Open WebUI's code execution |
 | `http://chatterbox-tts-server:8004/v1` | Text to speech, as Open WebUI calls it |
