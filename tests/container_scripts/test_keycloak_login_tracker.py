@@ -230,6 +230,17 @@ def test_users_are_compared_only_with_themselves(analyzer):
     assert "prev_location" not in record
 
 
+def test_a_failure_that_names_the_user_by_id_gets_the_username(analyzer):
+    # A failed second factor: Keycloak records the user id but no username.
+    first = analyzer.record(event(0, "10.0.0.5", kind="LOGIN_ERROR", error="invalid_user_credentials"))
+    assert first["username"] == "alice"  # this failure still carries the name it was typed with
+    nameless = event(1, "10.0.0.5", kind="LOGIN_ERROR", error="invalid_user_credentials")
+    nameless["userId"], nameless["details"] = "id-alice", {"auth_method": "openid-connect"}
+    assert analyzer.record(nameless)["username"] == "id-alice"  # nothing learned yet: the id stands in
+    analyzer.record(event(2, "10.0.0.5"))  # a success carries both
+    assert analyzer.record(nameless)["username"] == "alice"
+
+
 def test_new_country_looks_back_over_the_history_window(geoip):
     geo = tracker.Geo(geoip, lambda message: None)
     geo.refresh()

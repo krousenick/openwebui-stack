@@ -237,6 +237,8 @@ class Analyzer:
         self.internal = internal
         self.rules = rules
         self.users: dict[str, History] = {}
+        # user id -> username, learned from the events that carry both
+        self.names: dict[str, str] = {}
 
     def record(self, event: dict[str, Any]) -> dict[str, Any]:
         time_ms = event_time(event)
@@ -246,6 +248,11 @@ class Analyzer:
         if user_id == "null":
             user_id = ""
         username = str(details.get("username") or "")
+        # A failed second factor names the user only by id.
+        if user_id and username:
+            self.names[user_id] = username
+        elif user_id:
+            username = self.names.get(user_id, "")
         address = str(event.get("ipAddress") or "")
         scope, ip = classify(address, self.internal)
         record: dict[str, Any] = {
