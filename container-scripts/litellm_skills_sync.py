@@ -8,20 +8,23 @@ role's litellm_skills_store, picks where the skills live
           custom_llm_provider=litellm_proxy), plus one Claude Code
           marketplace row per skill, registered through the
           /claude-code/plugins routes that LiteLLM now marks deprecated,
-          whose archive is that store's /v1/skills/{id}/archive. LiteLLM's
-          semantic skill search (GET /v1/skills?query=, the skill_search
-          MCP tool) ranks this store.
+          whose archive is that store's /v1/skills/{id}/archive. In LiteLLM
+          1.110 only this store's skills can be named in a model request
+          ("container": {"skills": [{"skill_id": ...}]} on
+          /v1/chat/completions or /v1/messages, which puts their SKILL.md in
+          the system prompt) or found by semantic skill search (GET
+          /v1/skills?query=, the skill_search MCP tool).
   hub     The Skill Hub (/skill-hub/skills), the path LiteLLM recommends:
           stored archives with version history, in one registry that also
           feeds the marketplace and the hub entries of the discovery index.
           The legacy store's copies of the skills are deleted, because the
           index lists legacy-store skills first and renames a hub skill
-          whose name one of them holds (name-2). LiteLLM 1.110's semantic
-          search ranks only the legacy store, so it then finds no skills.
+          whose name one of them holds (name-2). Requests can then name no
+          skill, and semantic search finds none.
   both    The hub as above, plus a copy of each skill kept current in the
-          legacy store for semantic search. The discovery index then lists
-          every skill twice: under its name from the store and as name-2
-          from the hub.
+          legacy store for those two. The discovery index then lists every
+          skill twice: under its name from the store and as name-2 from the
+          hub.
 
 Each mode writes nothing on a rerun with unchanged skills, and each one
 takes the skills over from the others, so the modes can follow one another

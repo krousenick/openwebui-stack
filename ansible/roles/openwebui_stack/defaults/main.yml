@@ -392,15 +392,17 @@ skills_public_index_enabled: true
 # (container-scripts/litellm_skills_sync.py --store):
 #   legacy  the proxy-hosted skill store (/v1/skills) plus a Claude Code
 #           marketplace row per skill, registered through the deprecated
-#           /claude-code/plugins routes. Semantic skill search ranks this
-#           store. What the stack did before the Skill Hub.
+#           /claude-code/plugins routes. What the stack did before the
+#           Skill Hub. In LiteLLM 1.110 only this store's skills can be
+#           named in a model request (container.skills, which puts their
+#           SKILL.md in the system prompt) or found by semantic search.
 #   hub     the Skill Hub (/skill-hub/skills), which LiteLLM recommends:
 #           versioned archives behind the marketplace and the discovery
-#           index. Deletes the legacy store's copies, so semantic skill
-#           search (LiteLLM 1.110 ranks only that store) finds nothing.
+#           index. Deletes the legacy store's copies, so neither of those
+#           works any more.
 #   both    the hub, plus a copy of each skill kept in the legacy store for
-#           semantic search; the discovery index then lists every skill
-#           twice (name and name-2).
+#           those two; the discovery index then lists every skill twice
+#           (name and name-2).
 # Changing it moves the skills over on the next run, in any direction.
 litellm_skills_store: legacy
 

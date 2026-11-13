@@ -1000,18 +1000,24 @@ than one file that works in all three.
    `~/.config/opencode/skills/`, where opencode discovers them through its
    native `skill` tool.
 
-**Choosing the store.** Two LiteLLM 1.110 behaviours decide it. Semantic
-skill search (`GET /v1/skills?custom_llm_provider=litellm_proxy&query=…`
-and LiteLLM's `skill_search` MCP tool) ranks only the legacy store; the
-hub's own `GET /skill-hub/skills?query=…` matches words in names,
-descriptions and tags. And the discovery index lists legacy-store skills
-first and renames a hub skill whose name one of them holds
-(`stack-ops-2`). So:
+**Choosing the store.** Open WebUI, Claude Code (through the marketplace)
+and opencode load the skills themselves, so they work with every setting.
+A request sent straight to LiteLLM, on `/v1/chat/completions` or
+`/v1/messages`, gets a skill only when it names it,
+`"container": {"skills": [{"skill_id": "litellm_skill_…"}]}`: LiteLLM then
+adds that SKILL.md to the system prompt. That lookup, and semantic skill
+search (`GET /v1/skills?custom_llm_provider=litellm_proxy&query=…` and
+LiteLLM's `skill_search` MCP tool), read only the legacy store in LiteLLM
+1.110. A legacy skill's id changes whenever its SKILL.md does, so look ids
+up with `GET /v1/skills?custom_llm_provider=litellm_proxy` first. The hub's
+own `GET /skill-hub/skills?query=…` matches words in names, descriptions
+and tags. And the discovery index lists legacy-store skills first and
+renames a hub skill whose name one of them holds (`stack-ops-2`). So:
 
-| `litellm_skills_store` | Semantic search | Discovery index | Versions, LiteLLM's recommended API |
+| `litellm_skills_store` | Skills named in a request, semantic search | Discovery index | Versions, LiteLLM's recommended API |
 |---|---|---|---|
 | `legacy` | yes | each skill once | no; deprecated marketplace routes |
-| `hub` | finds nothing | each skill once | yes |
+| `hub` | no | each skill once | yes |
 | `both` | yes | each skill twice (`name`, `name-2`) | yes |
 
 Semantic search embeds with `litellm_skill_search_embedding_model`, by
