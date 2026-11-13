@@ -1,15 +1,19 @@
 ---
-# Global outlet filter: publish MCP-exported /models artifacts (STL/3MF/STEP)
-# as downloadable Open WebUI files. Open WebUI 0.13.0 persists only image/*
-# and audio/wav tool-result content as real files; binary resources become
-# text placeholders, so chat-created CAD files were unreadable in the UI.
-# The filter (files/functions/tool_result_file_download.py) runs after each
-# chat turn, reads exported files from the read-only /models mount, uploads
-# them through Open WebUI's own upload handler (so ownership and storage
-# limits apply), and emits a files event; the message then carries a
-# downloadable file card. Requires the models:/models:ro volume on the
-# open-webui service, rendered by the compose template whenever any 3D
-# pipeline service is enabled.
+# Global filter: publish chat-created files as downloadable Open WebUI
+# files. Open WebUI 0.13.0 persists only image/* and audio/wav tool-result
+# content as real files; binary resources become text placeholders, so
+# chat-created CAD files were unreadable in the UI, and files the code
+# interpreter writes never leave the sandbox at all. The filter
+# (files/functions/tool_result_file_download.py) runs after each chat turn,
+# reads MCP-exported artifacts (STL/3MF/STEP) from the read-only /models
+# mount and the documents (DOCX/XLSX/PPTX/PDF) the code interpreter saved
+# in the chat's /outputs/<chat id>/ during that turn, uploads them through
+# Open WebUI's own upload handler (so ownership and storage limits apply),
+# and emits a files event; the message then carries a downloadable file
+# card. Its inlet tells code-interpreter chats that directory. Requires the
+# models:/models:ro volume (rendered when any 3D pipeline service is
+# enabled) or the outputs:/outputs:ro volume (rendered when the code
+# interpreter is enabled) on the open-webui service.
 - name: Require Open WebUI database settings for the tool result file download filter
   ansible.builtin.assert:
     that:
@@ -82,7 +86,7 @@
         'Tool Result File Download',
         'filter',
         $filter${{ tool_file_filter_content }}$filter$,
-        '{"description": "Injects FreeCAD/Blender export rules into 3D modelling chats and publishes MCP-exported /models artifacts (STL/3MF/STEP) as downloadable Open WebUI files", "manifest": {"version": "1.3.0"}}'::jsonb,
+        '{"description": "Injects FreeCAD/Blender export rules into 3D modelling chats, tells code-interpreter chats where to save files, and publishes /models CAD artifacts (STL/3MF/STEP) and /outputs documents (DOCX/XLSX/PPTX/PDF) as downloadable Open WebUI files", "manifest": {"version": "1.4.0"}}'::jsonb,
         '{}'::jsonb,
         true,
         true,

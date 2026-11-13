@@ -83,6 +83,12 @@ services:
       # from the chat. The app itself never writes here.
       - models:/models:ro
 {% endif %}
+{% if openwebui_code_interpreter_active | bool %}
+      # Read-only view of the files code-interpreter runs save for the user
+      # (/outputs/<chat id>/*.docx|xlsx|pptx|pdf, written by code-sandbox).
+      # The same filter uploads them as Open WebUI files for download.
+      - outputs:/outputs:ro
+{% endif %}
     environment:
       # Database configuration
       DATABASE_URL: "postgresql://${OPENWEBUI_DB_USER:-openwebui}:${OPENWEBUI_DB_PASSWORD:?error}@postgres:5432/${OPENWEBUI_DB_NAME:-openwebui}"
@@ -179,10 +185,15 @@ services:
       ENABLE_MEMORIES: "{{ 'true' if openwebui_builtin_memories_enabled | bool else 'false' }}"
       ENABLE_COMMUNITY_SHARING: "false"
       ENABLE_CODE_EXECUTION: "false"
-      ENABLE_CODE_INTERPRETER: "false"
+      # Code interpreter: execute_code runs in the code-sandbox container
+      # (engine jupyter, wired below), never inside this one. ConfigVar:
+      # seeds the first boot only; tasks/code_sandbox.yml heals the stored
+      # value on every run.
+      ENABLE_CODE_INTERPRETER: "{{ 'true' if openwebui_code_interpreter_active | bool else 'false' }}"
 {% if code_sandbox_enabled | bool %}
-      # Legacy engines stay off; sandbox wiring below only points Open WebUI
-      # at the isolated code-sandbox container for Tools that opt into it.
+      CODE_INTERPRETER_ENGINE: "jupyter"
+      CODE_EXECUTION_ENGINE: "jupyter"
+      # Both engines point at the isolated code-sandbox container.
       CODE_EXECUTION_JUPYTER_URL: "http://code-sandbox:8888"
       CODE_EXECUTION_JUPYTER_AUTH: "token"
       CODE_EXECUTION_JUPYTER_AUTH_TOKEN: "${CODE_SANDBOX_TOKEN:?error}"
@@ -1130,9 +1141,9 @@ services:
 {% if code_sandbox_enabled | bool %}
   # ===========================================================================
   # Code Sandbox - isolated Jupyter for model-authored Python
-  # Open WebUI calls http://code-sandbox:8888 with the token below. The
-  # legacy engines stay off (ENABLE_CODE_EXECUTION / ENABLE_CODE_INTERPRETER
-  # are false above); this container is the only code-execution surface.
+  # Open WebUI calls http://code-sandbox:8888 with the token below: the code
+  # interpreter's execute_code runs here (openwebui_code_interpreter_enabled),
+  # never in the Open WebUI container. ENABLE_CODE_EXECUTION stays false.
   # Backend-only network, no published port, no Traefik route: nothing
   # outside the Docker backend network can reach it.
   # https://docs.openwebui.com/getting-started/advanced-topics/hardening
@@ -1141,6 +1152,10 @@ services:
     build:
       context: ./sandbox
       dockerfile: Dockerfile
+      labels:
+        # Digest of the Dockerfile and requirements.txt the image was built
+        # from; tasks/code_sandbox.yml rebuilds the image when it differs.
+        org.openwebui-stack.sandbox-inputs: "{{ code_sandbox_inputs_digest }}"
     image: ${CODE_SANDBOX_IMAGE:-openwebui-stack/code-sandbox:latest}
     container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_code-sandbox
     restart: unless-stopped
@@ -1159,6 +1174,11 @@ services:
       # read by printer-mcp; the sandbox also uses it for trimesh
       # post-processing of generated meshes.
       - models:/models
+      # Files the code interpreter saves for the user, one directory per
+      # chat; open-webui reads them (read-only) to attach them as downloads.
+      # The image creates /outputs owned by jovyan, and Docker copies that
+      # ownership onto the volume root whenever this container is created.
+      - outputs:/outputs
     networks:
       - backend
     healthcheck:
@@ -1647,6 +1667,8 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_code_sandbox_data
   models:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_models
+  outputs:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_outputs
   alloy_data:
     name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_alloy_data
   text_embeddings_data:

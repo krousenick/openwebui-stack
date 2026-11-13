@@ -1,8 +1,8 @@
 """
 title: Tool Result File Download
-description: Makes chat-created 3D models downloadable - injects FreeCAD/Blender export rules into 3D modelling chats and uploads the /models artifacts (STL/3MF/STEP) their tool calls export as real Open WebUI files with a rendered STL preview image
+description: Makes chat-created files downloadable - injects FreeCAD/Blender export rules into 3D modelling chats, tells code-interpreter chats where to save files for the user, and uploads the /models artifacts (STL/3MF/STEP) and the chat's /outputs documents (DOCX/XLSX/PPTX/PDF) as real Open WebUI files, with a rendered STL preview image
 required_open_webui_version: 0.13.0
-version: 1.3.0
+version: 1.4.0
 """
 
 import asyncio
@@ -40,10 +40,28 @@ class Filter:
     #    exports. Only runs for turns that made at least one tool call. The
     #    volume is shared, so a file another user exports in the same window
     #    would be attached too; acceptable for a small trusted deployment.
+    #
+    # Documents work the same way for the code interpreter (execute_code in
+    # the code-sandbox): the sandbox writes /outputs (shared outputs volume,
+    # read-only here), and each chat saves under its own /outputs/<chat id>/.
+    # Only that directory is read for a chat, and only files written during
+    # the current turn are attached, so a chat never receives another
+    # chat's documents or re-attaches its own older ones. The inlet tells
+    # the model the directory whenever Code Interpreter is on for the chat.
 
     MODELS_DIR = "/models"
     EXTENSIONS = (".stl", ".3mf", ".step", ".stp")
     PATH_RE = re.compile(r"/models/[\w.\- /]+?\.(?:stl|3mf|step|stp)\b", re.IGNORECASE)
+    OUTPUTS_DIR = "/outputs"
+    DOC_EXTENSIONS = (".docx", ".xlsx", ".pptx", ".pdf")
+    DOC_PATH_RE = re.compile(r"/outputs/[\w.\- /]+?\.(?:docx|xlsx|pptx|pdf)\b", re.IGNORECASE)
+    # mimetypes in the open-webui image does not know every Office type.
+    CONTENT_TYPES = {
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".pdf": "application/pdf",
+    }
     MAX_FILE_SIZE = 500 * 1024 * 1024
     MAX_FILES_PER_TURN = 10
     # Clock slack (seconds) between the tool-call start stamp taken in the
@@ -81,6 +99,21 @@ FreeCAD execute_code (headless FreeCAD 1.1, units mm):
 Blender execute_blender_code (Blender 5.0): there is no bpy.ops.boolean.*; add a BOOLEAN modifier (mod.operation = 'DIFFERENCE', mod.object = cutter) and apply it with bpy.ops.object.modifier_apply(modifier=mod.name). Export with bpy.ops.wm.stl_export(filepath="/models/name.stl"); bpy.ops.export_mesh.stl does not exist."""
     )
 
+    # Inlet: where code-interpreter files go. Added to the system prompt of
+    # every chat that has Code Interpreter on, with the chat's own directory
+    # filled in; the docx/xlsx/pptx/pdf skills refer to "the download
+    # directory your instructions name".
+    OUTPUTS_GUIDE_MARKER = "Files for the user (code interpreter):"
+    OUTPUTS_GUIDE = (
+        OUTPUTS_GUIDE_MARKER
+        + """
+- Save every file the user should receive (.docx, .xlsx, .pptx, .pdf) in {directory}/ with a descriptive name, e.g. {directory}/quarterly-report.docx. Create the directory first: os.makedirs("{directory}", exist_ok=True).
+- Open WebUI attaches the files you save there during this reply as downloads. Never write a link or a sandbox: path for them; just name the file.
+- End the code with print("SAVED", path, os.path.getsize(path)). Say a file exists only if the tool output shows SAVED.
+- Files the user uploaded are not in the sandbox; you only see their text. Build new files from that text.
+- For the details of each format, load the docx, xlsx, pptx or pdf skill when one is available."""
+    )
+
     def __init__(self):
         pass
 
@@ -92,23 +125,41 @@ Blender execute_blender_code (Blender 5.0): there is no bpy.ops.boolean.*; add a
                     return True
         return False
 
-    async def inlet(self, body, __user__=None):
-        messages = body.get("messages")
-        if not isinstance(messages, list) or not self._is_cad_conversation(messages):
-            return body
+    def _add_to_system_prompt(self, messages, marker, text):
         for message in messages:
             if not isinstance(message, dict) or message.get("role") != "system":
                 continue
             content = message.get("content")
             if isinstance(content, str):
-                if self.CAD_GUIDE_MARKER not in content:
-                    message["content"] = content.rstrip() + "\n\n" + self.CAD_GUIDE
-                return body
+                if marker not in content:
+                    message["content"] = content.rstrip() + "\n\n" + text
+                return
             if isinstance(content, list):
-                if not any(self.CAD_GUIDE_MARKER in t for t in self._item_texts(content)):
-                    content.append({"type": "text", "text": self.CAD_GUIDE})
-                return body
-        messages.insert(0, {"role": "system", "content": self.CAD_GUIDE})
+                if not any(marker in t for t in self._item_texts(content)):
+                    content.append({"type": "text", "text": text})
+                return
+        messages.insert(0, {"role": "system", "content": text})
+
+    def _outputs_dir(self, chat_id):
+        # Chat ids are UUIDs ("local:<id>" for temporary chats); the
+        # directory name keeps only characters that are safe in a path.
+        name = re.sub(r"[^A-Za-z0-9_-]", "_", str(chat_id or ""))[:128]
+        return os.path.join(self.OUTPUTS_DIR, name) if name.strip("_") else None
+
+    async def inlet(self, body, __user__=None, __metadata__=None):
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            return body
+        if self._is_cad_conversation(messages):
+            self._add_to_system_prompt(messages, self.CAD_GUIDE_MARKER, self.CAD_GUIDE)
+        metadata = __metadata__ if isinstance(__metadata__, dict) else {}
+        features = metadata.get("features") if isinstance(metadata.get("features"), dict) else {}
+        directory = self._outputs_dir(metadata.get("chat_id") or body.get("chat_id"))
+        # /outputs is mounted only when the code interpreter is enabled.
+        if features.get("code_interpreter") and directory and os.path.isdir(self.OUTPUTS_DIR):
+            self._add_to_system_prompt(
+                messages, self.OUTPUTS_GUIDE_MARKER, self.OUTPUTS_GUIDE.format(directory=directory)
+            )
         return body
 
     @staticmethod
@@ -127,35 +178,43 @@ Blender execute_blender_code (Blender 5.0): there is no bpy.ops.boolean.*; add a
                     texts.append(part["text"])
         return texts
 
-    def _mentioned_paths(self, message):
+    def _message_texts(self, message):
+        # Where a turn can name a file it saved: tool-call arguments and
+        # outputs (execute_code and MCP tools under native function calling),
+        # code-interpreter blocks (legacy function calling), and the reply.
         texts = []
         output = message.get("output")
         if isinstance(output, list):
             for item in output:
                 if not isinstance(item, dict):
                     continue
-                if item.get("type") == "function_call_output":
+                kind = item.get("type")
+                if kind == "function_call_output":
                     texts.extend(self._item_texts(item.get("output")))
-                elif item.get("type") == "function_call":
+                elif kind == "function_call":
                     texts.extend(self._item_texts(item.get("arguments")))
-        # Also scan the message content (the model's own report of the export)
+                elif kind == "open_webui:code_interpreter":
+                    texts.extend(self._item_texts(item.get("code")))
+                    result = item.get("output")
+                    if isinstance(result, dict):
+                        for key in ("stdout", "result", "stderr"):
+                            texts.extend(self._item_texts(result.get(key)))
+                    else:
+                        texts.extend(self._item_texts(result))
         texts.extend(self._item_texts(message.get("content")))
-        found = []
-        for text in texts:
-            if "/models/" in text:
-                found.extend(m.group(0) for m in self.PATH_RE.finditer(text))
-        return found
+        return texts
 
     def _turn_started_at(self, message):
-        # Earliest tool-call start in this turn, or None when the turn made no
-        # tool calls (then nothing can have been exported by it).
+        # Earliest tool-call or code-interpreter start in this turn, or None
+        # when the turn ran no code and called no tools (then nothing can
+        # have been written by it).
         output = message.get("output")
         if not isinstance(output, list):
             return None
         starts = []
         has_call = False
         for item in output:
-            if isinstance(item, dict) and item.get("type") == "function_call":
+            if isinstance(item, dict) and item.get("type") in ("function_call", "open_webui:code_interpreter"):
                 has_call = True
                 if isinstance(item.get("started_at"), (int, float)):
                     starts.append(float(item["started_at"]))
@@ -165,16 +224,16 @@ Blender execute_blender_code (Blender 5.0): there is no bpy.ops.boolean.*; add a
             return float(message["timestamp"])
         return None
 
-    def _new_files_since(self, started_at):
+    def _new_files_since(self, started_at, root, extensions):
         found = []
-        for root, dirs, files in os.walk(self.MODELS_DIR):
+        for current, dirs, files in os.walk(root):
             # One level of subdirectories is enough for /models/<project>/x.stl
-            if root != self.MODELS_DIR:
+            if current != root:
                 dirs[:] = []
             for name in files:
-                if not name.lower().endswith(self.EXTENSIONS):
+                if not name.lower().endswith(extensions):
                     continue
-                path = os.path.join(root, name)
+                path = os.path.join(current, name)
                 try:
                     mtime = os.path.getmtime(path)
                 except OSError:
@@ -183,22 +242,43 @@ Blender execute_blender_code (Blender 5.0): there is no bpy.ops.boolean.*; add a
                     found.append((mtime, path))
         return [path for _, path in sorted(found)]
 
-    def _detect_model_paths(self, message):
-        candidates = self._mentioned_paths(message)
+    def _roots(self, chat_id):
+        # (directory, extensions, mention pattern, only files written this turn)
+        roots = []
+        if os.path.isdir(self.MODELS_DIR):
+            roots.append((self.MODELS_DIR, self.EXTENSIONS, self.PATH_RE, False))
+        directory = self._outputs_dir(chat_id)
+        if directory and os.path.isdir(directory):
+            roots.append((directory, self.DOC_EXTENSIONS, self.DOC_PATH_RE, True))
+        return roots
+
+    def _detect_paths(self, message, chat_id):
+        texts = self._message_texts(message)
         started_at = self._turn_started_at(message)
-        if started_at is not None:
-            candidates.extend(self._new_files_since(started_at))
-        models_root = os.path.realpath(self.MODELS_DIR) + os.sep
         seen = set()
         unique = []
-        for path in candidates:
-            # realpath collapses ".." and symlinks so a crafted mention cannot
-            # read outside the shared volume.
-            real = os.path.realpath(path.rstrip("."))
-            if not real.startswith(models_root) or real in seen:
+        for root, extensions, pattern, fresh_only in self._roots(chat_id):
+            if fresh_only and started_at is None:
                 continue
-            seen.add(real)
-            unique.append(real)
+            candidates = [m.group(0) for text in texts for m in pattern.finditer(text)]
+            if started_at is not None:
+                candidates.extend(self._new_files_since(started_at, root, extensions))
+            prefix = os.path.realpath(root) + os.sep
+            for path in candidates:
+                # realpath collapses ".." and symlinks so a crafted mention
+                # cannot read outside the root (for /outputs: outside this
+                # chat's own directory).
+                real = os.path.realpath(path.rstrip("."))
+                if not real.startswith(prefix) or not real.lower().endswith(extensions) or real in seen:
+                    continue
+                if fresh_only:
+                    try:
+                        if os.path.getmtime(real) < started_at - self.MTIME_SLACK:
+                            continue
+                    except OSError:
+                        continue
+                seen.add(real)
+                unique.append(real)
         return unique[: self.MAX_FILES_PER_TURN]
 
     def _file_record(self, file_item):
@@ -330,7 +410,11 @@ Blender execute_blender_code (Blender 5.0): there is no bpy.ops.boolean.*; add a
             with open(path, "rb") as fh:
                 data = fh.read()
         filename = filename or os.path.basename(path)
-        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        content_type = (
+            self.CONTENT_TYPES.get(os.path.splitext(filename)[1].lower())
+            or mimetypes.guess_type(filename)[0]
+            or "application/octet-stream"
+        )
         upload = UploadFile(
             file=BytesIO(data),
             filename=filename,
@@ -357,8 +441,9 @@ Blender execute_blender_code (Blender 5.0): there is no bpy.ops.boolean.*; add a
             return body
 
         # The models volume is only mounted when a 3D-pipeline service is
-        # enabled; a missing directory means there is nothing to read.
-        if not os.path.isdir(self.MODELS_DIR):
+        # enabled, and the outputs volume when the code interpreter is; with
+        # neither there is nothing to read.
+        if not self._roots(chat_id):
             return body
 
         from open_webui.models.users import UserModel
@@ -369,7 +454,7 @@ Blender execute_blender_code (Blender 5.0): there is no bpy.ops.boolean.*; add a
         for message in body.get("messages", []):
             if message.get("id") != message_id or message.get("role") != "assistant":
                 continue
-            for path in self._detect_model_paths(message):
+            for path in self._detect_paths(message, chat_id):
                 if not os.path.isfile(path):
                     continue
                 try:

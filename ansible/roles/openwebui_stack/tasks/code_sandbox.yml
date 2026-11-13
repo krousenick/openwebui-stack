@@ -6,10 +6,45 @@
 # so this task asserts the intended sandbox values and heals them on every
 # playbook run, the same way openwebui_config.yml heals the OpenAI connection.
 #
-# The sandbox is the only code-execution surface: ENABLE_CODE_EXECUTION and
-# ENABLE_CODE_INTERPRETER stay false (legacy in-process engines), and the
-# jupyter wiring points at the isolated, token-authenticated code-sandbox
-# container on the backend network.
+# The sandbox is the only code-execution surface: both engines are jupyter,
+# pointed at the isolated, token-authenticated code-sandbox container on the
+# backend network. code_execution.enable (the Run button on code blocks)
+# stays false. code_interpreter.enable follows
+# openwebui_code_interpreter_enabled: with it on, a chat that has Code
+# Interpreter turned on gives the model an execute_code tool that runs in
+# the sandbox.
+
+- name: Read the build inputs digest of the running sandbox
+  # Compose builds the sandbox image only when it is missing, so a changed
+  # Dockerfile or requirements.txt would otherwise never reach the host.
+  # The image carries the digest of the inputs it was built from as a
+  # label (code_sandbox_inputs_digest, set by the compose template); the
+  # container inherits the image's labels.
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --format
+      - "{{ '{{' }} index .Config.Labels \"org.openwebui-stack.sandbox-inputs\" {{ '}}' }}"
+      - "{{ compose_project_name }}_code-sandbox"
+  register: code_sandbox_running_digest
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Rebuild the code sandbox image when its build inputs changed
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - code-sandbox
+    build: always
+    state: present
+    wait: true
+    wait_timeout: 600
+  when: (code_sandbox_running_digest.stdout | default('') | trim) != code_sandbox_inputs_digest
 
 - name: Assert sandbox settings
   ansible.builtin.assert:
@@ -59,7 +94,7 @@
       exec_jupyter_url: "http://code-sandbox:8888"
       exec_jupyter_auth: "token"
       exec_jupyter_timeout: "120"
-      ci_enable: "false"
+      ci_enable: "{{ 'true' if openwebui_code_interpreter_active | bool else 'false' }}"
       ci_engine: "jupyter"
       ci_jupyter_url: "http://code-sandbox:8888"
       ci_jupyter_auth: "token"
@@ -91,7 +126,7 @@
         ('code_execution.jupyter.auth', '"token"'::json, (extract(epoch from now())*1000)::bigint),
         ('code_execution.jupyter.auth_token', '"{{ code_sandbox_token | replace("'", "''") }}"'::json, (extract(epoch from now())*1000)::bigint),
         ('code_execution.jupyter.timeout', '120'::json, (extract(epoch from now())*1000)::bigint),
-        ('code_interpreter.enable', 'false'::json, (extract(epoch from now())*1000)::bigint),
+        ('code_interpreter.enable', '{{ 'true' if openwebui_code_interpreter_active | bool else 'false' }}'::json, (extract(epoch from now())*1000)::bigint),
         ('code_interpreter.engine', '"jupyter"'::json, (extract(epoch from now())*1000)::bigint),
         ('code_interpreter.jupyter.url', '"http://code-sandbox:8888"'::json, (extract(epoch from now())*1000)::bigint),
         ('code_interpreter.jupyter.auth', '"token"'::json, (extract(epoch from now())*1000)::bigint),

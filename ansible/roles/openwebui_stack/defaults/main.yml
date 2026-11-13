@@ -212,6 +212,31 @@ playwright_mcp_enabled: true
 # group_vars to drop the sandbox entirely.
 code_sandbox_enabled: true
 
+# Open WebUI's code interpreter, executed in the code-sandbox above (engine
+# jupyter). A user who turns on Code Interpreter in a chat gives the model
+# an execute_code tool whose Python runs in the sandbox (python-docx,
+# openpyxl, python-pptx, pypdf, reportlab, pandas, matplotlib baked in;
+# see sandbox/requirements.txt). Files the model saves under
+# /outputs/<chat id>/ come back as downloads through the
+# tool_result_file_download filter, which also tells the model that
+# directory. One sandbox serves every chat, so code in one chat can read
+# what another chat wrote there; keep it for a trusted user base. Needs
+# code_sandbox_enabled. ENABLE_CODE_EXECUTION (the Run button on code
+# blocks) stays off either way.
+openwebui_code_interpreter_enabled: true
+
+# Derived, not configured: whether the interpreter is wired up.
+openwebui_code_interpreter_active: "{{ code_sandbox_enabled | bool and openwebui_code_interpreter_enabled | bool }}"
+
+# Derived, not configured: digest of the sandbox build inputs in the
+# checkout. The compose template stamps it on the image as a label and
+# tasks/code_sandbox.yml rebuilds the image when the running container's
+# label differs (compose itself only builds an image that is missing).
+code_sandbox_inputs_digest: >-
+  {{ (lookup('ansible.builtin.file', playbook_dir ~ '/../../sandbox/Dockerfile')
+      ~ lookup('ansible.builtin.file', playbook_dir ~ '/../../sandbox/requirements.txt'))
+     | hash('sha256') }}
+
 # AWS Bedrock models in the LiteLLM model_list. Off by default: they need
 # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (see .env.example) and provision
 # nothing useful without credentials. Set true in group_vars once the AWS

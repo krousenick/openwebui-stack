@@ -11,6 +11,7 @@ on:
             - "tests/**"
             - "skills/**"
             - "ansible/roles/vllm_compute/files/*.py"
+            - "ansible/roles/openwebui_stack/files/functions/*.py"
             - "pyproject.toml"
             - ".github/workflows/python.yml"
     pull_request:
@@ -20,6 +21,7 @@ on:
             - "tests/**"
             - "skills/**"
             - "ansible/roles/vllm_compute/files/*.py"
+            - "ansible/roles/openwebui_stack/files/functions/*.py"
             - "pyproject.toml"
             - ".github/workflows/python.yml"
 
