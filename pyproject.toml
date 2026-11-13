@@ -14,6 +14,7 @@ target-version = "py312"
 include = [
     "container-scripts/**/*.py",
     "litellm/memory_callback.py",
+    "litellm/skills_callback.py",
     "tests/**/*.py",
     "ansible/roles/vllm_compute/files/ray_nodes_ready.py",
     "ansible/roles/vllm_compute/files/vllm-launcher-slot.py",

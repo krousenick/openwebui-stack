@@ -276,13 +276,17 @@ services:
 {% if memory_mcp_enabled | default(true) | bool %}
       - ./litellm/memory_callback.py:/app/memory_callback.py:ro
 {% endif %}
+{% if skills_mcp_hook_enabled | default(false) | bool %}
+      - ./litellm/skills_callback.py:/app/skills_callback.py:ro
+{% endif %}
       - ./litellm/guardrail_categories/prompt_injection_sql.yaml:/app/guardrail_categories/prompt_injection_sql.yaml:ro
       - ./litellm/guardrail_categories/prompt_injection_jailbreak.yaml:/app/guardrail_categories/prompt_injection_jailbreak.yaml:ro
       - ./litellm/guardrail_categories/prompt_injection_system_prompt.yaml:/app/guardrail_categories/prompt_injection_system_prompt.yaml:ro
       - ./litellm/guardrail_categories/prompt_injection_malicious_code.yaml:/app/guardrail_categories/prompt_injection_malicious_code.yaml:ro
       - ./litellm/guardrail_categories/prompt_injection_data_exfiltration.yaml:/app/guardrail_categories/prompt_injection_data_exfiltration.yaml:ro
       # Centralized SKILL.md packages: mounted read-only for the Skills
-      # Gateway task (zip build for the /v1/skills proxy-hosted store).
+      # Gateway task (zip build for the /v1/skills proxy-hosted store) and
+      # the skills hook's index.
       - ./skills:/app/skills:ro
       # Provisioning scripts the playbook runs with this container's Python
       # (tasks/container_script.yml). The service itself never loads them.
@@ -333,6 +337,13 @@ services:
       #                       to chat requests that carry the memory tools
       #                       (memory_mcp_enabled). Before the compactor, so
       #                       the index counts toward the window.
+      #   skills              gives requests that carry no tools of their own
+      #                       the `skills` MCP server and an index of the
+      #                       skills, and the index alone to requests that
+      #                       carry the skills tools (skills_mcp_hook_enabled).
+      #                       After brave_mcp, whose gateway tool it joins
+      #                       and whose declined tool rounds it takes; before
+      #                       the compactor, so the index counts.
       #   context_compaction  always on.
 {% set litellm_startup_hooks = [] %}
 {% if not (litellm_ui_chat_enabled | default(false) | bool) %}
@@ -343,6 +354,9 @@ services:
 {% endif %}
 {% if memory_mcp_enabled | default(true) | bool %}
 {%   set _ = litellm_startup_hooks.append('memory_callback:register_callback') %}
+{% endif %}
+{% if skills_mcp_hook_enabled | default(false) | bool %}
+{%   set _ = litellm_startup_hooks.append('skills_callback:register_callback') %}
 {% endif %}
 {% set _ = litellm_startup_hooks.append('context_compaction_callback:register_callback') %}
       LITELLM_WORKER_STARTUP_HOOKS: "{{ litellm_startup_hooks | join(',') }}"
@@ -356,6 +370,12 @@ services:
       MEMORY_MCP_SIGNING_KEY: "${MEMORY_MCP_SIGNING_KEY:?error}"
       MEMORY_MCP_URL: "http://memory-mcp:8080"
       MEMORY_INDEX_ENABLED: "{{ 'true' if memory_index_enabled | default(true) | bool else 'false' }}"
+{% endif %}
+{% if skills_mcp_hook_enabled | default(false) | bool %}
+      # skills_callback.py: the size of the skills index it reads from
+      # /app/skills (mounted above).
+      SKILLS_INDEX_DESCRIPTION_CHARS: "{{ skills_index_description_chars | default(200) }}"
+      SKILLS_INDEX_MAX_CHARS: "{{ skills_index_max_chars | default(6000) }}"
 {% endif %}
 
       # Lets the guardrail's prompt_injection_sql category_file point at the

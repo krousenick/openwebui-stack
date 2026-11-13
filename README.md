@@ -1256,6 +1256,76 @@ docker compose exec litellm python3 -c 'import json,urllib.request; r=urllib.req
 | The index never appears | The request does not carry the memory tools, `memory_index_enabled` is false, or the user has no memories; the index is cached for 30 s per user | Turn the Memory tool on for the chat |
 | Search says "ranked by keywords" | The embedding model does not answer | Check `docker compose ps text-embeddings` and `MEMORY_EMBEDDING_MODEL` |
 
+## Skills for every model (LiteLLM hook)
+
+The skills in `skills/` (see [Centralized Skills](#centralized-skills-skills-gateway)) reach a model when its client loads them: Open WebUI lists them itself, Claude Code installs them from the marketplace, opencode copies them, and an MCP client can add LiteLLM's `skills` server (the `skills-mcp` service). `litellm/skills_callback.py`, a LiteLLM startup hook, covers every other caller: a plain request to `/v1/chat/completions` or `/v1/messages`, from any SDK, gets the skills without naming one. It follows the `skills` server's switch (`skills_mcp_hook_enabled` defaults to `skills_mcp_enabled`).
+
+### How it works
+
+1. **Tool.** A request that carries no tools of its own gets the `skills` server as a gateway tool (`{"type": "mcp", "server_url": "litellm_proxy/mcp/skills", "require_approval": "never"}`). LiteLLM offers the model the server's tools (`skills-search`, `skills-list`, `skills-get`), runs the model's calls itself and returns the final answer.
+2. **Index.** The same request gets a short list of the skills in its system prompt (`<gateway_skills>`: each name with its description cut to `skills_index_description_chars`, 200 characters, the whole list up to `skills_index_max_chars`), the way Claude Code lists its skills, and the model reads the one it needs with `skills-get` before it starts. The list costs about 60 tokens per skill (about 400 for 6 skills, 1,000 for 17). It comes from `/app/skills` in the litellm container, the same files the playbook publishes, and a change shows within 30 seconds.
+3. **Rounds.** On `/v1/messages` LiteLLM runs every tool round itself (up to 10) and answers a streaming request with one streamed answer. On `/v1/chat/completions` it runs one round; when the model answers the skill with another call to a gateway tool (a second skill, or a web search the skill asks for), the hook runs that round too, up to LiteLLM's `max_agentic_loops` (3), and the last one must end in text.
+
+| Request | Gets |
+| --- | --- |
+| `/v1/messages` without tools, streaming or not | the skills tool and the list |
+| `/v1/chat/completions` without tools, not streaming | the skills tool and the list (beside the Brave tool when web search is on) |
+| `/v1/chat/completions` without tools, streaming | nothing: LiteLLM would stream the tool calls of its first round to the client, and a client that runs its own tool loop would try to run them |
+| Tools that include the skills tools (`skills-get`; `skills_skills-get` from opencode; `mcp__skills__skills-get` from Claude Code) | the list only, naming the client's own tool |
+| Other tools of its own | nothing: the client owns the tool loop, and one gateway tool would make LiteLLM run every tool call, the client's too |
+| Open WebUI (any `X-OpenWebUI-*` header) | nothing: Open WebUI lists its own copy of the skills (`<available_skills>`) and gives the model `view_skill` |
+| A Claude model (`claude*`, `anthropic/*`) | nothing: on this stack that is your own Claude subscription |
+| `metadata: {"skills_index": false}` | nothing |
+
+While LiteLLM has no MCP server named `skills`, the hook adds nothing (the litellm log says so once). A streaming client that wants the skills sends `"stream": false` or adds the `skills` server itself.
+
+### Use it
+
+Point any OpenAI or Anthropic client at LiteLLM; nothing else to set:
+
+```bash
+KEY=<a LiteLLM key>
+curl -sk https://litellm.<domain>/v1/chat/completions -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model": "gemma-4-26b-a4b", "messages": [{"role": "user", "content": "Using your skills: how do I check that the SSO login works?"}]}'
+curl -sk https://litellm.<domain>/v1/messages -H "Authorization: Bearer $KEY" -H "anthropic-version: 2023-06-01" -H "Content-Type: application/json" \
+  -d '{"model": "gemma-4-26b-a4b", "max_tokens": 2048, "messages": [{"role": "user", "content": "Plan a 3D print of a phone stand."}]}'
+```
+
+### Turning it on
+
+On with the `skills` server. On a running stack, from the deployed tree:
+
+```bash
+(cd ansible && ansible-playbook playbooks/site.yml --tags environment)  # compose file and LiteLLM config; recreates litellm
+```
+
+`skills_mcp_hook_enabled: false` (in `ansible/group_vars/all/vars.local.yml`) turns the hook off and keeps the server for MCP clients.
+
+### Verification
+
+```bash
+# The hook is loaded, after brave_mcp_callback and before context_compaction_callback
+docker compose exec litellm printenv LITELLM_WORKER_STARTUP_HOOKS   # includes skills_callback:register_callback
+docker compose logs litellm | grep "skills_callback"   # Worker startup hook 'skills_callback:register_callback' executed successfully
+
+# A plain request sees the list: the model names the skills it can read
+KEY=$(grep -m1 "^LITELLM_MASTER_KEY=" .env | cut -d= -f2-)
+curl -sk https://litellm.<domain>/v1/chat/completions -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model": "gemma-4-26b-a4b", "messages": [{"role": "user", "content": "List the names of the skills you can read, nothing else."}]}'
+
+# Later chat rounds the hook ran
+docker compose logs litellm | grep "skills: tool round"
+```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| The model never mentions the skills | The request is one the table above leaves alone, or `skills` is not registered ("MCP server 'skills' is not registered" in the litellm log) | Check the request against the table; `curl .../v1/mcp/server` lists the servers |
+| A skill is missing from the list | Its frontmatter breaks the rules ("left out of the index" in the litellm log), or it changed less than 30 seconds ago | Fix the frontmatter; `pytest` checks every `SKILL.md` |
+| A chat answer is a raw `skills-get` call | The hook is not loaded, or the model kept calling tools past `max_agentic_loops` | Check `LITELLM_WORKER_STARTUP_HOOKS`; ask for fewer steps |
+| The model sees the list but has no skills tools; the litellm log says "Error listing tools from skills" | `skills-mcp` is down (requests still answer) | `docker compose ps skills-mcp`; `docker compose up -d skills-mcp` |
+
 ## 3D Print Pipeline (Blender / FreeCAD / printer MCP)
 
 Prompt-to-print: the chat model authors geometry (Blender mesh or FreeCAD

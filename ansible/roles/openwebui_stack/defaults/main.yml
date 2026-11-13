@@ -557,6 +557,25 @@ openwebui_builtin_memories_enabled: "{{ not (memory_mcp_enabled | bool) }}"
 # Derived, not configured: the model memory-mcp embeds with.
 memory_embedding_model_effective: "{{ memory_embedding_model or litellm_skill_search_embedding_model_effective }}"
 
+# Skills for every model (README "Skills for every model"):
+# litellm/skills_callback.py, a startup hook, hands the skills to callers
+# that wired none of their own. A request with no tools gets LiteLLM's
+# `skills` MCP server as a gateway tool, which LiteLLM runs itself, and a
+# short index of the skills in its system prompt: on /v1/messages streaming
+# or not, on /v1/chat/completions only when not streaming. A request that
+# already carries the skills tools gets the index only. Requests with other
+# tools, Open WebUI's (it lists its own copy of the skills) and Claude
+# models (the subscription passthrough) are left alone. Needs the `skills`
+# server (skills_mcp_enabled); while LiteLLM has none registered, the hook
+# adds nothing. Follows that switch; false drops the hook and keeps the
+# server for MCP clients.
+skills_mcp_hook_enabled: "{{ skills_mcp_enabled | default(false) | bool }}"
+
+# The index: each description cut to this many characters, the whole index
+# to max_chars (skills past it are listed by name only).
+skills_index_description_chars: 200
+skills_index_max_chars: 6000
+
 # Chat from the LiteLLM admin UI (its Playground and Chat pages). Off:
 # people talk to models through Open WebUI or an API client (opencode, an
 # IDE), and the admin UI stays for keys, models, usage and settings. Two

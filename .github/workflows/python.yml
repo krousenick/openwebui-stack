@@ -8,6 +8,7 @@ on:
         paths:
             - "container-scripts/**"
             - "litellm/memory_callback.py"
+            - "litellm/skills_callback.py"
             - "tests/**"
             - "skills/**"
             - "ansible/roles/vllm_compute/files/*.py"
@@ -18,6 +19,7 @@ on:
         paths:
             - "container-scripts/**"
             - "litellm/memory_callback.py"
+            - "litellm/skills_callback.py"
             - "tests/**"
             - "skills/**"
             - "ansible/roles/vllm_compute/files/*.py"
