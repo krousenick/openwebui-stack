@@ -313,10 +313,73 @@ def test_a_tool_less_chat_request_gets_the_gateway_tool_and_the_index(hook, call
 @pytest.mark.parametrize("stream", [False, True])
 def test_a_tool_less_messages_request_gets_them_streaming_or_not(hook, stream: bool) -> None:
     data = run(hook, anthropic(stream=stream), "anthropic_messages")
-    assert data["tools"] == [GATEWAY_TOOL]
+    assert "tools" not in data, "the deployment hook adds the tool, after the guardrails"
+    assert data["litellm_metadata"] == {"skills_mcp_messages_tool": True}
     assert data["system"].startswith("You are helpful.\n\n<gateway_skills>\n")
     assert data["messages"] == [{"role": "user", "content": "Write me a report."}]
     assert "metadata" not in data, "LiteLLM's /v1/messages gateway runs every round; no flag for the chat rounds"
+    call = {key: data[key] for key in ("model", "max_tokens", "messages", "system", "litellm_metadata")}
+    assert deploy(hook, call)["tools"] == [GATEWAY_TOOL]
+
+
+def test_existing_litellm_metadata_is_kept(hook) -> None:
+    data = run(hook, anthropic(litellm_metadata={"headers": {"user-agent": "sdk"}}), "anthropic_messages")
+    assert data["litellm_metadata"] == {"headers": {"user-agent": "sdk"}, "skills_mcp_messages_tool": True}
+
+
+def deploy(hook, kwargs: dict[str, Any], call_type: Any = "aanthropic_messages") -> Any:
+    return asyncio.run(hook.async_pre_call_deployment_hook(kwargs, call_type))
+
+
+def flagged_call(**extra: Any) -> dict[str, Any]:
+    return {
+        "model": "gemma-4-26b-a4b",
+        "messages": [{"role": "user", "content": "Write me a report."}],
+        "litellm_metadata": {"skills_mcp_messages_tool": True},
+        **extra,
+    }
+
+
+@pytest.mark.parametrize(
+    "call_type",
+    ["aanthropic_messages", "anthropic_messages", types.SimpleNamespace(value="aanthropic_messages")],
+)
+def test_the_deployment_hook_adds_the_tool_to_flagged_messages_calls(hook, call_type) -> None:
+    assert deploy(hook, flagged_call(), call_type)["tools"] == [GATEWAY_TOOL]
+    for bucket in ("metadata", "litellm_metadata"):
+        moved = {"model": "gemma", bucket: {"skills_mcp_messages_tool": True}}
+        assert deploy(hook, moved, call_type)["tools"] == [GATEWAY_TOOL]
+    nested = {"model": "gemma", "litellm_params": {"metadata": {"skills_mcp_messages_tool": True}}}
+    assert deploy(hook, nested, call_type)["tools"] == [GATEWAY_TOOL]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "call_type"),
+    [
+        (flagged_call(), "acompletion"),
+        (flagged_call(), "completion"),
+        (flagged_call(), "aresponses"),
+        (flagged_call(), None),
+        ({"model": "gemma", "messages": []}, "aanthropic_messages"),
+        ({**flagged_call(), "litellm_metadata": {"skills_mcp_messages_tool": "yes"}}, "aanthropic_messages"),
+        (flagged_call(_skip_mcp_handler=True), "aanthropic_messages"),
+        (flagged_call(tools=[{"name": "skills-get", "input_schema": {}}]), "aanthropic_messages"),
+        (flagged_call(tools=[GATEWAY_TOOL]), "aanthropic_messages"),
+    ],
+)
+def test_the_deployment_hook_leaves_everything_else_alone(hook, kwargs, call_type) -> None:
+    before = copy.deepcopy(kwargs)
+    assert deploy(hook, kwargs, call_type) is None
+    assert kwargs == before
+
+
+def test_a_failing_deployment_hook_leaves_the_call_alone(hook, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
+    def broken(kwargs, call_type):
+        raise KeyError("moved")
+
+    monkeypatch.setattr(hook, "add_messages_tool", broken)
+    assert deploy(hook, flagged_call()) is None
+    assert "left without the skills tool" in caplog.text
 
 
 def test_the_index_fits_every_system_prompt_shape(hook) -> None:
@@ -392,7 +455,7 @@ def test_requests_that_carry_the_skills_tools_get_the_index_only(hook, names, ca
         index = data["system"]
     assert data["tools"] == tools, "no gateway tool next to the client's own"
     assert f"call {getter} with its name" in index
-    assert "metadata" not in data
+    assert "metadata" not in data and "litellm_metadata" not in data
 
 
 @pytest.mark.parametrize(

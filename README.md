@@ -1262,7 +1262,7 @@ The skills in `skills/` (see [Centralized Skills](#centralized-skills-skills-gat
 
 ### How it works
 
-1. **Tool.** A request that carries no tools of its own gets the `skills` server as a gateway tool (`{"type": "mcp", "server_url": "litellm_proxy/mcp/skills", "require_approval": "never"}`). LiteLLM offers the model the server's tools (`skills-search`, `skills-list`, `skills-get`), runs the model's calls itself and returns the final answer.
+1. **Tool.** A request that carries no tools of its own gets the `skills` server as a gateway tool (`{"type": "mcp", "server_url": "litellm_proxy/mcp/skills", "require_approval": "never"}`). LiteLLM offers the model the server's tools (`skills-search`, `skills-list`, `skills-get`), runs the model's calls itself and returns the final answer. On `/v1/messages` the hook adds it at LiteLLM's last stage before the model call, after the content filter, whose `/v1/messages` pass would rewrite it into a tool nothing can run.
 2. **Index.** The same request gets a short list of the skills in its system prompt (`<gateway_skills>`: each name with its description cut to `skills_index_description_chars`, 200 characters, the whole list up to `skills_index_max_chars`), the way Claude Code lists its skills, and the model reads the one it needs with `skills-get` before it starts. The list costs about 60 tokens per skill (about 400 for 6 skills, 1,000 for 17). It comes from `/app/skills` in the litellm container, the same files the playbook publishes, and a change shows within 30 seconds.
 3. **Rounds.** On `/v1/messages` LiteLLM runs every tool round itself (up to 10) and answers a streaming request with one streamed answer. On `/v1/chat/completions` it runs one round; when the model answers the skill with another call to a gateway tool (a second skill, or a web search the skill asks for), the hook runs that round too, up to LiteLLM's `max_agentic_loops` (3), and the last one must end in text.
 
@@ -1325,6 +1325,7 @@ docker compose logs litellm | grep "skills: tool round"
 | A skill is missing from the list | Its frontmatter breaks the rules ("left out of the index" in the litellm log), or it changed less than 30 seconds ago | Fix the frontmatter; `pytest` checks every `SKILL.md` |
 | A chat answer is a raw `skills-get` call | The hook is not loaded, or the model kept calling tools past `max_agentic_loops` | Check `LITELLM_WORKER_STARTUP_HOOKS`; ask for fewer steps |
 | The model sees the list but has no skills tools; the litellm log says "Error listing tools from skills" | `skills-mcp` is down (requests still answer) | `docker compose ps skills-mcp`; `docker compose up -d skills-mcp` |
+| A `/v1/messages` answer is a `tool_use` named `litellm_unnamed_tool_0` | A gateway tool reached the content filter's `/v1/messages` pass, which rewrites the tool list (a client's own `litellm_proxy` reference, or a LiteLLM upgrade that moved the stage the hook adds it at) | Let the hook add the skills tool; after an upgrade, rerun the end-to-end check in AGENTS.md |
 
 ## 3D Print Pipeline (Blender / FreeCAD / printer MCP)
 

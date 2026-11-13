@@ -14,7 +14,9 @@ names nothing:
    prompt, the way Claude Code lists its skills; the model reads one with
    skills-get. On /v1/messages (call type anthropic_messages) streaming or
    not: LiteLLM's /v1/messages gateway runs every tool round itself and
-   answers a streaming request with one fake stream. On
+   answers a streaming request with one fake stream. There the tool goes in
+   at LiteLLM's deployment stage, after the guardrails, whose /v1/messages
+   pass would turn the reference into a nameless function tool. On
    /v1/chat/completions only when not streaming: LiteLLM's chat gateway
    streams the first round's tool-call chunks to the client, and a client
    that runs its own tool loop then tries to run skills-get itself (the
@@ -84,6 +86,11 @@ GATEWAY_PREFIX = "litellm_proxy"
 # servers the request carried (the Brave injector's too).
 AUTO_EXECUTE_KEY = "skills_mcp_auto_execute"
 GATEWAY_SERVERS_KEY = "skills_mcp_gateway_servers"
+# Set on the /v1/messages requests that get the tool: the deployment hook adds
+# it there, after the guardrails (see async_pre_call_deployment_hook).
+MESSAGES_TOOL_KEY = "skills_mcp_messages_tool"
+# The call types LiteLLM's client wrapper hands a deployment hook for /v1/messages.
+MESSAGES_DEPLOYMENT_CALL_TYPES = frozenset({"anthropic_messages", "aanthropic_messages"})
 # Per-request opt-out: metadata {"skills_index": false} leaves the request alone.
 OPT_OUT_KEY = "skills_index"
 INDEX_TAG = "gateway_skills"
@@ -579,18 +586,60 @@ class SkillsForEveryModel(CustomLogger):
             data["messages"] = with_chat_index(messages, text)
         else:
             data["system"] = with_system_index(data.get("system"), text)
-        if action == "tool":
+        if action == "tool" and chat:
             data["tools"] = [*tools, dict(self.tool)]
-            if chat:
-                metadata = data.get("metadata")
-                if not isinstance(metadata, dict):
-                    metadata = {}
-                    data["metadata"] = metadata
-                metadata[AUTO_EXECUTE_KEY] = True
-                metadata[GATEWAY_SERVERS_KEY] = sorted(
-                    {str(tool["server_url"]) for tool in data["tools"] if is_gateway_reference(tool)}
-                )
+            metadata = data.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+                data["metadata"] = metadata
+            metadata[AUTO_EXECUTE_KEY] = True
+            metadata[GATEWAY_SERVERS_KEY] = sorted(
+                {str(tool["server_url"]) for tool in data["tools"] if is_gateway_reference(tool)}
+            )
+        elif action == "tool":
+            # /v1/messages: the deployment hook adds the tool, after the
+            # guardrails have rewritten the tool list.
+            metadata = data.get("litellm_metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+                data["litellm_metadata"] = metadata
+            metadata[MESSAGES_TOOL_KEY] = True
         return data
+
+    # ------------------------------------------------------------------
+    # The tool on /v1/messages
+    # ------------------------------------------------------------------
+    # LiteLLM's guardrails run after the pre-call hooks. On /v1/messages the
+    # content filter (default-content-filter, default_on) translates the
+    # request to the chat format to scan it and writes the tool list back
+    # from that translation (llms/anthropic/chat/guardrail_translation):
+    # a gateway reference ({"type": "mcp", ...}) comes back as a function
+    # tool named litellm_unnamed_tool_0, which no gateway expands. So the
+    # reference goes in here, at the deployment stage: LiteLLM's client
+    # wrapper runs every callback's deployment hook right before the call,
+    # and the call expands gateway references (anthropic_messages_with_mcp)
+    # before anything reaches the provider. Chat completions keep the tool
+    # from the pre-call hook: their guardrail pass leaves it alone.
+
+    async def async_pre_call_deployment_hook(self, kwargs: dict, call_type: Any):
+        try:
+            return self.add_messages_tool(kwargs, call_type)
+        except Exception as error:
+            logger.warning("skills: /v1/messages request left without the skills tool: %s", error)
+            return None
+
+    def add_messages_tool(self, kwargs: dict, call_type: Any) -> dict | None:
+        """The /v1/messages call with the gateway tool added, or None to leave it as it is."""
+        if getattr(call_type, "value", call_type) not in MESSAGES_DEPLOYMENT_CALL_TYPES:
+            return None
+        # The gateway's own calls (its tool rounds) carry the expanded tools and
+        # this marker; a request with tools of its own was never planned for one.
+        if kwargs.get("_skip_mcp_handler") or kwargs.get("tools"):
+            return None
+        if not any(bucket.get(MESSAGES_TOOL_KEY) is True for bucket in metadata_buckets(kwargs)):
+            return None
+        kwargs["tools"] = [dict(self.tool)]
+        return kwargs
 
     # ------------------------------------------------------------------
     # Later tool rounds on /v1/chat/completions
