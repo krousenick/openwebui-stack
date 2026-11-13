@@ -1577,7 +1577,7 @@
           "color": "rgba(255,0,255,0.7)"
         },
         "filterValues": {
-          "le": 1e-9
+          "le": 1e-09
         },
         "legend": {
           "show": true
@@ -5165,7 +5165,7 @@
               "color": "rgba(255,0,255,0.7)"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "legend": {
               "show": true
@@ -5253,7 +5253,7 @@
               "color": "rgba(255,0,255,0.7)"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "legend": {
               "show": true
@@ -5531,7 +5531,7 @@
               "color": "rgba(255,0,255,0.7)"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "legend": {
               "show": true
@@ -5619,7 +5619,7 @@
               "color": "rgba(255,0,255,0.7)"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "legend": {
               "show": true
@@ -6001,6 +6001,39 @@
       "pluginVersion": "11.6.1",
       "title": "Documentation",
       "type": "text"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 96
+      },
+      "id": 86,
+      "options": {
+        "dedupStrategy": "none",
+        "enableInfiniteScrolling": true,
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "expr": "{container_name=~\".*otel-collector.*\"}",
+          "refId": "A"
+        }
+      ],
+      "title": "OTel Collector logs",
+      "type": "logs",
+      "description": "otel-collector container stdout/stderr from Loki."
     }
   ],
   "preload": false,
@@ -6363,5 +6396,5 @@
   "timezone": "",
   "title": "OpenTelemetry Collector",
   "uid": "stack-opentelemetry",
-  "version": 1
+  "version": 2
 }

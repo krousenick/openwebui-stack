@@ -1,0 +1,94 @@
+---
+# Publish the centralized skills (./skills SKILL.md packages) into the
+# Open WebUI workspace so every chat user can $mention them or bind them
+# to models. Open WebUI skills live in its own database with version
+# history, so this goes through the real API instead of writing rows; see
+# container-scripts/openwebui_skills_sync.py for the endpoints.
+#
+# Idempotency: skill id = the SKILL.md frontmatter name. An existing skill
+# is updated only when its stored content differs from the checkout's
+# SKILL.md, so a rerun with unchanged skills touches nothing.
+#
+# Auth: Open WebUI API keys are random client-generated secrets stored in
+# the api_key table (there is no server-side mint endpoint usable without
+# an existing session). The task upserts a dedicated admin user row and
+# its api_key from the vault value `openwebui_api_admin_key`, the same
+# tiering as every other stack secret. ENABLE_API_KEYS is already true in
+# the compose template, and the admin role bypasses the per-user
+# features.api_keys permission check.
+
+- name: Require Open WebUI skill publishing settings
+  ansible.builtin.assert:
+    that:
+      - openwebui_db_user | length > 0
+      - openwebui_db_password | length > 0
+      - openwebui_db_name | length > 0
+      - openwebui_api_admin_key | default('') | length > 0
+    fail_msg: >-
+      Open WebUI skill publishing requires the Open WebUI database
+      settings and openwebui_api_admin_key in the vault.
+
+- name: Ensure the skill-publisher admin account and API key exist
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+  args:
+    stdin: |
+      -- Idempotent upsert: fixed user id, fixed key id.
+      INSERT INTO "user" (id, email, name, role, last_active_at, created_at, updated_at)
+      VALUES ('skill-publisher', 'skill-publisher@{{ domain }}', 'Skill Publisher', 'admin',
+              extract(epoch from now())::bigint, extract(epoch from now())::bigint, extract(epoch from now())::bigint)
+      ON CONFLICT (id) DO UPDATE SET role = 'admin', last_active_at = EXCLUDED.last_active_at, updated_at = EXCLUDED.updated_at
+      WHERE "user".role IS DISTINCT FROM EXCLUDED.role
+         OR "user".last_active_at IS NULL;
+
+      INSERT INTO api_key (id, user_id, key, created_at, updated_at)
+      VALUES ('skill-publisher-key', 'skill-publisher', '{{ openwebui_api_admin_key }}',
+              (extract(epoch from now())*1000)::bigint, (extract(epoch from now())*1000)::bigint)
+      ON CONFLICT (id) DO UPDATE SET key = EXCLUDED.key, updated_at = (extract(epoch from now())*1000)::bigint;
+  register: openwebui_skills_publisher_db
+  changed_when: "'INSERT 0 1' in openwebui_skills_publisher_db.stdout"
+  no_log: true
+
+- name: Wait for the Open WebUI API
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ compose_project_name }}_open-webui"
+      - curl
+      - -s
+      - -o
+      - /dev/null
+      - -w
+      - "%{http_code}"
+      - "http://localhost:8080/health"
+  register: openwebui_skills_health
+  until: openwebui_skills_health.stdout | trim == '200'
+  retries: 30
+  delay: 5
+  changed_when: false
+  # Read-only, so it also runs under --check; skipped there, the until
+  # would retry an empty result 30 times and fail the dry run.
+  check_mode: false
+
+- name: Publish the skill packages into the Open WebUI workspace
+  ansible.builtin.import_tasks:
+    file: container_script.yml
+  vars:
+    container_script: openwebui_skills_sync.py
+    container_script_service: open-webui
+    container_script_env:
+      OPENWEBUI_API_KEY: "{{ openwebui_api_admin_key }}"

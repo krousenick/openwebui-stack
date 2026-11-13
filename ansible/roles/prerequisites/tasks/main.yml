@@ -1,0 +1,221 @@
+---
+# Global pre-flight role for every host that runs container workloads (the
+# openwebui stack host and the vllm_compute nodes). Both playbooks run this
+# role first.
+#
+# Behavior:
+#   - Installs the small base package set the roles' own task steps need
+#     (curl, rsync, openssl, python3).
+#   - Checks the container CLI (docker or podman per prerequisites_container_cli).
+#     When prerequisites_install_missing is true it installs the missing CLI;
+#     otherwise it fails fast with guidance (the historical behavior).
+#   - Optionally checks the NVIDIA driver (prerequisites_check_nvidia).
+#   - On install-if-missing hosts, installs the NVIDIA container toolkit and
+#     generates the CDI spec podman's --device nvidia.com/gpu=all consumes.
+#
+# The Docker Engine / podman and the NVIDIA driver are host prerequisites:
+# when prerequisites_install_missing is false they must be installed on each
+# host first (see the fail messages and the README).
+
+# ---------------------------------------------------------------------------
+# Base packages: curl + rsync support the roles' own task steps (uri checks,
+# ansible.posix.synchronize). Python is needed by Ansible itself.
+# ---------------------------------------------------------------------------
+
+- name: Bootstrap the dnf5 python bindings on dnf5 hosts
+  # Fedora 41+ ships dnf5 as /usr/bin/dnf, so ansible's pkg_mgr fact reports
+  # 'dnf5' and the dnf package module dispatches to the dnf5 backend, which
+  # needs python3-libdnf5. Without it every dnf task below fails with
+  # "Could not import the libdnf5 python module". Raw command so it works on
+  # a node with no usable package-module backend yet.
+  ansible.builtin.command:
+    cmd: dnf install -y python3-libdnf5
+  register: prerequisites_libdnf5_bootstrap
+  changed_when: "'Nothing to do' not in prerequisites_libdnf5_bootstrap.stdout"
+  failed_when: >-
+    prerequisites_libdnf5_bootstrap.rc != 0
+    and 'Nothing to do' not in prerequisites_libdnf5_bootstrap.stdout
+  when:
+    - ansible_facts.os_family == "RedHat"
+    - prerequisites_install_missing | bool
+    - ansible_facts.pkg_mgr == 'dnf5'
+
+- name: Install required packages on Debian-family hosts
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - openssl
+      - python3
+      - python3-pip
+    state: present
+    update_cache: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install required packages on RedHat-family hosts
+  # python3-firewall + python3-dbus are the runtime deps of the
+  # ansible.posix.firewalld module the vllm_compute role uses;
+  # python3-requests is the runtime dep of community.docker.docker_container
+  # (the vllm_compute monitoring deploy on docker nodes).
+  ansible.builtin.dnf:
+    name:
+      - ca-certificates
+      - curl
+      - openssl
+      - python3
+      - python3-dbus
+      - python3-firewall
+      - python3-requests
+      - rsync
+    state: present
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Install required packages on Photon OS
+  ansible.builtin.command:
+    cmd: tdnf install -y ca-certificates curl openssl python3 rsync
+  register: prerequisites_photon_packages
+  changed_when: "'Nothing to do' not in prerequisites_photon_packages.stdout"
+  when: ansible_facts.distribution == "VMware Photon OS"
+
+# ---------------------------------------------------------------------------
+# Container CLI: docker (with compose for the stack host) or podman (the
+# daemonless alternative for GPU compute nodes). Compose is only checked on
+# docker hosts; the vllm_compute role drives plain `run`/`exec` containers,
+# not compose.
+# ---------------------------------------------------------------------------
+
+- name: Check the container CLI
+  ansible.builtin.command:
+    argv:
+      - "{{ prerequisites_container_cli }}"
+      - version
+  register: prerequisites_cli_version
+  changed_when: false
+  failed_when: false
+
+- name: Check Docker Compose
+  ansible.builtin.command:
+    cmd: docker compose version
+  register: prerequisites_docker_compose_version
+  changed_when: false
+  failed_when: false
+  when: prerequisites_container_cli == 'docker'
+
+- name: Install the container CLI when missing
+  # Only reached when the host allows the role to install packages.
+  ansible.builtin.dnf:
+    name: "{{ ['docker', 'docker-compose'] if prerequisites_container_cli == 'docker' else ['podman'] }}"
+    state: present
+  when:
+    - prerequisites_cli_version.rc != 0
+    - prerequisites_install_missing | bool
+    - ansible_facts.os_family == "RedHat"
+
+- name: Enable and start Docker when it was installed
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+  when:
+    - prerequisites_container_cli == 'docker'
+    - prerequisites_cli_version.rc != 0
+    - prerequisites_install_missing | bool
+
+- name: Require the container CLI and Docker Compose
+  vars:
+    prerequisites_cli_packages: "{{ 'docker docker-compose' if prerequisites_container_cli == 'docker' else 'podman' }}"
+  ansible.builtin.assert:
+    that:
+      - prerequisites_cli_version.rc == 0 or (prerequisites_install_missing | bool and ansible_facts.os_family == "RedHat")
+      - >-
+        prerequisites_container_cli != 'docker'
+        or prerequisites_docker_compose_version.rc == 0
+        or (prerequisites_install_missing | bool and ansible_facts.os_family == "RedHat")
+    fail_msg: >-
+      {{ prerequisites_container_cli }} is unavailable on {{ inventory_hostname }}.
+      Install it and start the service when applicable, then re-run
+      (Fedora: dnf install {{ prerequisites_cli_packages }}
+      {{ '&& systemctl enable --now docker' if prerequisites_container_cli == 'docker' else '' }};
+      Photon OS: tdnf install docker docker-compose && systemctl enable --now docker),
+      or set prerequisites_install_missing: true for this host group so the
+      role installs it.
+
+- name: Display container versions
+  ansible.builtin.debug:
+    msg:
+      - "{{ prerequisites_container_cli }}: {{ prerequisites_cli_version.stdout_lines | default([]) | first | default('') }}"
+      - "{{ prerequisites_docker_compose_version.stdout | default('') }}"
+
+# ---------------------------------------------------------------------------
+# Optional NVIDIA driver check. Off by default; enabled per host group via
+# prerequisites_check_nvidia. The vllm_compute group_vars set it true.
+# ---------------------------------------------------------------------------
+
+- name: Check for the NVIDIA driver
+  ansible.builtin.command:
+    cmd: nvidia-smi
+  register: prerequisites_nvidia_smi
+  changed_when: false
+  failed_when: false
+  when: prerequisites_check_nvidia | bool
+
+- name: Fail with guidance when the NVIDIA driver is missing
+  ansible.builtin.fail:
+    msg: >-
+      nvidia-smi is unavailable on {{ inventory_hostname }}.
+      Install the NVIDIA driver first (for example:
+      dnf install akmod-nvidia xorg-x11-drv-nvidia-cuda), then re-run.
+  when:
+    - prerequisites_check_nvidia | bool
+    - prerequisites_nvidia_smi.rc != 0
+
+# ---------------------------------------------------------------------------
+# NVIDIA container toolkit + CDI (install-if-missing hosts only). Podman's
+# --device nvidia.com/gpu=all resolves through the CDI spec nvidia-ctk
+# generates; docker can use the nvidia runtime the toolkit also provides.
+# ---------------------------------------------------------------------------
+
+- name: Install the NVIDIA container toolkit and generate the CDI spec
+  when:
+    - prerequisites_check_nvidia | bool
+    - prerequisites_install_missing | bool
+  block:
+    - name: Check for the nvidia container toolkit
+      ansible.builtin.command:
+        cmd: nvidia-ctk --version
+      register: prerequisites_nvidia_ctk
+      changed_when: false
+      failed_when: false
+
+    - name: Install the NVIDIA container toolkit repository
+      ansible.builtin.get_url:
+        url: "{{ prerequisites_nvidia_toolkit_repo_url }}"
+        dest: /etc/yum.repos.d/nvidia-container-toolkit.repo
+        mode: "0644"
+      when:
+        - prerequisites_nvidia_ctk.rc != 0
+        - ansible_facts.os_family == "RedHat"
+
+    - name: Install the NVIDIA container toolkit
+      ansible.builtin.dnf:
+        name: nvidia-container-toolkit
+        state: present
+      when:
+        - prerequisites_nvidia_ctk.rc != 0
+        - ansible_facts.os_family == "RedHat"
+
+    - name: Check for a CDI specification
+      ansible.builtin.stat:
+        path: "{{ prerequisites_nvidia_cdi_spec }}"
+      register: prerequisites_nvidia_cdi_stat
+
+    - name: Generate the CDI specification
+      ansible.builtin.command:
+        argv:
+          - nvidia-ctk
+          - cdi
+          - generate
+          - --output={{ prerequisites_nvidia_cdi_spec }}
+      when: not prerequisites_nvidia_cdi_stat.stat.exists
+      register: prerequisites_nvidia_cdi_generated
+      changed_when: true

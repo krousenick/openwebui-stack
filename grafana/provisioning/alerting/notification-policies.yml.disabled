@@ -1,0 +1,9 @@
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    # References the contact point NAME (Discord), not the inner receiver name.
+    receiver: Discord
+    group_by:
+      - grafana_folder
+      - alertname

@@ -115,7 +115,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "irate(node_pressure_cpu_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+          "expr": "irate(node_schedstat_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
           "format": "time_series",
           "instant": true,
           "legendFormat": "CPU",
@@ -126,7 +126,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "irate(node_pressure_memory_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+          "expr": "irate(node_vmstat_pgmajfault{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
           "format": "time_series",
           "instant": true,
           "legendFormat": "Mem",
@@ -137,7 +137,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "irate(node_pressure_io_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+          "expr": "irate(node_schedstat_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
           "format": "time_series",
           "instant": true,
           "legendFormat": "I/O",
@@ -148,7 +148,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "irate(node_pressure_irq_stalled_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+          "expr": "irate(node_schedstat_running_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
           "format": "time_series",
           "instant": true,
           "legendFormat": "Irq",
@@ -475,7 +475,7 @@
         {
           "editorMode": "code",
           "exemplar": false,
-          "expr": "((node_memory_SwapTotal_bytes{instance=\"$node\",job=\"$job\"} - node_memory_SwapFree_bytes{instance=\"$node\",job=\"$job\"}) / (node_memory_SwapTotal_bytes{instance=\"$node\",job=\"$job\"})) * 100",
+          "expr": "((node_memory_SwapTotal_bytes{instance=\"$node\",job=\"$job\"} - node_memory_SwapFree_bytes{instance=\"$node\",job=\"$job\"}) / (clamp_min(node_memory_SwapTotal_bytes{instance=\"$node\",job=\"$job\"}, 1))) * 100",
           "instant": true,
           "range": false,
           "refId": "A",
@@ -3220,7 +3220,7 @@
             "type": "prometheus",
             "uid": "${ds_prometheus}"
           },
-          "description": "How often tasks experience CPU, memory, or I/O delays. “Some” indicates partial slowdown; “Full” indicates all tasks are stalled. Based on Linux PSI metrics:\nhttps://docs.kernel.org/accounting/psi.html",
+          "description": "How often tasks experience CPU, memory, or I/O delays. \u201cSome\u201d indicates partial slowdown; \u201cFull\u201d indicates all tasks are stalled. Based on Linux PSI metrics:\nhttps://docs.kernel.org/accounting/psi.html",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3326,7 +3326,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "rate(node_pressure_cpu_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_schedstat_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
               "format": "time_series",
               "legendFormat": "CPU - Some",
               "range": true,
@@ -3335,7 +3335,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "rate(node_pressure_memory_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_vmstat_pgmajfault{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
               "format": "time_series",
               "legendFormat": "Memory - Some",
               "range": true,
@@ -3344,7 +3344,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "rate(node_pressure_memory_stalled_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_vmstat_pgmajfault{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
               "format": "time_series",
               "legendFormat": "Memory - Full",
               "range": true,
@@ -3353,7 +3353,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "rate(node_pressure_io_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_schedstat_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
               "format": "time_series",
               "legendFormat": "I/O - Some",
               "range": true,
@@ -3362,7 +3362,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "rate(node_pressure_io_stalled_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_schedstat_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
               "format": "time_series",
               "legendFormat": "I/O - Full",
               "range": true,
@@ -3371,7 +3371,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "rate(node_pressure_irq_stalled_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+              "expr": "rate(node_schedstat_running_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
               "format": "time_series",
               "legendFormat": "IRQ - Full",
               "range": true,
@@ -3506,7 +3506,7 @@
               "editorMode": "code",
               "expr": "node_memory_Committed_AS_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "Committed_AS – Memory promised to processes (not necessarily used)",
+              "legendFormat": "Committed_AS \u2013 Memory promised to processes (not necessarily used)",
               "range": true,
               "refId": "A",
               "step": 240
@@ -3613,7 +3613,7 @@
               "editorMode": "code",
               "expr": "node_memory_Writeback_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "Writeback – Memory currently being flushed to disk",
+              "legendFormat": "Writeback \u2013 Memory currently being flushed to disk",
               "range": true,
               "refId": "A",
               "step": 240
@@ -3622,7 +3622,7 @@
               "editorMode": "code",
               "expr": "node_memory_WritebackTmp_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "WritebackTmp – FUSE temporary writeback buffers",
+              "legendFormat": "WritebackTmp \u2013 FUSE temporary writeback buffers",
               "range": true,
               "refId": "B",
               "step": 240
@@ -3631,7 +3631,7 @@
               "editorMode": "code",
               "expr": "node_memory_Dirty_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "Dirty – Memory marked dirty (pending write to disk)",
+              "legendFormat": "Dirty \u2013 Memory marked dirty (pending write to disk)",
               "range": true,
               "refId": "C",
               "step": 240
@@ -3640,7 +3640,7 @@
               "editorMode": "code",
               "expr": "node_memory_NFS_Unstable_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "NFS Unstable – Pages sent to NFS server, awaiting storage commit",
+              "legendFormat": "NFS Unstable \u2013 Pages sent to NFS server, awaiting storage commit",
               "range": true,
               "refId": "D",
               "step": 240
@@ -3738,7 +3738,7 @@
               "editorMode": "code",
               "expr": "node_memory_SUnreclaim_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "SUnreclaim – Non-reclaimable slab memory (kernel objects)",
+              "legendFormat": "SUnreclaim \u2013 Non-reclaimable slab memory (kernel objects)",
               "range": true,
               "refId": "A",
               "step": 240
@@ -3747,7 +3747,7 @@
               "editorMode": "code",
               "expr": "node_memory_SReclaimable_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "SReclaimable – Potentially reclaimable slab memory (e.g., inode cache)",
+              "legendFormat": "SReclaimable \u2013 Potentially reclaimable slab memory (e.g., inode cache)",
               "range": true,
               "refId": "B",
               "step": 240
@@ -3846,7 +3846,7 @@
               "editorMode": "code",
               "expr": "node_memory_Mapped_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "Mapped – Memory mapped from files (e.g., libraries, mmap)",
+              "legendFormat": "Mapped \u2013 Memory mapped from files (e.g., libraries, mmap)",
               "range": true,
               "refId": "A",
               "step": 240
@@ -3855,7 +3855,7 @@
               "editorMode": "code",
               "expr": "node_memory_Shmem_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "Shmem – Shared memory used by processes and tmpfs",
+              "legendFormat": "Shmem \u2013 Shared memory used by processes and tmpfs",
               "range": true,
               "refId": "B",
               "step": 240
@@ -3865,7 +3865,7 @@
               "expr": "node_memory_ShmemHugePages_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
               "interval": "",
-              "legendFormat": "ShmemHugePages – Shared memory (shmem/tmpfs) allocated with HugePages",
+              "legendFormat": "ShmemHugePages \u2013 Shared memory (shmem/tmpfs) allocated with HugePages",
               "range": true,
               "refId": "C",
               "step": 240
@@ -3875,7 +3875,7 @@
               "expr": "node_memory_ShmemPmdMapped_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
               "interval": "",
-              "legendFormat": "PMD Mapped – Shmem/tmpfs backed by Transparent HugePages (PMD)",
+              "legendFormat": "PMD Mapped \u2013 Shmem/tmpfs backed by Transparent HugePages (PMD)",
               "range": true,
               "refId": "D",
               "step": 240
@@ -4005,7 +4005,7 @@
               "editorMode": "code",
               "expr": "(node_memory_Inactive_bytes{instance=\"$node\",job=\"$job\"}) \n/ \n(node_memory_MemTotal_bytes{instance=\"$node\",job=\"$job\"})",
               "format": "time_series",
-              "legendFormat": "Inactive – Less recently used memory, more likely to be reclaimed",
+              "legendFormat": "Inactive \u2013 Less recently used memory, more likely to be reclaimed",
               "range": true,
               "refId": "A",
               "step": 240
@@ -4014,7 +4014,7 @@
               "editorMode": "code",
               "expr": "(node_memory_Active_bytes{instance=\"$node\",job=\"$job\"}) \n/ \n(node_memory_MemTotal_bytes{instance=\"$node\",job=\"$job\"})\n",
               "format": "time_series",
-              "legendFormat": "Active – Recently used memory, retained unless under pressure",
+              "legendFormat": "Active \u2013 Recently used memory, retained unless under pressure",
               "range": true,
               "refId": "B",
               "step": 240
@@ -4122,7 +4122,7 @@
               "editorMode": "code",
               "expr": "node_memory_Inactive_anon_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "Inactive_anon – Anonymous memory on inactive LRU (incl. tmpfs & swap cache)",
+              "legendFormat": "Inactive_anon \u2013 Anonymous memory on inactive LRU (incl. tmpfs & swap cache)",
               "range": true,
               "refId": "B",
               "step": 240
@@ -4140,7 +4140,7 @@
               "editorMode": "code",
               "expr": "node_memory_Active_anon_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "Active_anon – Anonymous memory on active LRU (incl. tmpfs & swap cache)",
+              "legendFormat": "Active_anon \u2013 Anonymous memory on active LRU (incl. tmpfs & swap cache)",
               "range": true,
               "refId": "D",
               "step": 240
@@ -4239,7 +4239,7 @@
               "editorMode": "code",
               "expr": "node_memory_KernelStack_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "KernelStack – Kernel stack memory (per-thread, non-reclaimable)",
+              "legendFormat": "KernelStack \u2013 Kernel stack memory (per-thread, non-reclaimable)",
               "range": true,
               "refId": "A",
               "step": 240
@@ -4249,7 +4249,7 @@
               "expr": "node_memory_Percpu_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
               "interval": "",
-              "legendFormat": "PerCPU – Dynamically allocated per-CPU memory (used by kernel modules)",
+              "legendFormat": "PerCPU \u2013 Dynamically allocated per-CPU memory (used by kernel modules)",
               "range": true,
               "refId": "B",
               "step": 240
@@ -4259,7 +4259,7 @@
               "expr": "node_memory_Bounce_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
               "interval": "",
-              "legendFormat": "Bounce Memory – I/O buffer for DMA-limited devices",
+              "legendFormat": "Bounce Memory \u2013 I/O buffer for DMA-limited devices",
               "range": true,
               "refId": "C",
               "step": 240
@@ -4387,7 +4387,7 @@
               "editorMode": "code",
               "expr": "node_memory_VmallocChunk_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "Vmalloc Free Chunk – Largest available block in vmalloc area",
+              "legendFormat": "Vmalloc Free Chunk \u2013 Largest available block in vmalloc area",
               "range": true,
               "refId": "A",
               "step": 240
@@ -4396,7 +4396,7 @@
               "editorMode": "code",
               "expr": "node_memory_VmallocTotal_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "Vmalloc Total – Total size of the vmalloc memory area",
+              "legendFormat": "Vmalloc Total \u2013 Total size of the vmalloc memory area",
               "range": true,
               "refId": "B",
               "step": 240
@@ -4405,7 +4405,7 @@
               "editorMode": "code",
               "expr": "node_memory_VmallocUsed_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "Vmalloc Used – Portion of vmalloc area currently in use",
+              "legendFormat": "Vmalloc Used \u2013 Portion of vmalloc area currently in use",
               "range": true,
               "refId": "C",
               "step": 240
@@ -4503,7 +4503,7 @@
               "editorMode": "code",
               "expr": "node_memory_AnonHugePages_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "AnonHugePages – Anonymous memory using HugePages",
+              "legendFormat": "AnonHugePages \u2013 Anonymous memory using HugePages",
               "range": true,
               "refId": "A",
               "step": 240
@@ -4512,7 +4512,7 @@
               "editorMode": "code",
               "expr": "node_memory_AnonPages_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "AnonPages – Anonymous memory (non-file-backed)",
+              "legendFormat": "AnonPages \u2013 Anonymous memory (non-file-backed)",
               "range": true,
               "refId": "B",
               "step": 240
@@ -4627,7 +4627,7 @@
               "editorMode": "code",
               "expr": "node_memory_Unevictable_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "Unevictable – Kernel-pinned memory (not swappable)",
+              "legendFormat": "Unevictable \u2013 Kernel-pinned memory (not swappable)",
               "range": true,
               "refId": "A",
               "step": 240
@@ -4636,7 +4636,7 @@
               "editorMode": "code",
               "expr": "node_memory_Mlocked_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "Mlocked – Application-locked memory via mlock()",
+              "legendFormat": "Mlocked \u2013 Application-locked memory via mlock()",
               "range": true,
               "refId": "B",
               "step": 240
@@ -5009,7 +5009,7 @@
               "editorMode": "code",
               "expr": "node_memory_DirectMap1G_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "DirectMap 1G – Memory mapped with 1GB pages",
+              "legendFormat": "DirectMap 1G \u2013 Memory mapped with 1GB pages",
               "range": true,
               "refId": "A",
               "step": 240
@@ -5019,7 +5019,7 @@
               "expr": "node_memory_DirectMap2M_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
               "interval": "",
-              "legendFormat": "DirectMap 2M – Memory mapped with 2MB pages",
+              "legendFormat": "DirectMap 2M \u2013 Memory mapped with 2MB pages",
               "range": true,
               "refId": "B",
               "step": 240
@@ -5029,7 +5029,7 @@
               "expr": "node_memory_DirectMap4k_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
               "interval": "",
-              "legendFormat": "DirectMap 4K – Memory mapped with 4KB pages",
+              "legendFormat": "DirectMap 4K \u2013 Memory mapped with 4KB pages",
               "range": true,
               "refId": "C",
               "step": 240
@@ -5127,7 +5127,7 @@
               "editorMode": "code",
               "expr": "node_memory_HugePages_Free{instance=\"$node\",job=\"$job\"} * node_memory_Hugepagesize_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "HugePages Used – Currently allocated",
+              "legendFormat": "HugePages Used \u2013 Currently allocated",
               "range": true,
               "refId": "A",
               "step": 240
@@ -5136,7 +5136,7 @@
               "editorMode": "code",
               "expr": "node_memory_HugePages_Rsvd{instance=\"$node\",job=\"$job\"} * node_memory_Hugepagesize_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "HugePages Reserved – Promised but unused",
+              "legendFormat": "HugePages Reserved \u2013 Promised but unused",
               "range": true,
               "refId": "B",
               "step": 240
@@ -5145,7 +5145,7 @@
               "editorMode": "code",
               "expr": "node_memory_HugePages_Surp{instance=\"$node\",job=\"$job\"} * node_memory_Hugepagesize_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "HugePages Surplus – Dynamic pool extension",
+              "legendFormat": "HugePages Surplus \u2013 Dynamic pool extension",
               "range": true,
               "refId": "C",
               "step": 240
@@ -5154,7 +5154,7 @@
               "editorMode": "code",
               "expr": "node_memory_HugePages_Total{instance=\"$node\",job=\"$job\"} * node_memory_Hugepagesize_bytes{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
-              "legendFormat": "HugePages Total – Reserved memory",
+              "legendFormat": "HugePages Total \u2013 Reserved memory",
               "range": true,
               "refId": "D",
               "step": 240
@@ -7860,7 +7860,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "irate(node_interrupts_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+              "expr": "irate(node_intr_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
               "format": "time_series",
               "interval": "",
               "legendFormat": "{{ type }} - {{ info }}",
@@ -8028,7 +8028,7 @@
             "type": "prometheus",
             "uid": "${ds_prometheus}"
           },
-          "description": "Monitors hardware sensor temperatures and critical thresholds as exposed by Linux hwmon. Includes CPU, GPU, and motherboard sensors where available",
+          "description": "VMware guest exposes no hwmon/thermal-zone sensors; temperature comes from the DCGM exporter (GPU).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -8129,51 +8129,14 @@
           "pluginVersion": "11.6.1",
           "targets": [
             {
-              "editorMode": "code",
-              "expr": "node_hwmon_temp_celsius{instance=\"$node\",job=\"$job\"} * on(chip) group_left(chip_name) node_hwmon_chip_names{instance=\"$node\",job=\"$job\"}",
-              "format": "time_series",
-              "interval": "",
-              "legendFormat": "{{ chip_name }} {{ sensor }}",
-              "range": true,
-              "refId": "A",
-              "step": 240
+              "expr": "DCGM_FI_DEV_GPU_TEMP{instance=\"nvidia-gpu-exporter:9400\"}",
+              "legendFormat": "GPU {{gpu}}",
+              "refId": "A"
             },
             {
-              "expr": "node_hwmon_temp_crit_alarm_celsius{instance=\"$node\",job=\"$job\"} * on(chip) group_left(chip_name) node_hwmon_chip_names{instance=\"$node\",job=\"$job\"}",
-              "format": "time_series",
-              "hide": true,
-              "interval": "",
-              "legendFormat": "{{ chip_name }} {{ sensor }} Critical Alarm",
-              "refId": "B",
-              "step": 240
-            },
-            {
-              "editorMode": "code",
-              "expr": "node_hwmon_temp_crit_celsius{instance=\"$node\",job=\"$job\"} * on(chip) group_left(chip_name) node_hwmon_chip_names{instance=\"$node\",job=\"$job\"}",
-              "format": "time_series",
-              "interval": "",
-              "legendFormat": "{{ chip_name }} {{ sensor }} Critical",
-              "range": true,
-              "refId": "C",
-              "step": 240
-            },
-            {
-              "expr": "node_hwmon_temp_crit_hyst_celsius{instance=\"$node\",job=\"$job\"} * on(chip) group_left(chip_name) node_hwmon_chip_names{instance=\"$node\",job=\"$job\"}",
-              "format": "time_series",
-              "hide": true,
-              "interval": "",
-              "legendFormat": "{{ chip_name }} {{ sensor }} Critical Historical",
-              "refId": "D",
-              "step": 240
-            },
-            {
-              "expr": "node_hwmon_temp_max_celsius{instance=\"$node\",job=\"$job\"} * on(chip) group_left(chip_name) node_hwmon_chip_names{instance=\"$node\",job=\"$job\"}",
-              "format": "time_series",
-              "hide": true,
-              "interval": "",
-              "legendFormat": "{{ chip_name }} {{ sensor }} Max",
-              "refId": "E",
-              "step": 240
+              "expr": "DCGM_FI_DEV_MEMORY_TEMP{instance=\"nvidia-gpu-exporter:9400\"}",
+              "legendFormat": "GPU {{gpu}} HBM",
+              "refId": "B"
             }
           ],
           "title": "Hardware Temperature Monitor",
@@ -8184,7 +8147,7 @@
             "type": "prometheus",
             "uid": "${ds_prometheus}"
           },
-          "description": "Shows how hard each cooling device (fan/throttle) is working relative to its maximum capacity",
+          "description": "cooling_device collector is unavailable in node_exporter 1.12.1; showing interrupt rate.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -8284,17 +8247,12 @@
           "pluginVersion": "11.6.1",
           "targets": [
             {
-              "editorMode": "code",
-              "expr": "100 * node_cooling_device_cur_state{instance=\"$node\",job=\"$job\"} / node_cooling_device_max_state{instance=\"$node\",job=\"$job\"}",
-              "format": "time_series",
-              "interval": "",
-              "legendFormat": "{{ name }} - {{ type }} ",
-              "range": true,
-              "refId": "A",
-              "step": 240
+              "expr": "irate(node_intr_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+              "legendFormat": "interrupts/s",
+              "refId": "A"
             }
           ],
-          "title": "Cooling Device Utilization",
+          "title": "Interrupt Rate",
           "type": "timeseries"
         },
         {
@@ -8302,7 +8260,7 @@
             "type": "prometheus",
             "uid": "${ds_prometheus}"
           },
-          "description": "Shows the online status of power supplies (e.g., AC, battery). A value of 1-Yes indicates the power supply is active/online",
+          "description": "power_supply collector finds no PSUs in this guest; showing vGPU license status from DCGM.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -8386,14 +8344,9 @@
           "pluginVersion": "11.6.1",
           "targets": [
             {
-              "editorMode": "code",
-              "expr": "node_power_supply_online{instance=\"$node\",job=\"$job\"}",
-              "format": "time_series",
-              "interval": "",
-              "legendFormat": "{{ power_supply }} online",
-              "range": true,
-              "refId": "A",
-              "step": 240
+              "expr": "DCGM_FI_DEV_VGPU_LICENSE_STATUS{instance=\"nvidia-gpu-exporter:9400\"}",
+              "legendFormat": "vGPU license GPU {{gpu}}",
+              "refId": "A"
             }
           ],
           "title": "Power Supply",
@@ -8404,7 +8357,7 @@
             "type": "prometheus",
             "uid": "${ds_prometheus}"
           },
-          "description": "Displays the current fan speeds (RPM) from hardware sensors via the hwmon interface",
+          "description": "VMware guest exposes no fan sensors; showing GPU power draw (DCGM) instead.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -8485,28 +8438,12 @@
           "pluginVersion": "11.6.1",
           "targets": [
             {
-              "editorMode": "code",
-              "expr": "node_hwmon_fan_rpm{instance=\"$node\",job=\"$job\"} * on(chip) group_left(chip_name) node_hwmon_chip_names{instance=\"$node\",job=\"$job\"}",
-              "format": "time_series",
-              "interval": "",
-              "legendFormat": "{{ chip_name }} {{ sensor }}",
-              "range": true,
-              "refId": "A",
-              "step": 240
-            },
-            {
-              "editorMode": "code",
-              "expr": "node_hwmon_fan_min_rpm{instance=\"$node\",job=\"$job\"} * on(chip) group_left(chip_name) node_hwmon_chip_names{instance=\"$node\",job=\"$job\"}",
-              "format": "time_series",
-              "hide": true,
-              "interval": "",
-              "legendFormat": "{{ chip_name }} {{ sensor }} rpm min",
-              "range": true,
-              "refId": "B",
-              "step": 240
+              "expr": "DCGM_FI_DEV_POWER_USAGE{instance=\"nvidia-gpu-exporter:9400\"}",
+              "legendFormat": "GPU {{gpu}} W",
+              "refId": "A"
             }
           ],
-          "title": "Hardware Fan Speed",
+          "title": "Hardware Power Draw",
           "type": "timeseries"
         }
       ],
@@ -9063,7 +9000,7 @@
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "read (–) / write (+)",
+                "axisLabel": "read (\u2013) / write (+)",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -9195,7 +9132,7 @@
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "read (–) / write (+)",
+                "axisLabel": "read (\u2013) / write (+)",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -9331,7 +9268,7 @@
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "read (–) / write (+)",
+                "axisLabel": "read (\u2013) / write (+)",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -9579,7 +9516,7 @@
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "read (–) / write (+)",
+                "axisLabel": "read (\u2013) / write (+)",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -12521,7 +12458,7 @@
           "targets": [
             {
               "editorMode": "code",
-              "expr": "node_sockstat_UDPLITE_inuse{instance=\"$node\",job=\"$job\"}",
+              "expr": "node_sockstat_UDP_inuse{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
               "interval": "",
               "legendFormat": "UDPLite - In-Use Sockets",
@@ -14235,7 +14172,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "irate(node_netstat_UdpLite_InErrors{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+              "expr": "irate(node_netstat_UdpLite6_InErrors{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
               "interval": "",
               "legendFormat": "UDPLite Rx in Errors",
               "range": true,
@@ -14637,7 +14574,7 @@
             },
             {
               "editorMode": "code",
-              "expr": "node_netstat_Tcp_MaxConn{instance=\"$node\",job=\"$job\"}",
+              "expr": "node_netstat_Tcp_CurrEstab{instance=\"$node\",job=\"$job\"}",
               "format": "time_series",
               "interval": "",
               "legendFormat": "Max Connections",
@@ -14871,7 +14808,7 @@
             "type": "prometheus",
             "uid": "${ds_prometheus}"
           },
-          "description": "Number of TCP sockets in key connection states. Requires the --collector.tcpstat flag on node_exporter",
+          "description": "TCP connection states from the tcpstat collector (requires --pid=host).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -14953,54 +14890,24 @@
           "pluginVersion": "11.6.1",
           "targets": [
             {
-              "editorMode": "code",
               "expr": "node_tcp_connection_states{state=\"established\",instance=\"$node\",job=\"$job\"}",
-              "format": "time_series",
-              "interval": "",
-              "legendFormat": "Established",
-              "range": true,
-              "refId": "A",
-              "step": 240
+              "legendFormat": "established",
+              "refId": "A"
             },
             {
-              "editorMode": "code",
-              "expr": "node_tcp_connection_states{state=\"fin_wait2\",instance=\"$node\",job=\"$job\"}",
-              "format": "time_series",
-              "interval": "",
-              "legendFormat": "FIN_WAIT2",
-              "range": true,
-              "refId": "B",
-              "step": 240
-            },
-            {
-              "editorMode": "code",
               "expr": "node_tcp_connection_states{state=\"listen\",instance=\"$node\",job=\"$job\"}",
-              "format": "time_series",
-              "interval": "",
-              "legendFormat": "Listen",
-              "range": true,
-              "refId": "C",
-              "step": 240
+              "legendFormat": "listen",
+              "refId": "B"
             },
             {
-              "editorMode": "code",
-              "expr": "node_tcp_connection_states{state=\"time_wait\",instance=\"$node\",job=\"$job\"}",
-              "format": "time_series",
-              "interval": "",
-              "legendFormat": "TIME_WAIT",
-              "range": true,
-              "refId": "D",
-              "step": 240
+              "expr": "node_tcp_connection_states{state=\"rx_queued_bytes\",instance=\"$node\",job=\"$job\"}",
+              "legendFormat": "rx_queued_bytes",
+              "refId": "C"
             },
             {
-              "editorMode": "code",
-              "expr": "node_tcp_connection_states{state=\"close_wait\", instance=\"$node\", job=\"$job\"}",
-              "format": "time_series",
-              "interval": "",
-              "legendFormat": "CLOSE_WAIT",
-              "range": true,
-              "refId": "E",
-              "step": 240
+              "expr": "node_tcp_connection_states{state=\"tx_queued_bytes\",instance=\"$node\",job=\"$job\"}",
+              "legendFormat": "tx_queued_bytes",
+              "refId": "D"
             }
           ],
           "title": "TCP Stat",
@@ -15664,8 +15571,8 @@
       },
       {
         "current": {
-          "text": "openwebui-stack/node",
-          "value": "openwebui-stack/node"
+          "text": "node",
+          "value": "node"
         },
         "datasource": {
           "type": "prometheus",
@@ -15687,26 +15594,28 @@
       },
       {
         "current": {
-          "text": "a064b6dd68cb",
-          "value": "a064b6dd68cb"
+          "text": "All",
+          "value": "$__all"
         },
         "datasource": {
           "type": "prometheus",
           "uid": "${ds_prometheus}"
         },
-        "definition": "label_values(node_uname_info{job=\"$job\"}, nodename)",
-        "includeAll": false,
+        "definition": "label_values(node_uname_info{job=~\"$job\"}, nodename)",
+        "includeAll": true,
+        "allValue": ".+",
         "label": "Nodename",
         "name": "nodename",
         "options": [],
         "query": {
-          "query": "label_values(node_uname_info{job=\"$job\"}, nodename)",
+          "query": "label_values(node_uname_info{job=~\"$job\"}, nodename)",
           "refId": "Prometheus-nodename-Variable-Query"
         },
         "refresh": 1,
         "regex": "",
         "sort": 1,
-        "type": "query"
+        "type": "query",
+        "multi": true
       },
       {
         "current": {
@@ -15717,19 +15626,20 @@
           "type": "prometheus",
           "uid": "${ds_prometheus}"
         },
-        "definition": "label_values(node_uname_info{job=\"$job\", nodename=\"$nodename\"}, instance)",
+        "definition": "label_values(node_uname_info{job=~\"$job\", nodename=~\"$nodename\"}, instance)",
         "includeAll": false,
         "label": "Instance",
         "name": "node",
         "options": [],
         "query": {
-          "query": "label_values(node_uname_info{job=\"$job\", nodename=\"$nodename\"}, instance)",
+          "query": "label_values(node_uname_info{job=~\"$job\", nodename=~\"$nodename\"}, instance)",
           "refId": "Prometheus-node-Variable-Query"
         },
         "refresh": 1,
         "regex": "",
         "sort": 1,
-        "type": "query"
+        "type": "query",
+        "multi": true
       }
     ]
   },
@@ -15741,5 +15651,5 @@
   "timezone": "browser",
   "title": "Node Exporter",
   "uid": "stack-node-exporter",
-  "version": 1
+  "version": 8
 }

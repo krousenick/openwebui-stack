@@ -1,0 +1,71 @@
+---
+# ===========================================================================
+# WSL2 Windows host provisioning role (role: wsl2_host)
+# ===========================================================================
+# This role configures a Windows host to run Fedora WSL2 with Docker and
+# NVIDIA GPU support in bridged networking mode for remote ansible access.
+#
+# Prerequisites:
+#   - Windows 10 2004+ or Windows 11 with WSL2 support
+#   - Virtualization enabled in BIOS/UEFI
+#   - SSH server installed on Windows (OpenSSH)
+#
+# Network topology:
+#   WSL2 runs in bridged mode, getting a DHCP address on the LAN subnet.
+#   This allows the inference playbook to SSH directly to the WSL2 instance
+#   using its LAN IP, treating it like any other Linux host.
+# ===========================================================================
+
+# WSL2 configuration
+wsl2_distribution: Fedora
+wsl2_install_dir: 'C:\Program Files\WSL'
+wsl2_user: "{{ ansible_user | default('root') }}"
+
+# Network configuration
+wsl2_networking_mode: bridged
+wsl2_bridge_adapter: ""
+
+# Enable bridged networking (WSL 0.70+ required)
+# When true, configures .wslconfig for direct LAN IP
+wsl2_bridged_mode: true
+
+# WSL2 memory limit (0 = unlimited)
+wsl2_memory: 0
+
+# WSL2 processors (0 = all)
+wsl2_processors: 0
+
+# WSL2 swap (0 = default 25% of memory)
+wsl2_swap: 0
+
+# WSL2 local state root (where WSL distros and VHDs are stored)
+wsl2_local_state_root: '%USERPROFILE%\AppData\Local\WSL'
+
+# Docker inside WSL2 configuration
+wsl2_install_docker: true
+wsl2_docker_package: docker
+
+# NVIDIA GPU passthrough to WSL2
+wsl2_enable_nvidia: true
+
+# NVIDIA driver version requirement on Windows host
+wsl2_nvidia_driver_min_version: "526"
+
+# Firewall configuration for WSL2 bridge network
+wsl2_manage_firewall: true
+
+# WSL2 DNS servers (fallback if not using DHCP)
+wsl2_nameservers:
+  - 8.8.8.8
+  - 8.8.4.4
+
+# Whether to configure Windows SSH server for management
+wsl2_configure_windows_ssh: false
+wsl2_windows_ssh_port: 22
+
+# WSL2 initialization commands run inside the distro after first start
+# Use this to customize the WSL2 environment (package installs, etc.)
+wsl2_init_commands: []
+
+# Force reinstall even if WSL2 already exists
+wsl2_force_reinstall: false

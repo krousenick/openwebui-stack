@@ -1,0 +1,124 @@
+---
+# ===========================================================================
+# vLLM distributed inference compute nodes (role: vllm_compute)
+# ===========================================================================
+# Production cluster: 3 nodes on 10GbE (upgradeable to 25GbE), 1 GPU per
+# node. Full reference: docs/vllm-inference.md.
+#
+# Topology of the primary (chat/completion) model:
+#
+#   ray (default)        pipeline parallel across nodes - each node holds a
+#                        contiguous layer range; only stage-boundary
+#                        activations cross the 10GbE fabric. Fits large
+#                        models on modest interconnect.
+#   ray + cross-node TP  set vllm_cross_node_tensor_parallel: true; every
+#                        all-reduce crosses the fabric. Needs 25GbE+.
+#   standalone           every node serves the full model; LiteLLM load
+#                        balances across endpoints. Only for models that
+#                        fit in one node's GPUs.
+#
+# Layer counts: total GPUs = vllm_tensor_parallel_size (per node)
+# x vllm_pipeline_parallel_size (nodes). The role asserts TP never exceeds
+# the GPUs it detects on a node (vllm_gpus_per_node autodetects from
+# nvidia-smi when 0).
+
+vllm_deployment_mode: standalone
+
+# Primary model served by the cluster. HF repo id or a path that exists on
+# every node (weights land in vllm_hf_cache_dir).
+vllm_model: "Qwen/Qwen3.8-Flash-Next-FP8"
+
+# GPUs per node = --tensor-parallel-size within a node. 1 here because the
+# nodes are single-GPU.
+vllm_tensor_parallel_size: 1
+
+# Pipeline stages = node count (3). Override when a node holds more than
+# one stage, or to exclude a node from the shard.
+vllm_pipeline_parallel_size: 1
+
+# Keep false on 10GbE; see the topology note above before enabling.
+vllm_cross_node_tensor_parallel: false
+
+# Ray cluster networking. The zone source should be the 10/25GbE compute
+# segment; Ray traffic is unauthenticated and can execute arbitrary code,
+# so restrict it to these hosts. 192.0.2.0/24 is a placeholder (a range
+# reserved for documentation): set the real segment as a vllm_compute group
+# var in inventory/hosts.local.yml, which is gitignored.
+vllm_firewall_zone_source: "192.0.2.0/24"
+
+# Compute nodes run GPU containers; the global prerequisites role checks the
+# NVIDIA driver before the vllm_compute role deploys.
+prerequisites_check_nvidia: true
+
+vllm_manage_firewall: true
+
+# Shared Hugging Face cache on each node's data volume. Also used by the
+# flux servers below, so a node downloads each model once.
+vllm_hf_cache_dir: /home/huggingface
+
+# API key the nodes require. Supply via the environment on the controller
+# (VLLM_API_KEY) or override here. Empty disables authentication - the
+# firewall zone must then be the only protection.
+vllm_api_key: local-vllm-key
+
+# ---------------------------------------------------------------------------
+# LLM Launcher: a web control panel per independent inference server
+# (download models, tune `vllm serve` with a green/yellow/red rating per
+# setting, start/stop servers, read logs). standalone: one launcher on every
+# node. ray: one on the vllm_ray_head node. Each sits behind an oauth2-proxy
+# gate that signs in against Keycloak on the stack host and admits the
+# launcher_admin role only; Traefik there publishes it as
+# https://launcher-<inventory hostname>.<domain>. Off until wanted: set
+# launcher_enabled: true in group_vars/all/vars.yml and run
+# playbooks/site.yml first (this play fails fast without the Keycloak
+# client secret that run renders), then set this true and run
+# playbooks/inference.yml. Every variable is documented in
+# roles/vllm_compute/defaults/main.yml.
+# ---------------------------------------------------------------------------
+vllm_launcher_enabled: false
+
+# Hand a node's primary model slot to the GUI: vllm-serve stays installed
+# but stopped, so the GPU and port 8000 are free for whatever is launched
+# from the portal. Nothing serves there until someone launches a model, and
+# nothing restarts it after a reboot. Leave false here and set it as a host
+# var on one node in the inventory to try the GUI while the others serve.
+vllm_launcher_owns_primary: false
+
+# ---------------------------------------------------------------------------
+# Flux image-generation servers. Independent of the topology above: each
+# entry runs one single-model server on every node, on its own port.
+# Edit this list to switch models or run several at once; removing an entry
+# removes its unit. Keys: name, model, port, tensor_parallel_size,
+# max_model_len, gpu_memory_utilization, extra_args - unset keys take the
+# vllm_flux_default_* role defaults.
+# ---------------------------------------------------------------------------
+vllm_flux_enabled: true
+
+vllm_flux_models:
+  - name: flux                    # unit vllm-flux-flux, port 8005
+    model: black-forest-labs/FLUX.1-dev
+    port: 8005
+  - name: flux-schnell            # unit vllm-flux-flux-schnell, port 8006
+    model: black-forest-labs/FLUX.1-schnell
+    port: 8006
+
+# ---------------------------------------------------------------------------
+# Aux model servers. Per-model servers placed on a chosen subset of nodes
+# via each entry's hosts key - the hardware-aware orchestration layer. Omit
+# hosts (or set it to all) to run on every node like flux entries.
+# Keys: name, model, hosts, port, tensor_parallel_size, max_model_len,
+# gpu_memory_utilization, extra_args, api_key - unset keys take the
+# vllm_aux_default_* role defaults. Unit: vllm-aux-<name>; ports default to
+# vllm_aux_base_port + index (8010, 8011, ...).
+# ---------------------------------------------------------------------------
+vllm_aux_enabled: false
+
+# Example: a large vision analyst on the node with the big GPU, a tiny
+# decision model spread across the fleet.
+vllm_aux_models: []
+#   - name: vision-analyst
+#     model: Qwen/Qwen3.5-VL-8B
+#     hosts: [vllm-node-01]
+#   - name: gatekeeper
+#     model: Qwen/Qwen3-0.6B
+#     hosts: all

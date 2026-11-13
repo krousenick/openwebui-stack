@@ -1,0 +1,48 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "{{ opencode_default_model }}",
+  "small_model": "{{ opencode_small_model }}",
+  "plugin": ["{{ opencode_litellm_plugin }}"],
+  "provider": {
+    "litellm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LiteLLM ({{ domain | default('localhost') }})",
+      "options": {
+        "baseURL": "{{ opencode_litellm_base_url }}/v1",
+        "apiKey": "{file:{{ opencode_account.home }}/.config/opencode/litellm.key}",
+        "timeout": {{ opencode_provider_timeout_ms }},
+        "headerTimeout": {{ opencode_provider_header_timeout_ms }}
+      },
+      "models": {{ opencode_model_overrides | to_json }}
+    }{% if opencode_anthropic_enabled | bool %},
+    "anthropic": {
+      "name": "Claude via LiteLLM ({{ domain | default('localhost') }})",
+      "options": {
+        "baseURL": "{{ opencode_litellm_base_url }}/v1",
+        "apiKey": "{file:{{ opencode_account.home }}/.config/opencode/litellm.key}",
+        "timeout": {{ opencode_provider_timeout_ms }},
+        "headerTimeout": {{ opencode_provider_header_timeout_ms }}
+      },
+      "whitelist": {{ opencode_anthropic_models | to_json }}
+    }{% endif %}
+
+  },
+{% set opencode_mcp_servers = (['memory'] if opencode_memory_enabled | bool else [])
+                              + (['skills'] if opencode_skills_mcp_enabled | bool else []) %}
+{% if opencode_mcp_servers | length > 0 %}
+  "mcp": {
+{% for server in opencode_mcp_servers %}
+    "{{ server }}": {
+      "type": "remote",
+      "url": "{{ opencode_litellm_base_url }}/mcp/{{ server }}",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+        "x-litellm-api-key": "Bearer {file:{{ opencode_account.home }}/.config/opencode/litellm.key}"
+      }
+    }{{ ',' if not loop.last }}
+{% endfor %}
+  },
+{% endif %}
+  "enabled_providers":{{ (['litellm'] + (['anthropic'] if opencode_anthropic_enabled | bool else [])) | to_json }}
+}

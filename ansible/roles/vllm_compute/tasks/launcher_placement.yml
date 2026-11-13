@@ -1,0 +1,77 @@
+---
+# ===========================================================================
+# LLM Launcher placement (vllm_launcher_enabled / vllm_launcher_hosts)
+# ===========================================================================
+# Decides, before anything is deployed, whether THIS node runs a launcher
+# and whether the launcher owns the node's primary model slot. services.yml
+# reads vllm_launcher_primary_owned to leave vllm-serve stopped; launcher.yml
+# reads vllm_launcher_node to deploy or tear down. Both facts are false on
+# every node while vllm_launcher_enabled is false.
+# ===========================================================================
+
+- name: Resolve which nodes run an LLM Launcher
+  # The launcher only manages the machine it runs on, so it follows the
+  # independent inference servers. standalone: every node serves on its own,
+  # so every node gets one. ray: the head drives the single sharded server,
+  # so only the head does. An explicit vllm_launcher_hosts (list or
+  # comma-separated string) overrides the topology rule.
+  ansible.builtin.set_fact:
+    vllm_launcher_effective_hosts: >-
+      {{ ((groups['vllm_compute'] | default([]) | list)
+          if vllm_deployment_mode == 'standalone'
+          else (groups['vllm_compute'] | default([])
+                | map('extract', hostvars)
+                | selectattr('vllm_ray_head', 'defined')
+                | selectattr('vllm_ray_head')
+                | map(attribute='inventory_hostname') | list))
+         if (vllm_launcher_hosts | string | lower == 'auto')
+         else ((vllm_launcher_hosts | split(',') | map('trim') | reject('equalto', '') | list)
+               if vllm_launcher_hosts is string
+               else (vllm_launcher_hosts | list)) }}
+
+- name: Assert the launcher placement is valid
+  ansible.builtin.assert:
+    that:
+      - vllm_launcher_effective_hosts | length > 0
+      - vllm_launcher_effective_hosts
+        | difference(groups['vllm_compute'] | default([]) | list) | length == 0
+    fail_msg: >-
+      vllm_launcher_enabled is true but no node qualifies for a launcher, or
+      vllm_launcher_hosts names a host outside the vllm_compute group
+      (resolved: {{ vllm_launcher_effective_hosts | join(', ') }}). In ray
+      mode exactly one host needs vllm_ray_head: true.
+  when: vllm_launcher_enabled | bool
+
+- name: Record this node's launcher role
+  ansible.builtin.set_fact:
+    vllm_launcher_node: >-
+      {{ (vllm_launcher_enabled | bool)
+         and (inventory_hostname in vllm_launcher_effective_hosts) }}
+
+- name: Require standalone mode for a launcher-owned primary model
+  # In ray mode the primary is one model sharded across the cluster; the
+  # launcher's form has no pipeline-parallel field and its memory advice
+  # counts only this node's GPU, so that server stays under Ansible.
+  ansible.builtin.assert:
+    that:
+      - vllm_deployment_mode == 'standalone'
+    fail_msg: >-
+      vllm_launcher_owns_primary is true on {{ inventory_hostname }} but
+      vllm_deployment_mode is '{{ vllm_deployment_mode }}'. The launcher can
+      only take over the primary model in standalone mode.
+  when:
+    - vllm_launcher_node | bool
+    - vllm_launcher_owns_primary | bool
+
+- name: Record whether the launcher owns this node's primary model
+  ansible.builtin.set_fact:
+    vllm_launcher_primary_owned: >-
+      {{ (vllm_launcher_node | bool) and (vllm_launcher_owns_primary | bool) }}
+
+- name: Record whether the launcher runs the primary slot one model at a time
+  # vllm_launcher_slot: a launch replaces the running model, and the stack's
+  # follower keeps LiteLLM's entry for this node's primary port in step with
+  # it (litellm_registration.yml then only creates that entry, once).
+  ansible.builtin.set_fact:
+    vllm_launcher_slot: >-
+      {{ (vllm_launcher_primary_owned | bool) and (vllm_launcher_swap | bool) }}

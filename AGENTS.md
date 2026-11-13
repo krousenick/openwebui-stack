@@ -1,0 +1,640 @@
+# AGENTS.md - Agent Coding Guidelines
+
+This is a Docker Compose stack for Open WebUI with LiteLLM, Keycloak SSO, observability, and security best practices. The main "code" consists of:
+- Shell scripts (`*.sh`) for automation
+- YAML configuration files (`*.yml`, `*.yaml`) for Docker Compose, Traefik, Grafana, etc.
+- Environment files (`.env`)
+
+## Photon VM
+
+Every URL and port the stack publishes or uses, and how its names must resolve, is in `docs/urls.md`.
+
+The stack runs on VMware Photon OS, not on the Mac and not in the OrbStack Fedora VM. The deployed tree is `/mnt/data1/openwebui-stack`. Run `docker compose` checks there. The stack host's address and SSH user live in `ansible/inventory/hosts.local.yml` (gitignored; see `hosts.yml` for the placeholder version). The site's domain and other settings that stay out of git live in `ansible/group_vars/all/vars.local.yml` (gitignored; see `vars.local.yml.example`): the playbooks load it after `vars.yml`, and `tasks/keycloak.yml` loads it again after its `include_vars` of `vars.yml`, which would otherwise put `domain: localhost` back for the Keycloak clients. Keep real domains, addresses and subnets out of tracked files. See `.magie-coder/skills/photon-vm/SKILL.md`.
+
+## Commands
+
+### Development Workflow
+
+```bash
+# Start the full stack (including monitoring)
+docker compose --profile monitoring up -d
+
+# Start only core services (no monitoring)
+docker compose up -d
+
+# Start with GPU support
+docker compose --profile gpu up -d
+
+# View logs
+docker compose logs -f [service_name]
+
+# Stop all services
+docker compose down
+
+# Run the setup entrypoint (installs collections once, runs the playbook)
+./scripts/setup.sh
+
+# Complete reset on the Photon host: compose down -v (all profiles), remove
+# every project-prefixed container/volume/network/image, delete the deployed
+# stack folder only (/mnt/data1 keeps its other contents, including Docker's
+# data-root at /mnt/data1/docker). --dry-run prints the actions.
+bash scripts/reset-stack.sh --dry-run
+```
+
+The playbook renders `.env` (`templates/env.j2`), `docker-compose.yml`
+(`templates/docker-compose.yml.j2`), TLS certs (`ssl_cert_type`), `/etc/hosts`,
+and provisions Keycloak. Secrets resolve in order: vault entry in
+`ansible/group_vars/all/vault.yml` → environment variable → deployed `.env`
+value → generated once and persisted back into the vault file.
+
+```bash
+# Provision Keycloak realm, OIDC clients, groups, and users
+# (run from ansible/; collections install first)
+cd ansible
+ansible-galaxy collection install -r requirements.yaml
+ansible-playbook playbooks/site.yml
+
+# Access Keycloak admin console
+# URL: https://auth.<domain>/admin
+# Credentials: admin / $KEYCLOAK_ADMIN_PASSWORD
+
+# Import realm on startup
+# Place realm-export.json in keycloak/import/ directory
+```
+
+### Testing SSO Integration
+
+```bash
+# Test Open WebUI OAuth redirect
+curl -skL -i "https://chatbot.localhost/oauth/oidc/login" | head -15
+
+# Test Keycloak discovery endpoint
+curl -sk "https://auth.localhost/realms/master/.well-known/openid-configuration"
+
+# Verify user token contains groups claim (after login)
+# Use Keycloak admin CLI or decode JWT at jwt.io
+```
+
+### SSO Configuration Notes
+
+- **Open WebUI**: Uses `OPENID_PROVIDER_URL` pointing to internal Keycloak URL for discovery
+- **LiteLLM**: Uses `GENERIC_*` OIDC environment variables for Generic SSO provider
+- **Grafana**: Uses `GF_AUTH_GENERIC_OAUTH_*` variables for OAuth integration
+- **Groups Mapper**: Automatically added by the Ansible playbook (`keycloak_app.yml` dedicated scope mappers) to include group membership in tokens
+- **Required**: Add `auth.localhost` to `/etc/hosts` for browser access
+- **User Assignment**: Users must be assigned to groups in Keycloak for role mapping to work (admin group → Admin role)
+- **User management**: `docs/keycloak-users.md` has the URLs for users and administrators, the group table, the three ways to create a user, and password reset. An account created in the admin console cannot sign in until a password is set on its Credentials tab. No SMTP server is configured in the realm, so Keycloak cannot mail reset or verification links; an administrator resets passwords
+- **Single Logout**: Every client in `keycloak_apps` (vars.yml) lists `post_logout_redirect_uris`; the app side is `WEBUI_AUTH_SIGNOUT_REDIRECT_URL` (Open WebUI), `GF_AUTH_GENERIC_OAUTH_SIGNOUT_REDIRECT_URL` (Grafana), `PROXY_LOGOUT_URL` (LiteLLM), and the `/oauth2/sign_out?rd=` link (voice, `roles/chatterbox/tasks/ui_auth.yml`). Keycloak matches the URL exactly, so change both sides together. Open WebUI also receives Keycloak back-channel logout (`backchannel_logout_url` on the client, `ENABLE_OAUTH_BACKCHANNEL_LOGOUT`)
+
+### Troubleshooting SSO Issues
+
+**Common Errors and Solutions:**
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| Open WebUI: "email or password incorrect" | Missing `OPENWEBUI_OIDC_CLIENT_SECRET` or local login used when OAuth fails | Rerun the Ansible playbook, ensure `ENABLE_OAUTH_SIGNUP: "true"` |
+| LiteLLM: "authentication database unreachable" | OIDC config incomplete, missing client secret | Rerun the Ansible playbook, verify `DATABASE_URL` is correct |
+| Grafana: "Login failed - Failed to get token" | Missing `GF_OIDC_CLIENT_SECRET` or missing user group assignment | Rerun the Ansible playbook, assign user to group in Keycloak |
+
+**Required Environment Variables (rendered into `.env` by the playbook):**
+
+```bash
+# Keycloak Admin (required for client configuration)
+KEYCLOAK_ADMIN_PASSWORD=your_secure_password
+
+# OIDC Client Secrets (generated on first run, persisted in vault.yml)
+OPENWEBUI_OIDC_CLIENT_SECRET=<auto-generated>
+LITELLM_OIDC_CLIENT_SECRET=<auto-generated>
+GF_OIDC_CLIENT_SECRET=<auto-generated>
+```
+
+**Setup Steps:**
+
+```bash
+# 1. Set secrets by hand, export them, or let the playbook generate them once
+#    (tiering: vault entry -> environment -> deployed .env -> generated)
+
+# 2. Run the Ansible playbook (creates realm, OIDC clients, groups, and users)
+cd ansible && ansible-galaxy collection install -r requirements.yaml && ansible-playbook playbooks/site.yml
+
+# 3. Restart services to pick up new client secrets
+docker compose restart open-webui litellm
+
+# 4. Verify Keycloak clients exist
+docker compose exec keycloak /opt/keycloak/bin/kc.sh list-clients --realm master
+
+# 5. Ensure admin user is in admin group:
+#    Keycloak Admin Console → Users → admin → Groups → Join "admin"
+```
+
+### Backup Commands
+
+```bash
+# Run Keycloak database backup
+docker compose --profile backup up keycloak-backup
+
+# Schedule automated backups (add to crontab)
+# 0 2 * * * cd /path/to/project && docker compose --profile backup up -d keycloak-backup
+```
+
+### Brave Search MCP (web search for all chat models)
+
+```bash
+# Check the startup hook loaded
+docker compose logs litellm | grep "startup hook"
+
+# Confirm a plain chat request got the injected mcp tool
+docker compose exec postgres psql -U litellm -d litellm -c \
+  "SELECT request_id, jsonb_array_length(proxy_server_request->'tools') AS ntools,
+          proxy_server_request->'tools'->0->>'type' AS t0
+   FROM \"LiteLLM_SpendLogs\" ORDER BY \"startTime\" DESC LIMIT 3;"
+
+# End-to-end test (model should answer with current web results)
+KEY=$(grep -m1 "^LITELLM_MASTER_KEY=" .env | cut -d= -f2-)
+curl -sk https://litellm.localhost/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model": "gemini-3.5-flash-lite", "messages": [{"role": "user", "content": "Search the web for today top tech news"}]}'
+# Any served chat model works; on an Anthropic-only stack use "claude-haiku-5-5".
+```
+
+Pieces: `brave-search-mcp` container (`BRAVE_SEARCH_API_KEY` required), `mcp_servers.brave_search` in `litellm/config.yaml`, and the `BraveMCPInjector` in `litellm/brave_mcp_callback.py` loaded via `LITELLM_WORKER_STARTUP_HOOKS`. Full details in README "Web Search (Brave Search MCP)".
+
+### Centralized Skills (LiteLLM Skills Gateway)
+
+Agent know-how lives in `skills/<name>/SKILL.md` (Claude/Anthropic Agent Skills format): `3d-print-pipeline`, `stack-ops`, `sso-troubleshooting`, `guardrail-tuning`, `web-search-verify`, `deep-research`, and the ports of Claude Code's built-in skills `code-review`, `security-review`, `simplify`, `dataviz`, `artifact-design`, `artifact-diagramming`, `skill-creator`, `docx`, `xlsx`, `pptx`, `pdf`. The playbook publishes every skill to three consumers (no MCP server needs to be enabled):
+
+1. `ansible/roles/openwebui_stack/tasks/mcp/skills_gateway.yml` (logic in `container-scripts/litellm_skills_sync.py`) uploads each skill's zip to the proxy-hosted store (`POST /v1/skills`, `custom_llm_provider=litellm_proxy`, stored in the proxy's Postgres) and registers a Claude Code marketplace entry (`POST`/`PUT /claude-code/plugins/<name>`; the archive source must be https, so it points at `https://litellm.<domain>/v1/skills/<id>/archive`). Idempotent by deterministic archive digest (the discovery index publishes the sha256 of LiteLLM's repack; the task recomputes it byte-identically — root SKILL.md, 1980 mtimes, mode 0644, DEFLATE): the store has no update endpoint, so drift = delete + re-upload. `litellm_settings.public_skills_index: true` (toggle `skills_public_index_enabled`) serves the Agent Skills discovery index at `/.well-known/agent-skills/index.json` for `npx skills add`. Semantic skill search needs `litellm_settings.skill_search_embedding_model`, rendered from `litellm_skill_search_embedding_model`: any model_name the proxy serves that can embed, because LiteLLM calls it through its router (models registered at runtime count). The default is `local-embedding`, `BAAI/bge-small-en-v1.5` at a pinned revision in the `text-embeddings` service (Hugging Face Text Embeddings Inference on CPU, `local_embedding_enabled`), so search needs no provider key; Claude has no embedding model. Never put two different embedding models under one model_name: LiteLLM would load-balance between them and mix vector spaces in one search. LiteLLM sends every skill text it has not cached in one request, so the service raises TEI's `--max-client-batch-size` from 32.
+2. `ansible/roles/openwebui_stack/tasks/openwebui_skills.yml` (logic in `container-scripts/openwebui_skills_sync.py`) pushes each SKILL.md into Open WebUI's workspace through its Skills API (`/api/v1/skills/create`, `/id/<name>/update` with `expected_version_id`), authenticated by a `skill-publisher` admin api key upserted into the `user`/`api_key` tables from the vault's `openwebui_api_admin_key`. Users then `$`-mention skills or bind them to models.
+3. The opencode role (`opencode_sync_skills: true`) copies `skills/*` into each user's `~/.config/opencode/skills/` for opencode's native `skill` tool.
+
+The compose template mounts `./skills` read-only into `litellm` (`/app/skills`) and `open-webui` (`/app/skills`). Frontmatter rules (enforced by `container-scripts/skill_packages.py` before anything is published, and by `pytest` in CI): `name` must equal the directory name and be a valid slug; `description` 1–1024 chars drives discovery. Only `SKILL.md` reaches the proxy store and Open WebUI, so keep each skill in that one file (`deep-research` inlines its researcher and report-writer briefs for this reason). Full flow and consume commands in README "Centralized Skills".
+
+Ported built-in skills: written fresh for the three clients rather than copied from Anthropic's versions, so keep them stack-specific. Agent-shaped work (reviewers, verifiers) stays inside skills that start the client's own subagents (Claude Code `Agent`/`Task`, opencode `subagent`/`task`) and fall back to sequential passes in Open WebUI, as `deep-research` does. LiteLLM's Agent Gateway (`/v1/agents`, `agents:` in config.yaml) only registers remote A2A services by URL, so prompt-defined agents have no home there. Every Python block in `dataviz`, `docx`, `xlsx`, `pptx` and `pdf` was run in order in the sandbox image (2026-11-12) and the files they wrote were reopened and checked; keep them runnable when editing (blocks that write a file set `OUT_DIR` and end with a `SAVED` print).
+
+### Skills tool (skills-mcp)
+
+`skills_mcp_enabled` (default true): `container-scripts/skills_mcp_server.py`, a stdlib MCP server run by the litellm image's Python as uid 65534 (service `skills-mcp`), is LiteLLM's MCP server `skills` (`allow_all_keys: true`) with three read-only tools, `search`, `list` and `get` (LiteLLM names them `skills-search` and so on). It reads `./skills` mounted read-only at `/app/skills` and rereads it when a SKILL.md's size or mtime changes. Open WebUI gets it as the tool server `skills` (`tasks/mcp/litellm_tool_server.yml`, a generic version of `memory.yml`) in `models.default_metadata.toolIds`; opencode in `opencode.json` (`opencode_skills_mcp_enabled`). README "Skills tool".
+
+**Critical implementation notes:**
+- It exists because LiteLLM's own skill features do not reach ordinary keys: `LiteLLMSkillsHandler.list_skills` and `get_skill` filter by `created_by` against the key's owner scopes (`get_resource_owner_scopes`: user_id, `team:`, `org:`, `key:`), admins excepted, and the playbook publishes every skill as the master key's user (`default_user_id`). So `/v1/skills?query=`, attaching a skill by id (`container.skills`, the always-on `SkillsInjectionHook`) and the `skill_search` virtual tool all return nothing to a non-admin key. `skill_search` also needs `object_permission.mcp_tool_search_enabled`, which makes `tools/list` answer four virtual tools instead of the key's MCP servers on every MCP route. Checked in LiteLLM 1.110.0's source on 2026-11-13.
+- No owner check here on purpose: the skills are the stack's shared know-how, and nothing is written. Never add per-user or secret content to `skills/`.
+- Search embeds through LiteLLM `/v1/embeddings` with `SKILLS_EMBEDDING_MODEL` (`skills_mcp_embedding_model_effective`, the skill-search model by default) using the master key, which the service holds for that call only; vectors are cached per (skill, content digest). Without a model or key, or when embedding fails, it ranks by keywords (name and description count fully, body matches half).
+- `get` resolves names by slug against the loaded skills only (`skills/docx/SKILL.md`, `Docx` and `docx` all work); input never becomes a file path.
+
+### Code interpreter and document downloads
+
+`openwebui_code_interpreter_enabled` (default true, needs `code_sandbox_enabled`) turns on Open WebUI's code interpreter with the jupyter engine pointed at `code-sandbox`; `tasks/code_sandbox.yml` heals `code_interpreter.enable` in the `config` table, while `code_execution.enable` (the Run button on code blocks) stays false. With native function calling (Open WebUI 0.13's default) a chat whose user turned on Code Interpreter gets the builtin `execute_code` tool; its runs appear in the message `output` as `function_call` / `function_call_output` items (legacy function calling: `open_webui:code_interpreter` items).
+
+**Critical implementation notes:**
+- Files for the user go to `/outputs/<chat id>/` on the `outputs` volume: read-write in the sandbox, read-only in open-webui. The `tool_result_file_download` filter (v1.4.0) adds that directory to the system prompt when `__metadata__["features"]["code_interpreter"]` is set, and in the outlet uploads the `.docx/.xlsx/.pptx/.pdf` files there whose mtime falls in the current turn. It reads only the chat's own directory, resolves symlinks before the containment check, and ignores older files even when mentioned; keep those three rules (tests in `tests/functions/`). The chat id is sanitized to `[A-Za-z0-9_-]`.
+- The jupyter engine gets no uploaded files (Open WebUI passes `metadata.files` only to pyodide), so uploads are visible to the model as extracted text only. The skills say so; do not promise edits of uploaded originals in Open WebUI.
+- One sandbox serves every chat, so any chat's code can read other chats' `/outputs` directories and the work directory. That is why the interpreter is a documented trusted-users feature with its own off switch.
+- `/outputs` ownership comes from the image: the Dockerfile creates it owned by jovyan, and Docker copies an image directory's owner onto the volume root whenever a container mounting it is created. No chown task is needed (unlike the `models` volume, which non-image writers share).
+- Compose builds `code-sandbox` only when the image is missing. The image carries `org.openwebui-stack.sandbox-inputs` (sha256 of `sandbox/Dockerfile` + `requirements.txt`, `code_sandbox_inputs_digest`), and `tasks/code_sandbox.yml` runs a `build: always` up of the service when the running container's label differs. Change either file and the next run rebuilds.
+
+### Reasoning selector (Thinking switch, opencode variants)
+
+Open WebUI: `ansible/roles/openwebui_stack/tasks/openwebui_reasoning.yml` installs two filter functions through the admin API (`container-scripts/openwebui_reasoning_sync.py`, no container recreate) and attaches them per model, never globally. `reasoning_switch` is a toggle filter ("Thinking" in the chat input) whose inlet sets `reasoning_effort` to the user's UserValves level; `reasoning_off` is its always-on companion that sets `none` when the switch id is missing from `__metadata__["filter_ids"]`, because Open WebUI does not run a toggle filter while it is off. The model list comes from LiteLLM `/model/info`: `supports_reasoning` attaches the switch, `supports_none_reasoning_effort` also attaches the companion. A router entry (`auto_router/...`: `auto`, `adaptive`) has neither flag, so `litellm_reasoning_models.py` derives them from its targets: all must reason for the switch, all must accept `none` for the companion. Rerun `playbooks/openwebui_reasoning.yml` after `inference.yml` changes the reasoning models. Both inlets leave a `reasoning_effort` already on the body alone (chat Advanced Params), and a Workspace model's own Reasoning Effort is applied after filters and wins.
+
+Open WebUI 0.13.3 lists the switch only in the chat input's `+` menu unless the per-user interface setting `showInputSelections` is on; then an enabled switch is also a chip beside `+` (click: level setting, x: off). `tasks/openwebui_interface_defaults.yml` (`openwebui_default_interface_settings`, `container-scripts/openwebui_interface_defaults.py`) turns it on in the site-wide default interface settings. Those are one field of the admin config, which `POST /api/v1/auths/admin/config` saves as a whole: post the GET result back, and leave out `ENABLE_MFA`, `MFA_ALLOW_OAUTH_BYPASS` and `MFA_ALLOW_TRUSTED_HEADER_BYPASS`. Open WebUI answers 403 to an API key that sends them, even unchanged, and a changed MFA policy signs every user out.
+
+opencode needs no plugin: `/variants` and `ctrl+t` are built in, and the levels are the variants `opencode-plugin-litellm` builds from the `supports_<level>_reasoning_effort` flags (`vllm_reasoning_efforts`). The role only seeds `tui.json` with a key for the picker (`opencode_variant_picker_keybind`, never overwriting an existing file). Details in `docs/vllm-inference.md` "The Thinking switch in Open WebUI".
+
+### Claude Code subscription passthrough (usage tracking)
+
+`litellm_claude_subscription_enabled` (`tasks/claude_subscription.yml`, tag `claude-subscription`) lets the user's own Claude Code, signed in with their own Pro/Max plan, go through LiteLLM so its tokens are logged. `container-scripts/litellm_claude_subscription.py` keeps one `anthropic/*` deployment with no API key in LiteLLM's model database; LiteLLM (1.81.14+) forwards the caller's `Authorization` (the plan's OAuth token) to direct `anthropic/` deployments and logs `used_client_oauth_token=true`. The client sets `ANTHROPIC_BASE_URL` to the proxy root and its LiteLLM key in `ANTHROPIC_CUSTOM_HEADERS` (`x-litellm-api-key`), with no API-key variable. Setup and caveats in README "Claude Code on a Claude subscription".
+
+**Critical implementation notes:**
+- Anthropic's terms allow a plan's sign-in only for the user's own Claude Code and Anthropic's apps. Never wire Open WebUI, opencode or another client to it, and never build anything that obtains, stores or replays a plan's OAuth token (ruvnet/ruflo#605, opencode-gemini-auth-style flows). Gemini CLI OAuth in third-party software is a Google policy violation, and Google stopped serving consumer plans through it on 2026-06-18.
+- The wildcard expands to one name per Claude model in LiteLLM's cost map (~26) in the master key's `/v1/models` and `/model/info`, which is what Open WebUI and the reasoning discovery read. Team-only models would scope it but need LiteLLM Enterprise (`/model/new` with `model_info.team_id` answers 403); `model_group_alias` `hidden` covers alias names only. So the deployment's `model_info` carries `stack_hidden: true`, which LiteLLM copies into every expanded row: `litellm_reasoning_models.py` skips such rows, and `container-scripts/openwebui_hidden_models.py` keeps an inactive Workspace entry (`meta.stackHidden`) per name, which drops it from the picker for everyone. It leaves admin-made entries alone and deletes its own when a name goes.
+- After `/model/new` or `/model/delete` the script rereads `/model/info` until the change shows: a worker that has not loaded the database yet would report the old names.
+- The deployment also carries `disable_background_health_check: true`. LiteLLM's background health check (`background_health_check_config`, every 300 s) has no caller token to forward, so without it every run logs `Missing Anthropic API Key` for the Claude names and the admin UI may show the deployment unhealthy (found 2026-11-12; routing is unaffected). A deployment an earlier version registered gets missing `model_info` fields through `PATCH /model/{id}/update`, which merges key by key.
+- The stack's chat-completion hooks (Brave injector, context compaction) skip Claude Code's `anthropic_messages` calls, and the skills hook skips Claude model names on every endpoint; `default-content-filter` does not (the user chose to keep it on 2026-11-12; a key with `disable_global_guardrails` skips it).
+
+### Saved memories (per user, every client)
+
+```bash
+# memory-mcp healthy, the hook loaded, the server listed
+docker compose ps memory-mcp
+docker compose exec litellm printenv LITELLM_WORKER_STARTUP_HOOKS
+KEY=$(grep -m1 "^LITELLM_MASTER_KEY=" .env | cut -d= -f2-)
+curl -sk https://litellm.localhost/v1/mcp/server -H "Authorization: Bearer $KEY" | grep -o '"server_name":"memory"'
+
+# What is stored (admin view)
+curl -sk "https://litellm.localhost/v1/memory?key_prefix=user:" -H "Authorization: Bearer $KEY"
+```
+
+`memory_mcp_enabled` (default true). Memories live in LiteLLM's own memory API (`/v1/memory`, `LiteLLM_MemoryTable`, the admin UI's Memory page), one row per memory: key `user:<owner>:<name>` (owner percent-encoded with `@._+-` kept), `user_id` = owner, `metadata.description` the index line. `memory-mcp` (`container-scripts/memory_mcp_server.py`, a stdlib MCP server run by the litellm image's Python as uid 65534) is LiteLLM's MCP server `memory` with the tools `save`, `get`, `search`, `list`, `delete`. `litellm/memory_callback.py` (startup hook, before the compactor) signs the owner of every call to that server and appends the owner's memory index to chat completions that carry the memory tools, Claude Code's `MEMORY.md` pattern (the user chose index + tools on 2026-11-12). Open WebUI's own memory is off (`ENABLE_MEMORIES` through `openwebui_interface_defaults.py`). README "Saved memories (per user)".
+
+**Critical implementation notes:**
+- The owner never comes from the model or from a header a key holder controls. Master key (`api_key == LITELLM_PROXY_MASTER_KEY_ALIAS`, the alias LiteLLM 1.110 puts on the master key's auth object): `X-OpenWebUI-User-Email`, lowercased. Any other key: the `user_id` stored on the key, from `/key/info` by the key's hash (cached 5 min). Never `user_api_key_dict.user_id`: with `general_settings.user_header_mappings`, LiteLLM's `add_internal_user_from_user_mapping` overwrites it from the request header for every caller. Never `X-OpenWebUI-User-Name`: Open WebUI users can rename themselves (`/api/v1/auths/update/profile`); they cannot change their email. Spend is attributed by the email header for the same reason (`user_header_mappings`, changed 2026-11-12).
+- The signature is HMAC-SHA256 over `stack-memory/v1\n<owner>\n<unix ts>` keyed with `MEMORY_MCP_SIGNING_KEY` (vault `memory_mcp_signing_key`), in the headers `x-stack-memory-owner` (percent-encoded), `-ts` and `-sig`; memory-mcp accepts five minutes of skew. `memory_callback.py` and `memory_mcp_server.py` each define the context string and header names: change both together (`tests/litellm_hooks/test_memory_callback.py` cross-checks them).
+- The hook reaches memory-mcp through LiteLLM's MCP pre-call hook contract: for `call_type == "call_mcp_tool"` the data carries `mcp_server_name`, `mcp_tool_name` and the client headers under `metadata.headers`, and an `extra_headers` dict in the returned data is added to the upstream request (`ProxyLogging.convert_mcp_hook_response_to_kwargs`; LiteLLM's own `mcp_jwt_signer` uses the same path). If a LiteLLM upgrade drops it, every memory call fails closed with "carries no owner signature". `mcp_jwt_signer` itself cannot replace the hook: it cannot trust the email header for the master key only.
+- LiteLLM's memory keys are unique across all users. memory-mcp reads and writes with the master key, which sees every row, so it checks `user_id == owner` on every row it lists, reads, replaces or deletes; a row planted under someone's prefix is ignored and its name refused, never overwritten. LiteLLM 1.110 answers `/v1/memory` with 401 for every key but the master key, an internal user's included ("Only proxy admin can be used ...", tested 2026-11-12), although its docs describe user-scoped access; keep the check anyway in case a release opens the route.
+- Tested end to end on 2026-11-12 against LiteLLM 1.110.0 in throwaway containers (real proxy and Postgres, memory-mcp as uid 65534 read-only, an echo model): the gateway's MCP client works with the stdlib server's JSON responses and no sessions, tool names come back as `memory-save` and so on, the hook's headers reach memory-mcp, a key sending someone else's Open WebUI headers keeps its own owner, and the index reaches only chats that carry the tools.
+- The index goes only into `acompletion`/`completion` requests whose tools include one named `(^|_)memory-(save|get|search|list|delete)$` (LiteLLM `memory-save`, Open WebUI and opencode `memory_memory-save`, Claude Code `mcp__memory__memory-save`), appended to the first system message or as a new first one, cached 30 s per owner and dropped after a `save`/`delete` call through the same worker. Never `anthropic_messages`. An unreachable memory-mcp never fails a chat.
+- Search embeds with `memory_embedding_model_effective` (the skill-search model, `local-embedding` by default) through LiteLLM `/v1/embeddings`; vectors are cached in process by (memory id, updated_at), and it falls back to keyword overlap when embedding fails.
+- Open WebUI connects to `http://litellm:4000/mcp/memory` with the master key (`tasks/mcp/memory.yml`, info.id `memory`, in `models.default_metadata.toolIds`; tag `memory` covers both tasks, which a plain `mcp/main.yml` import otherwise reaches only on a full run). It must keep `ENABLE_FORWARD_USER_INFO_HEADERS: "true"` and must not set `FORWARD_USER_INFO_HEADER_JWT_SECRET`, which replaces the plain headers with one JWT.
+
+### Skills for every model (LiteLLM hook)
+
+```bash
+# The hook is loaded, after brave_mcp_callback and before context_compaction_callback
+docker compose exec litellm printenv LITELLM_WORKER_STARTUP_HOOKS
+# What it did: later chat rounds it ran, packages it left out of the index, a missing server
+docker compose logs litellm | grep "skills: "
+```
+
+`skills_mcp_hook_enabled` (defaults to `skills_mcp_enabled`, the `skills-mcp` server it points models at). `litellm/skills_callback.py` gives a request that carries no tools of its own LiteLLM's `skills` MCP server as a gateway tool (`litellm_proxy/mcp/skills`, `require_approval: "never"`) and a short index of the skills (`<gateway_skills>`, read from `/app/skills`), and a request whose tools already include the skills tools the index alone. The user chose this on 2026-11-13: reuse skills-mcp, the index in every request the tool goes to, Open WebUI and streaming chat completions left alone. README "Skills for every model".
+
+**Critical implementation notes:**
+- Call types `acompletion`/`completion` and `anthropic_messages` only. On `/v1/messages` LiteLLM 1.110 runs a `litellm_proxy` MCP tool itself (`llms/anthropic/messages/native/mcp_handler.py`, `anthropic_messages_with_mcp`: up to 10 rounds, a streaming request answered by `FakeAnthropicMessagesStreamIterator`), so the tool goes in streaming or not. On chat completions `acompletion_with_mcp` runs one round and streams round one's tool-call chunks to the client, so a streaming chat request gets nothing (the Brave rule).
+- LiteLLM 1.110 sends `/v1/messages` for an `openai/` deployment, which every vLLM model here is, through the Responses API (`_should_route_to_responses_api`; vLLM serves `/v1/responses`), not chat completions.
+- On `/v1/messages` the tool must go in after the guardrails. The content filter (`default-content-filter`, default_on, pre_call) runs after the pre-call hooks and writes the request's tool list back from its chat-format translation (`llms/anthropic/chat/guardrail_translation/handler.py`), keeping only single-key provider-native tools. A `{"type": "mcp", ...}` reference comes back as a function tool `litellm_unnamed_tool_0` that no gateway expands, and the model's call to it goes back to the client unexecuted. This was found live on 2026-11-13, after the first deploy: the end-to-end harness had no guardrail and now carries the live block. So on `/v1/messages` the pre-call hook adds only the index and sets `litellm_metadata.skills_mcp_messages_tool`. `async_pre_call_deployment_hook` then adds the reference to a flagged call that has no tools. LiteLLM's client wrapper runs that hook right before the call, and the call expands gateway references (`anthropic_messages_with_mcp`). The hook never adds it to the gateway's own round calls (`_skip_mcp_handler`). Chat completions keep the pre-call tool: their guardrail pass leaves it alone.
+- A request with any tool of its own is left alone: one gateway tool makes LiteLLM run every tool call, and `execute_tool_calls` fails on a name its `tool_server_map` lacks. Two exceptions. Tools that include the skills tools (`(^|_)skills-(get|list|search)$`: LiteLLM `skills-get`, opencode `skills_skills-get`, Claude Code `mcp__skills__skills-get`) get the index only, naming the client's get tool. Gateway references (`server_url` `litellm_proxy...`, such as the Brave injector's) are the stack's own: the skills reference goes beside them, unless one is not `require_approval: "never"`, which turns LiteLLM's auto-execution off for the whole request.
+- Never `allowed_tools` on the injected reference: LiteLLM filters the tools of every gateway reference in a request by the union of their `allowed_tools` (`_filter_mcp_tools_by_allowed_tools`), so it would hide Brave's tools. The model sees `skills-search`, `skills-list` and `skills-get`.
+- Skipped: any `x-openwebui-*` header (Open WebUI 0.13.3 lists the skills itself as `<available_skills>` and offers `view_skill` in native tool-calling chats, and its title and tag requests stay small), model names matching `SKILLS_SKIP_MODELS` (`claude*,anthropic/*`: here the user's subscription passthrough), `metadata.skills_index: false` (in `metadata` or `litellm_metadata`).
+- Before adding the tool the hook asks `global_mcp_server_manager.get_mcp_server_by_name("skills")`; with no such server it adds nothing and logs that once. The index-only case needs no lookup.
+- Later chat rounds: the pre-call hook flags the request (`metadata.skills_mcp_auto_execute`, and `skills_mcp_gateway_servers`, every gateway reference it carried). The gate claims only `_agentic_loop_api_surface == "chat_completions"`, non-streaming, flagged, the last message a tool result and every call an offered function; the plan resolves all recorded servers and runs the calls with `LiteLLM_Proxy_MCP_Handler`, as the Brave hook does. LiteLLM asks callbacks in registration order and moves on when a plan says `run_agentic_loop=False`: the Brave gate claims a skills-only or mixed round first, its plan declines names it does not serve, and this hook runs the round. Keep `skills_callback` after `brave_mcp_callback` in `LITELLM_WORKER_STARTUP_HOOKS`. The last permitted round is shaped like Brave's (`final_round_request`, copied from `brave_mcp_callback.py`): change both together.
+- `parse_frontmatter` copies `container-scripts/skill_packages.py`'s expressions, so the index shows what the publisher read; `tests/litellm_hooks/test_skills_callback.py` cross-checks them on every `SKILL.md`.
+- Tested end to end on 2026-11-13 against LiteLLM 1.110.0 (the live image) in throwaway containers: Postgres, skills-mcp (`skills_mcp_server.py` from the main checkout, blob `1ffb8ad`), a stand-in Brave MCP server and a scripted stand-in model behind an `openai/` deployment, so `/v1/messages` took the Responses API path as the vLLM models do; the Brave hook loaded first, as live. A tool-less chat request listed the skills and read one (the second round through this hook), and `/v1/messages` did the same streaming (one fake stream) and not. A round mixing a web search with a second skill ran through this hook, a Brave-only round through Brave's. Streaming chat, the caller's own tools on both endpoints, Open WebUI's header, a `claude*` name and the opt-out were left alone; a client's `skills_skills-get` got the index naming it. With skills-mcp stopped, LiteLLM logs `Error listing tools from skills: ConnectError` and both endpoints still answer, with the index but without the skills tools. After the live `/v1/messages` finding the harness gained the live guardrail block: the first deployed version then handed the model `litellm_unnamed_tool_0`, as live, and the deployment-hook version passed all 16 checks.
+
+### Keycloak login tracking (Logins row of the Keycloak dashboard)
+
+```bash
+# The tracker is healthy; its log has one line per change of state and per flagged login
+docker compose ps keycloak-login-tracker
+docker compose logs --tail 20 keycloak-login-tracker
+
+# One pass by hand: --check pushes nothing and lists the logins a pass would push
+docker compose exec keycloak-login-tracker python3 /opt/stack-scripts/keycloak_login_tracker.py \
+  --once --check --realm platform
+
+# The GeoIP release the host has
+cat geoip/dbip-city-lite.mmdb.release
+```
+
+`keycloak_login_tracker_enabled` (default true). Keycloak saves the realm's logins in its event store (`events_enabled`, 30 days, `tasks/keycloak_bootstrap.yml`) but logs only failures: the jboss-logging listener writes successes at DEBUG. The `keycloak-login-tracker` service (`container-scripts/keycloak_login_tracker.py`, run by the litellm image's Python as uid 65534) reads new `LOGIN` and `LOGIN_ERROR` events through `GET /admin/realms/<realm>/events` as the `login-tracker` client, looks up each public address in DB-IP's City Lite file (`geoip/`, fetched by `tasks/geoip.yml`, read by `container-scripts/mmdb.py`), and pushes one JSON line per login to Loki (`{service_name="keycloak-logins", realm, result}`). The Keycloak dashboard's Logins row and the `KeycloakLogins` rules in `grafana/provisioning/alerting/keycloak-alerts.yml` read that stream. The user chose on 2026-11-13: event store plus tracker, a local DB-IP file (login addresses never leave the host), private addresses shown as "LAN" without a place, alerts on impossible travel and on a new country. README "Login tracking".
+
+**Critical implementation notes:**
+- The `login-tracker` client (`tasks/keycloak_login_tracker.yml`, tag `login-tracker`) has a service account with realm-management's `view-events` and nothing else, plus the `kc-admin-api` and `roles` client scopes: without `kc-admin-api` the token lacks the admin API audience and the events API answers 401. The tasks sign in as the master admin, because Keycloak lets an admin grant only roles it holds and the provisioner has no `view-events`.
+- The tracker writes nothing to Keycloak and keeps its state in memory. At start it replays the event store (`--history-days`, 30) to learn each user's places, asks Loki which event ids it already pushed, and pushes the rest that are at most `--backfill-days` (6) old: Loki refuses entries older than a week (`reject_old_samples_max_age`). Then it polls with a 10-minute overlap and skips event ids it has seen. It does not push before Loki has answered, so a restart never pushes a login twice.
+- The flags compare only successful logins that have a place. `impossible_travel`: more than `keycloak_login_tracker_min_distance_km` (300) from the user's previous located login, at a speed above `keycloak_login_tracker_max_speed_kmh` (1000); logins in the same minute count as one minute apart. `new_country`: the user has located logins in the window and none from this country; the first located login is the baseline, not new. LAN, stack-internal and failed logins never take part.
+- Address classes: `--internal-networks` (172.16.0.0/12, Docker's pools) and loopback are `stack-internal`; every other non-global address (RFC 1918, CGNAT 100.64/10, IPv6 ULA) is `LAN`. Keycloak records what Traefik passes on, so a VPN or a Cloudflare tunnel connector shows its own address, and behind a Cloudflare proxy Traefik would need `forwardedHeaders.trustedIPs` for Cloudflare's ranges or every login shows a Cloudflare address. On 2026-11-13 no public address had reached Traefik in a week; every login came from the LAN.
+- Every line carries `level` (info; warn for failed or flagged logins). Without it Loki's level detection finds the `error` key and marks every login as an error.
+- `tasks/geoip.yml` downloads `dbip-city-lite-YYYY-MM.mmdb.gz` (about 120 MB, 127 MB unpacked) only when `<file>.release` names an older month, falls back to last month's in the first days of a month, and refuses a file under 10 MB or whose metadata is not a City database. The new file replaces the old by rename; the tracker reopens it when its inode, size or mtime change. DB-IP's licence (CC BY 4.0) asks for a link to db-ip.com wherever the places show: the Logins row's text panel and the table and map panel links carry it.
+- Grafana reads alert-rule files only at start. A deploy that adds or changes rules without recreating `lgtm` reloads them with `POST /api/admin/provisioning/alerting/reload` (Grafana admin credentials; tested on 13.3 on 2026-11-13). Rules removed from a file stay until a `deleteRules` entry deletes them.
+- The map query derives a `status` label (the flag, else `failed` or `ok`) with `label_format`, because a geomap layer colours by one field only.
+- Tested end to end on 2026-11-13 in throwaway containers on Photon: Keycloak 26.8 configured like the live one, the live otel-lgtm image with this provisioning, the real DB-IP file, and the real client task (three changes, then none on a second run). Logins forged with `X-Forwarded-For` from LAN, Docker and public addresses came out with the right places and flags; the panels and both alert rules showed them; a running tracker picked up a later login within one interval.
+
+### LLM Launcher portals (web GUI per vLLM inference server)
+
+```bash
+# On a compute node: both units up, GUI on loopback, gate answering
+systemctl status vllm-launcher vllm-launcher-auth
+curl -s http://127.0.0.1:8765/api/about
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4180/ping
+
+# On the stack host: an anonymous request is redirected to Keycloak
+curl -sk -o /dev/null -w '%{http_code} %{redirect_url}\n' https://launcher-vllm-node-01.<domain>/
+
+# On the stack host: what the launcher follower reads from each node and would change
+docker compose logs --tail 20 launcher-follower
+docker compose exec launcher-follower python3 /opt/stack-scripts/launcher_follower.py --once --check
+```
+
+Local-LLM-Launcher-GUI (pinned by `vllm_launcher_version`) runs on the compute nodes, one per independent inference server: every node in standalone mode, the Ray head in ray mode (`tasks/launcher_placement.yml`). Pieces: `vllm-launcher` (container built on the node's vLLM image, GUI on `127.0.0.1:8765`), `vllm-launcher-auth` (oauth2-proxy on 4180, `OAUTH2_PROXY_ALLOWED_ROLES=launcher:launcher_admin`), and on the stack host the `launcher` Keycloak client plus `traefik/dynamic/launcher.yml` (`roles/openwebui_stack/tasks/launcher.yml`). Both sides are off by default (`launcher_enabled`, `vllm_launcher_enabled`). Full details in `docs/vllm-inference.md` "LLM Launcher".
+
+**Critical implementation notes:**
+- Run `site.yml` before `inference.yml`. The node play reads `LAUNCHER_OIDC_CLIENT_SECRET` from the controller environment or the deployed `.env` and fails fast without it.
+- The portal name is `launcher-<inventory hostname>.<domain>` on both sides. The stack inventory and the inventory the node is deployed from must name the node the same, or Keycloak rejects the redirect URI. `launcher_nodes` / `launcher_node_addresses` (set in `inventory/hosts.local.yml`) cover a node deployed from `tests/vllm-remote`.
+- The launcher must stay on loopback. It has no login; the gate is its only protection. Never open `vllm_launcher_port` in the firewall or bind it elsewhere.
+- Models started from the GUI are child processes of the launcher container. Anything that restarts `vllm-launcher` (image rebuild, changed script or unit) stops them, and nothing relaunches them.
+- `vllm_launcher_owns_primary: true` keeps `vllm-serve` stopped and disabled; the `Restart vllm-serve` handler is skipped on such a node so a changed script cannot start it.
+- The sign-in chip is added by the image build (`files/vllm-launcher-patch-ui.py`), not patched into the checkout: the launcher ships a compiled React bundle.
+- Chat is off in the launcher (`vllm_launcher_chat_enabled: false`): its "Test chat" box and its "Open WebUI" panel, which would start an Open WebUI on the node with no login. The image's entry point (`files/vllm-launcher-entry.py`, `stack_entry.py` in the image) replaces `POST /api/servers/{id}/chat` and `/api/openwebui/*` with 403s before the launcher builds its app; `patch_ui.py` and the page script only hide the controls. Keep the entry point: starting the image with `python3 -m local_llm_launcher` brings chat back. Both files fail closed when a new `vllm_launcher_version` moved those routes; update the paths in both.
+- The portal's DNS record points at the stack host, like every other service name, never at the node: Traefik there serves HTTPS and forwards to the gate. The stack host must reach the gate port through any router in between; when a router passes only some ports, move the gate on both sides together (`launcher_auth_port` for the stack, `vllm_launcher_auth_port` for the node).
+- `tests/vllm-remote/group_vars/vllm_compute/` is read alphabetically, so `vars.local.yml` comes before `vars.yml` and loses to any variable `vars.yml` also sets. Site switches (`vllm_launcher_enabled`, `vllm_launcher_owns_primary`, the gate port) are therefore left out of the tracked `vars.yml`; set them in `vars.local.yml`.
+- To reproduce the Ansible-managed server from the GUI, copy its reasoning parser, tool parser and `--default-chat-template-kwargs` too, not just port and served name, or thinking and tool calls stop working (`docs/vllm-inference.md` "Swapping and tuning the node's model from the GUI" has the launch request).
+- Single-model slot (`vllm_launcher_swap`, with `vllm_launcher_owns_primary`): `files/vllm-launcher-slot.py` (`stack_slot.py` in the image, loaded by the entry point when the run script sets `LAUNCHER_STACK_SLOT_FILE`) wraps the launcher's internals, not its routes: `servers.launch/stop/remove`, `api.get_hardware`, `api.installed_models`, `advisor.advise/presets`. A launch runs the launcher's own pre-spawn checks first (`vllm_backends.validate`, MTP, `build_spec`), so refused settings never stop the running model; then it stops every running server, waits for the port and GPU memory, and starts the new one on `vllm_port`. `install()` fails closed when a new `vllm_launcher_version` moved any of them.
+- Every chat on this stack carries tools (LiteLLM's Brave injector, Open WebUI's MCP tool servers), and vLLM answers 400 to them unless the server runs with a tool parser and `--enable-auto-tool-choice`. The launcher maps its "Tool-calling format" field to `--tool-call-parser` only, and leaves it empty by default. The slot therefore fills an empty format from the model family (`TOOL_PARSERS`, matched on the repo name) and wraps `servers.build_spec` to append `--enable-auto-tool-choice` whenever a parser is set. Found live on 2026-11-11: a swapped-in Qwen3-0.6B without them failed every chat.
+- Whole-GPU fit: only the advisor sees the adjusted free memory (memory the launcher's servers hold counts as free; other programs' use is sampled while none runs). `/api/hardware`, the Dashboard and the sidebar keep the real numbers. Nested `advise()` calls from `presets()` carry the `_stack_whole_gpu` marker and are not adjusted twice.
+- `GET /api/stack/slot` is the follower's contract: the gate skips sign-in for that one GET route (`OAUTH2_PROXY_SKIP_AUTH_ROUTES`), the launcher answers only with the bearer `LAUNCHER_STACK_STATUS_TOKEN` (`launcher_status_token`, stack vault → `.env` → the node's `launcher.env`), and Traefik's portal rule excludes `/api/stack/`. The follower calls the gate directly with `Host: launcher-<node>.<domain>`, because the launcher's TrustedHostMiddleware refuses any other name.
+- The route's `Request` annotation is set as an object after the def (`add_status_route`): the module uses postponed annotations, and FastAPI cannot resolve the string `"Request"` there and reads it as a required query parameter (every request answers 422).
+- The follower (`container-scripts/launcher_follower.py`, service `launcher-follower`) changes the node's LiteLLM entry with `PATCH /model/{id}/update`, never delete + `/model/new`: `/model/info` does not return the stored API key, and PATCH keeps it and the api_base. PATCH merges; a litellm_params key goes only through `litellm_params_to_remove`, and model_info keys cannot be removed, so every `supports_<level>_reasoning_effort` flag is sent as true or false. `litellm_registration.yml` creates a slot node's entry only when none exists for its api_base and never prunes or replaces it, or each `inference.yml` run would undo the follower.
+- Both the slot and the follower use urllib openers without an HTTPS handler: urllib builds a TLS context for one up front, which the FIPS-mode GPU node refuses inside the Ubuntu-based launcher image unless `/proc/sys/crypto/fips_enabled` is masked.
+- Backslash group references in Ansible: inside `{{ }}` in a block scalar (`>-`, `|`) write `'\1'`; `'\\1'` there makes `regex_search` fail and `regex_replace` insert a literal `\1`. In double-quoted YAML and in bare `when:` expressions write `'\\1'` (the forms `tasks/auxiliary.yml` uses). The same goes for `'\n'` passed to `join()`.
+
+### NVIDIA driver (`nvidia_driver` role)
+
+```bash
+# What the role finds and would do, on the stack host and on the nodes (changes nothing)
+ansible-playbook -i inventory/hosts.yml -i inventory/hosts.local.yml playbooks/site.yml --tags nvidia_driver --check
+ansible-playbook -i tests/vllm-remote/inventory.yml -i tests/vllm-remote/inventory.local.yml playbooks/inference.yml --tags nvidia_driver --check
+```
+
+First role of `site.yml` and `inference.yml`. It classifies the host (`tasks/detect.yml`: `no_gpu`, `ok`, `module_not_loaded`, `module_missing`, `not_installed`) and repairs only what is broken: `modprobe`, a kernel-module rebuild for the running kernel, or a full install. Method: NVIDIA's dnf repository with DKMS on Fedora/RHEL, NVIDIA's `.run` installer on Photon OS and on any host already installed that way. Details in `docs/vllm-inference.md` "NVIDIA driver".
+
+**Critical implementation notes:**
+- Photon's driver is not under DKMS: every kernel update plus reboot leaves the GPU without a module until the role rebuilds it (`module_missing`). The rebuild uses the installer of the version already on the host (`--kernel-module-only`), so the module always matches the libraries; installers are kept in `/root/nvidia`.
+- Never reboot and never restart containers from the role. A first install while `nouveau` holds the GPU stops with a message asking for a reboot.
+- `nvidia_driver_required` is true only in `inference.yml`. On the stack host the GPU is optional: an unrepairable driver must not fail `site.yml`, and `tasks/gpu_profile.yml` then drops the `gpu` compose profile for the run.
+- The detection script runs under `--check` (`check_mode: false`) and is passed as `shell: cmd:`; Ansible splits a free-form multi-line shell argument on quotes and rejects this one.
+- A task placed after the second detection inside the repair block never runs: the block's condition is checked again for every task, and once the driver works it is false. The CDI refresh therefore sits outside the block and keys on `nvidia_driver_state_before`.
+- Tested on Photon on 2026-11-11 by removing the module files for the running kernel: the dry run reported the rebuild and changed nothing, the real run rebuilt and loaded the module in 66 seconds, the next run changed nothing, and Chatterbox and the GPU exporter worked again once restarted.
+
+### Rootless podman and tini on the vLLM nodes
+
+```bash
+# On a rootless podman node: the units run as the service account
+systemctl show -p User,Group vllm-serve
+sudo -u vllm XDG_RUNTIME_DIR=/run/user/$(id -u vllm) podman ps
+
+# Dry run of the account, lingering and move-from-root steps (changes nothing)
+ansible-playbook playbooks/inference.yml --check
+```
+
+`roles/vllm_compute/tasks/container_runtime.yml` decides how every container of the role starts. `vllm_container_init` puts tini in as PID 1 (`--init`; on podman with `--init-path /usr/bin/tini-static`, because podman's own init is catatonit). `vllm_container_rootless` (on for every podman node, off for docker) runs the containers as the unprivileged `vllm_container_user`. Details in `docs/vllm-inference.md` "Rootless containers and tini".
+
+**Critical implementation notes:**
+- The units stay **system** units with `User=<account>`, not `systemctl --user` units or quadlets: the names, `journalctl -u`, the log shipper's `_SYSTEMD_UNIT` match and every `systemctl` command in the docs stay the same. This works because they are `Type=simple` and run `podman run` in the foreground; do not switch them to `Type=notify`.
+- Three settings keep the logs where they were, and each one was found by a failing test on the node. `Delegate=yes` on the unit: without it rootless podman moves itself into `podman-<pid>.scope` under the account's user manager, journald files the server's output under `user@<uid>.service`, `journalctl -u vllm-serve` goes empty and the log shipper ships nothing. `--log-driver none` on the container: with `Delegate=yes` conmon is in the unit's cgroup too, so podman's default journald logging files every line a second time under the same unit and Loki gets each line twice; `passthrough` is not the answer, it files the output under the account's `libpod-*.scope`. Consequence: `podman logs` is empty for these containers, the journal is the log.
+- Keep the units' `ExecStop`/`ExecStopPost` (`podman rm -f <name>`). With `Delegate=yes` conmon and the container are in the unit's cgroup, and a bare `KillMode=control-group` stop kills conmon before it cleans up, which leaves a stale container record that blocks the next start by name.
+- `SuccessExitStatus=143` on every unit: tini exits 143 when it stops the server on `systemctl stop`; without it each stop marks the unit failed.
+- A rootless unit must not carry `NoNewPrivileges=true`: `newuidmap` then fails and no container starts after a reboot. It only looks fine while a pause process from an earlier podman command still holds the user namespace open. The scripts pass `--security-opt no-new-privileges` to the container instead.
+- The account needs lingering (`loginctl enable-linger`). The containers' cgroup scopes live under `user@<uid>.service`; without lingering logind stops it, and the containers, when the account's last session ends.
+- A task that calls the container CLI itself must build its command from `vllm_container_argv`, never from `vllm_container_cli`: root's podman has a different image and container store than the account's, so a bare `podman build` or `podman exec` talks to the wrong one. The prefix uses `runuser`, not `become_user`, so it needs neither ACLs nor pipelining on the node, and `env -C /` because podman refuses to start from a directory the account cannot enter.
+- Scripts and `auth.env` are `root:<account's group>` with mode `0750`/`0640`: the account can run and read them, not rewrite them. Anything a container writes (the Hugging Face cache, the launcher's data directory) is owned by the account.
+- The init binary must be static (`tini-static`): podman bind-mounts it into images that may not have its libraries.
+- Moving a node from rootful happens on the first rootless run: units whose file lacks `User=<account>` are stopped, the role's containers are removed from root's store by name, and the Hugging Face cache is chowned. The account's image store starts empty, so that run pulls every image again.
+- Copying an image between stores (`podman save | podman load`) spools the whole image in the temp directory on both sides, `/var/tmp` by default. For a 25 GB image set `TMPDIR` to a volume with room or the root filesystem fills up.
+- Exporters are root quadlets on rootful podman and system units (`templates/vllm-exporter.service.j2`) on rootless podman, under the same `<name>.service` names.
+
+### Chat only through Open WebUI and API clients
+
+```bash
+# The hook is loaded (first in the list)
+docker compose exec litellm printenv LITELLM_WORKER_STARTUP_HOOKS
+
+# The Chat page is off, and the value comes from config.yaml
+KEY=$(grep -m1 "^LITELLM_MASTER_KEY=" .env | cut -d= -f2-)
+curl -sk https://litellm.localhost/get/ui_settings -H "Authorization: Bearer $KEY" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["values"]["enable_chat_ui"], d["source"]["enable_chat_ui"])'
+# False config
+
+# A request that looks like the Playground is refused; the same request without the Referer answers
+curl -sk -o /dev/null -w '%{http_code}\n' https://litellm.localhost/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -H "Referer: https://litellm.localhost/ui/playground/" \
+  -d '{"model": "gemini-3.5-flash-lite", "messages": [{"role": "user", "content": "hi"}]}'
+# 403
+```
+
+Models are chatted with through Open WebUI or an API client (opencode, an IDE). The two other web chats in the stack are off: the LLM Launcher's (see its notes above) and the LiteLLM admin UI's Playground and Chat pages (`litellm_ui_chat_enabled: false`). The admin UI stays for keys, models, usage and settings.
+
+**Critical implementation notes:**
+- LiteLLM has a switch for its Chat page only: `general_settings.enable_chat_ui` in `litellm/config.yaml`. A `general_settings` value overrides the one saved from Admin Settings > UI Settings, so the toggle there does nothing while the line exists. There is no switch for the Playground; its menu entry stays.
+- `litellm/ui_chat_block_callback.py` is what turns both pages off. Its `async_pre_call_hook` answers 403 to a model call when the key is a UI session key (`team_id == "litellm-dashboard"`, minted at admin UI sign-in; the Playground and Chat pages send it) or when the `Referer` is the proxy's own `/ui` pages (a virtual key pasted into the Playground). The Chat page uses `/v1/responses` (`aresponses`), not chat completions, so the blocked call types cover every endpoint type the Playground offers.
+- It must not block `call_mcp_tool`, `list_mcp_tools`, `asearch` or the vector store types: the admin UI's MCP tool test, search tool test and vector store test use the same session key. Model health checks never reach the hook.
+- Open WebUI and API clients are untouched because they send neither signal: Open WebUI calls LiteLLM server-side with the master key and no `Referer`.
+- The hook is registered first (`litellm.callbacks.insert(0, ...)` and first in `LITELLM_WORKER_STARTUP_HOOKS`) so a refused request skips the Brave injector and the compactor.
+- The refusal is an `HTTPException` with a plain string `detail`: LiteLLM returns it as the error message the Playground shows. `UI_CHAT_BLOCK_OPENWEBUI_URL` (set in the compose template) names where to chat instead.
+
+### Context Compaction (oversized histories)
+
+`litellm/context_compaction_callback.py` is a second `LITELLM_WORKER_STARTUP_HOOKS` callback. Its `async_pre_call_hook` trims an oversized message history to the target model's `max_input_tokens` (resolved from `proxy_server.llm_router.get_model_list()` → `model_info`, then LiteLLM's cost map, then `CONTEXT_COMPACTION_MODEL_<name>`) before the provider sees it, keeping system prompts, the newest `CONTEXT_COMPACTION_KEEP_LAST_N` (default 6) messages, and a `[Earlier conversation was compacted...]` note. Trimmed, not summarized. Works on streaming too (no tool deltas involved). Opt out per request with `metadata: {"context_compaction": false}`. Full details in README "Context Compaction".
+
+**Critical implementation notes:**
+- LiteLLM's `/v1/chat/completions` route invokes `async_pre_call_hook` with `call_type="acompletion"`, not `"completion"`. The injector must match both or it silently never fires on proxy traffic.
+- The injector must skip `stream: true` requests. Streaming Open WebUI chats run their own function-calling loop; LiteLLM's MCP streaming iterator forwards tool-call deltas to the client, the client cannot resolve the MCP-namespaced tool name, and the resulting "Error: Tool not found" tool responses corrupt the history. The next Gemini turn then fails with "Missing corresponding tool call for tool response message".
+- The injector must also skip any request that already carries function-type tools. One `mcp`-type tool flips LiteLLM into gateway auto-execution for the WHOLE turn (`acompletion_with_mcp`): with `require_approval: "never"` it executes every tool call the model returns, including Open WebUI's client-side `blender_blender-*` names it cannot resolve (KeyError). Non-streaming chats with client-side MCP tool servers (Blender/FreeCAD/Playwright) hit this whenever the injector added the Brave tool alongside them.
+- Streaming chats get web search through Open WebUI's client-side MCP tool server: Workspace model entries for the Gemini models carry `meta.toolIds: ["server:mcp:brave_search"]`, so the frontend merges the tool server into every chat request automatically. Claude and every other model without an entry of its own get the same IDs from `models.default_metadata` (`mcp/tool_defaults.yml`).
+- Tool calls on the Claude models (`anthropic/`) use the same paths and need nothing per model, but two `litellm_settings` flags carry Anthropic's rules and must stay on. `drop_params: true`: a forced `tool_choice` (`required` or a named function) returns 400 on `claude-opus-5-5`, `claude-sonnet-5-5`, and `claude-fable-5-2`; LiteLLM downgrades it to `auto` only with `drop_params`, otherwise it answers 400 itself. `modify_params: true`: Claude rejects a history where a tool call has no tool result or a tool result has no call; LiteLLM then adds a placeholder result and drops orphaned or duplicate results.
+- LiteLLM's gateway runs one tool round per request; a second search would go back to the client as tool calls it cannot run. The injector adds the later rounds through LiteLLM's agentic-loop hooks: `async_should_run_agentic_loop` (the gate) and `async_build_agentic_loop_plan`, which executes the calls with the gateway's own helpers (`LiteLLM_Proxy_MCP_Handler`) and lets LiteLLM make the follow-up call, up to `max_agentic_loops` (default 3) more rounds. Rules that must hold: the gate claims only chat completions (`kwargs["_agentic_loop_api_surface"] == "chat_completions"`; `/v1/messages` and `/v1/responses` call the same hook names), non-streaming, requests the pre-call hook flagged (`metadata.brave_mcp_auto_execute`), and only when the last message is a tool result, because the gateway owns round one. The plan builder must never raise: LiteLLM does not catch it and the request would fail, so every error falls back to the default plan (tool calls returned as before). The last permitted round must end in text. Claude gets `tool_choice: "none"` with tools and history untouched (the Anthropic API enforces it, and its thinking blocks are bound to both). Every other provider gets the tool rounds folded into the user turn as plain text and no tools: Gemini ignores `tool_choice: "none"` (and a note in the tool result, and even removed tools) while the history shows tool calls, and LiteLLM's ceiling then strips the call and returns an empty answer (seen live, 2026-11-10). `BRAVE_SEARCH_MAX_EXTRA_ROUNDS` in the litellm environment lowers the ceiling; `0` turns the extra rounds off.
+- `mcp/brave.yml` must not require a provider key. It asserted `gemini_api_key`, which failed the playbook on Anthropic-only deployments; the Brave wiring is the same for every provider.
+- The compaction note is a `user` turn for Claude models and an `assistant` turn for everything else. The Anthropic API rejects a conversation that opens with an assistant turn and LiteLLM does not repair it; the hook picks the role from the deployment's `litellm_params.model` (`anthropic` or `claude` in it).
+
+### Python run by the playbook (container scripts)
+
+```bash
+# Lint, format check and tests (config in pyproject.toml)
+pip install ruff pytest
+ruff check && ruff format --check && pytest
+
+# Run a script by hand on the stack host; --check writes nothing and
+# prints what a real run would change
+docker compose exec litellm python3 /opt/stack-scripts/litellm_skills_sync.py \
+  --archive-base-url https://litellm.<domain> --check
+```
+
+Task files hold no inline Python. Every Python job of the `openwebui_stack` role is a script in `container-scripts/`, which the compose template mounts read-only at `/opt/stack-scripts` (`container_scripts_mount`) in `litellm` and `open-webui`. A task runs one through `tasks/container_script.yml` (`import_tasks` with `container_script`, `container_script_service`, and optional `container_script_args`, `container_script_env`, `container_script_payload`) and reads the result from `container_script_report`.
+
+| Script | Runs in | Called from |
+|--------|---------|-------------|
+| `litellm_skills_sync.py` | litellm | `mcp/skills_gateway.yml` |
+| `litellm_reasoning_models.py` | litellm | `openwebui_reasoning.yml` |
+| `openwebui_skills_sync.py` | open-webui | `openwebui_skills.yml` |
+| `openwebui_default_models.py` | open-webui | `openwebui_default_models.yml` |
+| `openwebui_reasoning_sync.py` | open-webui | `openwebui_reasoning.yml` |
+| `openwebui_interface_defaults.py` | open-webui | `openwebui_interface_defaults.yml` |
+| `litellm_claude_subscription.py` | litellm | `claude_subscription.yml` |
+| `openwebui_hidden_models.py` | open-webui | `claude_subscription.yml` |
+
+Shared code: `stack_api.py` (HTTP client, argument parser, exit contract) and `skill_packages.py` (SKILL.md discovery and the frontmatter rules). Three scripts are services rather than tasks, each run by the litellm image's Python in a compose service of its own: `launcher_follower.py` (`launcher-follower`), `memory_mcp_server.py` (`memory-mcp`) and `skills_mcp_server.py` (`skills-mcp`).
+
+**Critical implementation notes:**
+- New Python for a task goes in `container-scripts/<job>.py` with a test in `tests/container_scripts/`, never in a `python3 -c` argument. Standard library only: the scripts run on whatever Python the two images ship (3.12 and 3.13 today).
+- The contract is the same for every script. Options are arguments. Secrets are environment variables: `container_script_env` puts only their names on the docker command line (`--env=NAME`), so a key never shows in `ps` or in a failed task's output. Structured input is base64 JSON on stdin (`container_script_payload`). Success prints one JSON report (`changed`, `check`, `actions`, then the script's own keys); failure exits 1 with `error: ...` on stderr.
+- Every write goes through `Api.write`. Under `ansible-playbook --check` the task still runs, with `--check`: the script reads the live state, writes nothing, and reports what would change.
+- `container_script_report` is the report of the latest run (a lazy variable in `defaults/main.yml`). Read it right after the import; the next import replaces it, and it is empty when the run was skipped.
+- The scripts run inside the containers on purpose. The admin APIs listen on container-local ports only, and the skill archive digest must be computed with LiteLLM's zlib: DEFLATE output differs from the host's build, and a host-side digest would never match the discovery index.
+- A container that predates the mount fails with a hint to run `--tags environment,compose` once. `tasks/sync.yml` carries the `always` tag, so the deployed `container-scripts/` is current on tag-limited runs.
+- `roles/vllm_compute/files/ray_nodes_ready.py` is the one script outside this scheme: the Ray head container has no such mount, so `tasks/services.yml` pipes it to `python -` over stdin.
+- `keycloak_login_tracker.py` is a service too (`keycloak-login-tracker`, "Keycloak login tracking" above). `mmdb.py` is its MaxMind DB reader in the standard library; `tests/container_scripts/mmdb_writer.py` writes the small databases its tests read.
+
+### Secret scanning (CI)
+
+```bash
+# What the Secret Scan workflow runs (Linux x86_64 with curl, git, jq; run it on Photon)
+bash scripts/check-secrets.sh install
+bash scripts/check-secrets.sh --no-verify             # history of HEAD
+bash scripts/check-secrets.sh --no-verify --all-refs  # every branch and tag
+```
+
+`.github/workflows/secret-scan.yml` runs `scripts/check-secrets.sh` on every push and pull request, with no path filter, and weekly over every branch and tag. Three steps: gitleaks (`.gitleaks.toml`: the default rules plus the stack's), trufflehog (every detector but JDBC), and a policy step (tracked secret files, inline allow comments). Details in README "Secret Scanning".
+
+**Critical implementation notes:**
+- Each run scans the whole history of the commit under test. A secret committed once fails every run until it is purged from the history and force-pushed; a commit that deletes the file does not clear it. Rotate the secret first.
+- Never let a value reach the log: gitleaks runs with `--redact`, and trufflehog's JSON is reduced to detector, commit, file and line. Keep both when changing the script; Actions logs are public on a public repository.
+- No inline allow comments. gitleaks runs with `--ignore-gitleaks-allow` and the policy step fails on any. Accept a false positive by its gitleaks fingerprint in `.gitleaksignore` with a comment, or by a narrow exclusion in the script; trufflehog has no fingerprints.
+- trufflehog's JDBC detector is off: it flags the compose template's `jdbc:postgresql://postgres:5432/...` URL, which has no credentials. The `url-credentials` and `connection-string-password` gitleaks rules replace it. `url-credentials` must keep accepting `${USER:-default}:${PASSWORD:?message}@` references: the compose URLs have that form, also in the upstream commits on `main`, which cannot be rewritten.
+- `ansible/group_vars/all/vault.yml` may hold only `CHANGE_ME`, `change-me-before-production` or `""` (rule `stack-vault-template-value`); real values go in `vault.local.yml`. The rule also accepts the Jinja lookups of earlier template versions, but only when their quoted literals are env var names, plugin names, lookup options or placeholders. `.env.example` and the env templates take `changeme_*` placeholders or `{{ }}` / `${ }` references.
+- Scanner versions and their tarball sha256 sit together at the top of the script and change together. Dependabot moves only the `actions/checkout` pin.
+- The workflow calls the script through `bash`: a script added from Windows has no executable bit.
+- Use `--no-verify` on Photon and the nodes. Verification signs in with what trufflehog found, and from inside the network a found credential can reach internal services.
+- To purge a secret, scope git filter-repo to the affected range (`--refs <first-bad-commit>^..<branch>`). A whole-repository rewrite re-hashes the GitHub-signed upstream commits on `main`, because git fast-export drops signatures.
+
+### Linting & Quality Checks
+
+**Shell Scripts:**
+```bash
+shellcheck scripts/*.sh
+shfmt -i 4 -w scripts/*.sh
+```
+
+**Python (container scripts and their tests):**
+```bash
+ruff check && ruff format --check && pytest
+```
+
+**YAML Validation:**
+```bash
+docker compose config --quiet && echo "Valid"
+```
+
+### Testing Changes
+
+```bash
+docker compose config
+docker compose up --dry-run
+docker compose pull
+```
+
+## Code Style Guidelines
+
+### General Principles
+1. **Configuration over Code**: Prefer declarative YAML configs over custom scripts.
+2. **Idempotency**: Scripts must be re-runnable without side effects.
+3. **Security First**: Never commit secrets. Use `.env` files and `${VAR:?error}` for required variables.
+
+### SSO/OIDC Configuration
+
+**Open WebUI OAuth:**
+```yaml
+ENABLE_OAUTH_SIGNUP: "true"
+OAUTH_PROVIDER_NAME: "Keycloak"
+OPENID_PROVIDER_URL: "http://openwebui-stack_keycloak:8080/realms/master/.well-known/openid-configuration"
+OAUTH_CLIENT_ID: "open-webui"
+OAUTH_CLIENT_SECRET: "${OPENWEBUI_OIDC_CLIENT_SECRET:?error}"
+ENABLE_OAUTH_GROUP_MANAGEMENT: "true"
+OAUTH_GROUP_CLAIM: "groups"
+OAUTH_ADMIN_ROLES: "admin"
+```
+
+**LiteLLM Generic OIDC:**
+```yaml
+GENERIC_CLIENT_ID: "litellm"
+GENERIC_CLIENT_SECRET: "${LITELLM_OIDC_CLIENT_SECRET:?error}"
+GENERIC_AUTHORIZATION_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/auth"
+GENERIC_TOKEN_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/token"
+GENERIC_USERINFO_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/master/protocol/openid-connect/userinfo"
+PROXY_BASE_URL: "https://litellm.${DOMAIN:-localhost}"
+```
+
+**Notes:**
+- Open WebUI uses internal container URL for discovery (server-side fetch)
+- LiteLLM uses public URLs (browser redirects)
+- Groups must be mapped in Keycloak client scope to appear in tokens
+
+### YAML Configuration
+
+- Use 2-space indentation
+- Use anchors (`&anchor`) and aliases (`*alias`) to reduce duplication
+- Include section headers with `====` for major sections
+- Always define `logging` configuration using anchors
+- Use `healthcheck` for all persistent services
+- Use `profiles` for optional features (monitoring, gpu, backup)
+- Set `security_opt` with `no-new-privileges:true`
+- Use internal networks for backend services
+- Add `deploy.resources` for production services (memory/CPU limits)
+
+### Environment Variables
+
+**Naming Convention:**
+- Use SCREAMING_SNAKE_CASE
+- Prefix with service name (e.g., `OPENWEBUI_`, `LITELLM_`)
+- Suffix passwords with `_PASSWORD`, keys with `_KEY`
+
+**Security:**
+- Use `${VAR:?error}` for required variables (fails if missing)
+- Provide defaults only for optional: `${VAR:-default}`
+
+### Shell Scripts
+
+**Formatting:**
+- Use `#!/bin/bash` (not `/bin/sh`)
+- 4-space indentation
+- Use `set -euo pipefail` for error handling
+- Use `[[ ]]` for tests (not `[ ]`)
+- Quote all variable expansions: `"$VAR"`
+
+**Best Practices:**
+- Use `local` for all function variables
+- Use `readonly` for constants
+- Cross-platform compatibility (macOS vs Linux): use helper functions for `sed -i`
+
+### Error Handling
+
+- Docker Compose: Use `condition: service_healthy` for service dependencies
+- Shell scripts: Always use `set -euo pipefail`
+- Validate required environment variables at startup
+
+## File Structure
+
+```
+.
+├── AGENTS.md
+├── docker-compose.yml
+├── .env.example
+├── .env (never commit)
+├── traefik/
+│   ├── traefik.yml
+│   └── dynamic/
+├── grafana/provisioning/
+├── litellm/config.yaml
+├── otel/config.yaml
+├── qdrant/config.yaml
+├── keycloak/
+│   └── import/          # Realm import files
+├── ansible/             # Keycloak realm/client/user provisioning
+│   ├── playbooks/site.yml
+│   └── roles/openwebui_stack/
+├── container-scripts/   # Python the playbook runs inside litellm/open-webui
+├── tests/container_scripts/  # pytest suite for container-scripts/
+├── pyproject.toml       # ruff and pytest configuration
+├── .gitleaks.toml       # secret-scan rules (Secret Scan workflow)
+└── scripts/
+    ├── setup.sh
+    ├── generate-certs.sh
+    ├── backup-keycloak.sh
+    ├── reset-stack.sh
+    ├── check-secrets.sh     # gitleaks, trufflehog and policy; what CI runs
+    └── sync-ollama-models.sh
+```
+
+## Common Tasks
+
+### Adding a New Service
+1. Add service to `docker-compose.yml` with labels, networks, healthcheck
+2. Add required environment variables to `.env.example`
+3. Update README.md with service documentation
+
+### Updating an Image Version
+1. Check version in `docker-compose.yml`
+2. Test with `docker compose up -d [service]`
+3. Verify healthcheck passes
+
+### Modifying Configuration
+1. Make changes to appropriate YAML file
+2. Validate: `docker compose config`
+3. Test: `docker compose up -d`
+4. Verify service health
+
+## Security Notes
+
+- Never commit `.env` files or secrets
+- Use strong, randomly generated passwords (the playbook generates missing secrets once and persists them to `ansible/group_vars/all/vault.yml`)
+- Use `readonly` volumes where possible
+- Restrict network access using internal networks
+- Configure admin IP restriction for Keycloak via `KEYCLOAK_ADMIN_IP_RANGE`
+- Use OIDC for authentication instead of service-specific credentials

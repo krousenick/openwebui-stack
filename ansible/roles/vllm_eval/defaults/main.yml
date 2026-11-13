@@ -1,0 +1,57 @@
+---
+# Defaults for the vllm_eval role: reproducible quality/behavior tests for
+# a model deployed by vllm_compute. The tests are the ones run by hand
+# during the Qwen3-Coder-30B vs Gemma-4-26B-A4B comparison (2026-11-03):
+# a KV-capacity probe, a >32K long-prompt test through the LiteLLM
+# gateway, a short coding test, and (for multimodal models) a vision test.
+# Results land in vllm_eval_results_dir as JSON, one file per run, so
+# future models can be compared against past ones.
+
+# Target model to test. Must match the LiteLLM model_name (vllm_served_model_name
+# of the deployed model), e.g. gemma-4-26b-a4b.
+vllm_eval_model: ""
+
+# LiteLLM admin endpoint. Empty = auto-detect the litellm container on the
+# controller the same way vllm_compute's registration tasks do (docker ps +
+# container IP). Override when litellm runs elsewhere.
+vllm_eval_litellm_endpoint: ""
+
+# Master key for the gateway. Resolves from the controller environment
+# (LITELLM_MASTER_KEY, same secret vllm_compute registration uses).
+vllm_eval_litellm_key: "{{ lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY', default='') }}"
+
+# vLLM server to probe for KV capacity (the engine logs the real line at
+# startup; this probe greps it instead of guessing from config math).
+# Empty = probe localhost on the inventory host running the role.
+vllm_eval_vllm_host: "127.0.0.1"
+vllm_eval_vllm_port: 8000
+
+# Long-prompt test: tokens of filler context sent above the model's previous
+# failure floor. The original bug was 16385 input tokens against a 16384
+# window; 30000 proves the deployed window serves it (and >32K proves a
+# 64K window). Set 0 to skip.
+vllm_eval_long_prompt_tokens: 30000
+
+# Concurrency test: N parallel requests, each a short coding prompt.
+# Verifies the KV capacity line ("Maximum concurrency") holds up in
+# practice, not just in the startup log. Set 0 to skip.
+vllm_eval_concurrency: 8
+
+# Vision test: sends a generated red/white split PNG and asks which color
+# the left half is. Skipped automatically for non-multimodal models
+# (a text-only model rejects image content). Set false to force-skip.
+vllm_eval_vision_enabled: true
+
+# Timeout (seconds) for a single gateway request. Long-prompt prefill on a
+# 4090-class card can take minutes at 30K tokens.
+vllm_eval_request_timeout: 300
+
+# Where results are written. Defaults to the repo's eval-results dir so
+# runs are diffable in git; the dir is .gitignored.
+vllm_eval_results_dir: "{{ playbook_dir }}/../tests/eval-results"
+
+# Label for this run's result file (model + timestamp). The role pins the
+# timestamp once via a command task at the start of the run - defining it
+# as a lookup() default would re-evaluate on every reference and drift
+# between the --out argument and the results-file read.
+vllm_eval_run_label: ""

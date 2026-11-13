@@ -1,0 +1,161 @@
+---
+# Reproducible evaluation of a vllm_compute-deployed model. Runs the same
+# four tests used to compare Qwen3-Coder-30B vs Gemma-4-26B-A4B
+# (2026-11-03): KV-capacity probe, long-prompt, coding, vision (multimodal
+# only), and concurrency - all through the LiteLLM gateway so the whole
+# Open WebUI path is measured. Results are written as JSON next to the
+# tests/ tree for future-model comparisons.
+
+- name: Require a target model
+  ansible.builtin.assert:
+    that:
+      - vllm_eval_model | length > 0
+    fail_msg: "Set vllm_eval_model to the LiteLLM model_name to test (vllm_served_model_name of the deployed model)."
+
+- name: Resolve the LiteLLM endpoint
+  # Same docker-based auto-detect the vllm_compute registration tasks use;
+  # the gateway API is not published to the LAN.
+  ansible.builtin.shell: |
+    set -o pipefail
+    cid=$(docker ps --filter name=_litellm --format '{{ "{{" }}.Names{{ "}}" }}' | head -1)
+    if [ -z "$cid" ]; then
+        echo "LITELLM_NOT_RUNNING"
+        exit 0
+    fi
+    ip=$(docker exec "$cid" hostname -i | awk '{print $1}')
+    if [ -z "$ip" ]; then
+        echo "LITELLM_NOT_RUNNING"
+        exit 0
+    fi
+    echo "http://${ip}:4000"
+  register: vllm_eval_endpoint_detected
+  changed_when: false
+  delegate_to: localhost
+  become: false
+  when: vllm_eval_litellm_endpoint | length == 0
+
+- name: Pin the run id timestamp
+  # One timestamp for the whole run, captured eagerly. The --out argument
+  # the script gets and the results-file read must agree exactly; a lazy
+  # lookup() default re-renders on every reference, drifting by the run
+  # duration so the read misses the file.
+  ansible.builtin.command:
+    cmd: date +%Y%m%d-%H%M%S
+  register: vllm_eval_date_raw
+  changed_when: false
+  delegate_to: localhost
+  become: false
+
+- name: Set the effective LiteLLM endpoint and run label
+  ansible.builtin.set_fact:
+    vllm_eval_endpoint: >-
+      {{ vllm_eval_litellm_endpoint if vllm_eval_litellm_endpoint | length > 0
+         else vllm_eval_endpoint_detected.stdout }}
+    vllm_eval_run_id: "{{ (vllm_eval_run_label | length > 0)
+      | ternary(vllm_eval_run_label,
+          vllm_eval_model ~ '-' ~ vllm_eval_date_raw.stdout) }}"
+
+- name: Require the gateway to be reachable
+  ansible.builtin.assert:
+    that:
+      - vllm_eval_endpoint != 'LITELLM_NOT_RUNNING'
+      - vllm_eval_litellm_key | length > 0
+    fail_msg: >-
+      LiteLLM is not running or LITELLM_MASTER_KEY is not exported on the
+      controller. The eval measures the full gateway path, so both are
+      required.
+
+- name: Probe the vLLM KV capacity line
+  # The engine logs the real KV token capacity and worst-case concurrency
+  # at startup; grepping the server's log gives the measured number, not
+  # the config-math estimate. The unit's journal first: the container's
+  # output lands there whoever runs the container, while `podman logs` as
+  # root finds nothing on a node whose containers run rootless (they are in
+  # the service account's store). The container log is the fallback.
+  ansible.builtin.shell: |
+    line=$(journalctl -b -u {{ vllm_vllm_service_name | default('vllm-serve') }} --no-pager -o cat 2>/dev/null \
+        | grep -E "GPU KV cache size" | tail -1)
+    if [ -z "$line" ]; then
+        line=$({{ vllm_container_cli | default('podman') }} logs vllm-serve 2>&1 | grep -E "GPU KV cache size" | tail -1)
+    fi
+    echo "$line"
+  args:
+    executable: /bin/bash
+  register: vllm_eval_kv_line
+  changed_when: false
+  failed_when: false
+
+- name: Extract the measured KV numbers
+  ansible.builtin.set_fact:
+    vllm_eval_kv_tokens: "{{ (vllm_eval_kv_line.stdout | regex_search('GPU KV cache size: ([0-9,]+)', '\\1') | first | default('0') | replace(',', '')) }}"
+    vllm_eval_kv_concurrency: "{{ (vllm_eval_kv_line.stdout | regex_search('Maximum concurrency[^:]*: ([0-9.]+)x', '\\1') | first | default('0')) }}"
+
+- name: Create the results directory
+  ansible.builtin.file:
+    path: "{{ vllm_eval_results_dir }}"
+    state: directory
+    owner: "{{ vllm_eval_controller_user | default(lookup('ansible.builtin.env', 'USER')) }}"
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+
+- name: Copy the eval script to the controller
+  ansible.builtin.copy:
+    src: eval_model.py
+    dest: /tmp/vllm_eval_model.py
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+
+- name: Run the eval suite through the gateway
+  # The script exits nonzero on any failed test; results JSON is written
+  # either way so partial results survive for comparison. argv form avoids
+  # any shell/Jinja whitespace quirks with the optional --vision flag.
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /tmp/vllm_eval_model.py
+      - "--endpoint"
+      - "{{ vllm_eval_endpoint }}"
+      - "--model"
+      - "{{ vllm_eval_model }}"
+      - "--out"
+      - "{{ vllm_eval_results_dir }}/{{ vllm_eval_run_id }}.json"
+      - "--long-tokens"
+      - "{{ vllm_eval_long_prompt_tokens }}"
+      - "--concurrency"
+      - "{{ vllm_eval_concurrency }}"
+      - "--timeout"
+      - "{{ vllm_eval_request_timeout }}"
+      - "{{ '--vision' if vllm_eval_vision_enabled | bool else omit }}"
+  environment:
+    VLLM_EVAL_KEY: "{{ vllm_eval_litellm_key }}"
+  register: vllm_eval_run
+  delegate_to: localhost
+  become: false
+  changed_when: true
+  failed_when: false
+
+- name: Read the results file
+  ansible.builtin.slurp:
+    src: "{{ vllm_eval_results_dir }}/{{ vllm_eval_run_id }}.json"
+  register: vllm_eval_results_raw
+  delegate_to: localhost
+  become: false
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "model: {{ vllm_eval_model }}"
+      - "KV capacity: {{ vllm_eval_kv_tokens }} tokens (worst-case concurrency {{ vllm_eval_kv_concurrency }}x at the deployed window)"
+      - "results: {{ (vllm_eval_results_raw.content | b64decode | from_json).overall }}"
+      - "file: {{ vllm_eval_results_dir }}/{{ vllm_eval_run_id }}.json"
+      - "{{ (vllm_eval_results_raw.content | b64decode | from_json).tests | to_nice_json }}"
+
+- name: Fail the play when any test failed
+  ansible.builtin.assert:
+    that:
+      - (vllm_eval_results_raw.content | b64decode | from_json).overall == 'pass'
+    fail_msg: >-
+      Model eval reported failures - see the results file
+      {{ vllm_eval_results_dir }}/{{ vllm_eval_run_id }}.json

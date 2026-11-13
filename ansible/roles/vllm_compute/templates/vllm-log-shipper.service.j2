@@ -1,0 +1,37 @@
+[Unit]
+# Managed by Ansible (role: vllm_compute). Ships vllm-serve journald logs
+# to the controller's Loki (Grafana) push API.
+Description=vLLM log shipper (Grafana Alloy)
+Wants=network-online.target
+After=network-online.target vllm-serve.service
+{% if vllm_rootless | bool %}
+# Rootless podman runs inside the service account's user manager: it
+# provides the runtime directory and the cgroup scopes of the containers.
+Wants=user@{{ vllm_run_uid }}.service
+After=user@{{ vllm_run_uid }}.service
+{% endif %}
+
+[Service]
+Type=simple
+User={{ vllm_run_user }}
+Group={{ vllm_run_group }}
+{% if vllm_rootless | bool %}
+Environment=XDG_RUNTIME_DIR=/run/user/{{ vllm_run_uid }}
+# Keeps podman in this unit's cgroup, so its output stays under this unit
+# in the journal (see vllm-serve.service).
+Delegate=yes
+{% endif %}
+ExecStartPre=/usr/bin/podman pull --quiet {{ vllm_alloy_image }}
+{# Rootless: the journal is readable through the account's systemd-journal
+   group, which --group-add keep-groups carries into the container.
+   --log-driver none: the unit already captures the output, and
+   podman's own journald logging would file each line a second time. #}
+ExecStart=/bin/bash -c '/usr/bin/podman run --rm --name vllm-log-shipper --network host{{ (' ' ~ vllm_container_init_flags) if vllm_container_init_flags | length > 0 else '' }}{{ ' --group-add keep-groups --security-opt no-new-privileges --log-driver none' if vllm_rootless | bool else '' }} -v /var/log/journal:/var/log/journal:ro -v /etc/machine-id:/etc/machine-id:ro -v /opt/vllm/vllm-log-shipper.alloy:/etc/alloy/config.alloy:ro {{ vllm_alloy_image }} run --server.http.listen-addr=0.0.0.0:12345 /etc/alloy/config.alloy'
+ExecStop=/bin/bash -c 'podman rm -f vllm-log-shipper || true'
+Restart=always
+RestartSec=10
+# The init process exits 143 (128 + SIGTERM) on `systemctl stop`.
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target

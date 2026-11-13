@@ -1,0 +1,43 @@
+---
+- name: Deploy Open WebUI AI platform
+  hosts: openwebui
+  become: true
+  # group_vars/all is loaded explicitly: with the playbook under playbooks/
+  # Ansible does not auto-load ../group_vars. vault.yml is the tracked
+  # template; vault.local.yml holds the real values and is gitignored. It is
+  # optional: secrets left unset or as placeholders are generated on the first
+  # run and written to it (the inner list falls back to the template when the
+  # file does not exist yet).
+  vars_files:
+    - ../group_vars/all/vars.yml
+    # This site's own settings (the real domain, provider toggles), kept out
+    # of git. Optional: the inner list falls back to vars.yml when the file
+    # does not exist. tasks/keycloak.yml loads it a second time, see there.
+    - - ../group_vars/all/vars.local.yml
+      - ../group_vars/all/vars.yml
+    - ../group_vars/all/vault.yml
+    # Do not remove: without this entry the real secrets are never loaded,
+    # every one of them still reads as a placeholder, and tasks/secrets.yml
+    # generates new values over the ones in vault.local.yml.
+    - - ../group_vars/all/vault.local.yml
+      - ../group_vars/all/vault.yml
+
+  roles:
+    # The GPU driver first: when the stack host has an NVIDIA GPU whose
+    # driver does not work (typically after a kernel update), this rebuilds
+    # it before anything that uses the GPU is started. A host without a GPU
+    # is left alone, and a host whose driver cannot be repaired still
+    # deploys: tasks/gpu_profile.yml then leaves the GPU exporter out.
+    - role: ../roles/nvidia_driver
+      tags:
+        - nvidia_driver
+    # Global host checks (Docker, compose, base packages) run on every host
+    # before any role touches docker compose.
+    - role: ../roles/prerequisites
+    - role: ../roles/openwebui_stack
+    - role: ../roles/chatterbox
+      tags:
+        - chatterbox
+    - role: ../roles/opencode
+      tags:
+        - opencode

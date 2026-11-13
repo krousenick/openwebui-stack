@@ -1,0 +1,61 @@
+[Unit]
+Description=LLM Launcher GUI (Local-LLM-Launcher-GUI)
+After=network-online.target{% if vllm_container_cli == 'docker' %} docker.service{% endif %}
+
+Wants=network-online.target
+{% if vllm_container_cli == 'docker' %}
+Requires=docker.service
+{% endif %}
+{% if vllm_rootless | bool %}
+# Rootless podman runs inside the service account's user manager: it
+# provides the runtime directory and the cgroup scopes of the containers.
+Wants=user@{{ vllm_run_uid }}.service
+After=user@{{ vllm_run_uid }}.service
+{% endif %}
+# Start rate limit. These belong in [Unit]: in [Service] systemd ignores
+# StartLimitIntervalSec and falls back to its default interval.
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User={{ vllm_run_user }}
+Group={{ vllm_run_group }}
+{% if vllm_rootless | bool %}
+Environment=XDG_RUNTIME_DIR=/run/user/{{ vllm_run_uid }}
+# Delegate: the unit's cgroup then belongs to the account, so podman stays
+# in it. Without it podman moves itself into a scope of the account's user
+# manager, and journald files the server's output under user@<uid>.service:
+# `journalctl -u` on this unit and the log shipper would see none of it.
+Delegate=yes
+{% endif %}
+{% if vllm_container_cli == 'docker' %}
+ExecStartPre=/bin/bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
+{% endif %}
+ExecStart={{ vllm_launcher_dir }}/vllm-launcher.sh
+# --rm does not fire when systemd SIGTERMs the {{ vllm_container_cli }} client; remove the
+# container explicitly so a restarted unit reuses the name cleanly. This also
+# stops every model server the GUI started (they live in this container).
+ExecStop=/bin/bash -c '{{ vllm_container_cli }} rm -f {{ vllm_container_name }}-launcher || true'
+ExecStopPost=/bin/bash -c '{{ vllm_container_cli }} rm -f {{ vllm_container_name }}-launcher || true'
+Restart=always
+# The init process exits 143 (128 + SIGTERM) when it stops the server on
+# `systemctl stop`: a clean stop, not a failure.
+SuccessExitStatus=143
+RestartSec=15
+TimeoutStartSec=0
+TimeoutStopSec=120
+KillMode=control-group
+
+# Security
+{% if vllm_rootless | bool %}
+# Not on the unit when rootless: podman sets up its user namespace with
+# newuidmap, which NoNewPrivileges blocks. The run script passes
+# --security-opt no-new-privileges to the container instead.
+{% else %}
+NoNewPrivileges=true
+{% endif %}
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

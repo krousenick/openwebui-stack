@@ -6,6 +6,24 @@
 .env
 *.env.local
 *.env.*.local
+ansible/group_vars/all/vault.local.yml
+ansible/group_vars/all/vars.local.yml
+
+# Model eval results (vllm_eval role; per-run JSON, kept local)
+ansible/tests/eval-results/
+
+# Local LiteLLM/vLLM mock debugging harness (per-run, kept local)
+.rd-test/
+
+# vllm-remote runner local config (real addresses/users/key paths)
+ansible/tests/vllm-remote/run.local.env
+
+# Site-specific inventory/group_vars overrides (real addresses, users,
+# paths, CIDRs). The committed files ship placeholders; these carry the
+# real values and override them when passed as a second -i / by merge order.
+ansible/inventory/*.local.yml
+ansible/tests/*/inventory.local.yml
+ansible/tests/*/group_vars/*/*.local.yml
 
 # SSL Certificates (generated locally)
 certs/
@@ -43,6 +61,9 @@ tmp/
 temp/
 *.tmp
 
+# Session tokens captured during debugging (bearer credentials)
+token.txt
+
 # Docker
 .docker/
 
@@ -53,6 +74,8 @@ __pycache__/
 .Python
 venv/
 .venv/
+.pytest_cache/
+.ruff_cache/
 
 # Node (if any scripts)
 node_modules/
@@ -60,3 +83,12 @@ npm-debug.log*
 
 # Keep directories but not contents
 !grafana/provisioning/dashboards/json/.gitkeep
+.magie-coder/
+.playwright-mcp/
+*.png
+.magie-tmp
+# Cloudflare Origin CA root (public root CA, safe to commit; used by the opencode role)
+!ansible/roles/opencode/files/origin_ca_rsa_root.pem
+.tmp*
+# GeoIP database the playbook downloads for the Keycloak login tracker
+geoip/

@@ -1,0 +1,30 @@
+---
+# The freecad image build copies the freecad-mcp fork source out of its
+# build context (freecad/Dockerfile: COPY freecad-mcp-<short ref>.tar.gz).
+# The archive is not in the repo (*.tar.gz is gitignored), so it is fetched
+# here, on the stack host, before the compose step builds the image. The
+# host resolves github.com; build containers on the deployment network
+# often do not, which is why the Dockerfile does not download it itself.
+#
+# The checksum pins the exact bytes. An archive that is already in place
+# with that checksum is left alone and nothing is downloaded, so a host
+# without access to GitHub is served by copying the file there by hand.
+#
+# GitHub builds commit archives on request and does not promise that their
+# bytes never change. If the checksum fails on a fresh download of an
+# unchanged ref, compare the archive's contents with a known-good copy
+# before changing freecad_mcp_source_sha256.
+
+- name: Fetch the freecad-mcp source archive for the image build
+  ansible.builtin.get_url:
+    url: "{{ freecad_mcp_source_url }}"
+    dest: "{{ project_root }}/freecad/{{ freecad_mcp_source_file }}"
+    checksum: "sha256:{{ freecad_mcp_source_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+    timeout: 120
+  register: freecad_mcp_source_fetch
+  until: freecad_mcp_source_fetch is succeeded
+  retries: 3
+  delay: 10

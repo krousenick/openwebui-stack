@@ -1,0 +1,123 @@
+{% if vllm_deployment_mode == 'ray' %}
+# Managed by Ansible (role: vllm_compute). One Ray cluster head serves the
+# model across {{ vllm_effective_pp }} pipeline stage(s); LiteLLM needs a
+# single endpoint.
+  - model_name: {{ vllm_served_model_name }}
+    litellm_params:
+      model: openai/{{ vllm_served_model_name }}
+      api_base: http://{{ vllm_ray_head_address }}:{{ vllm_port }}/v1
+      api_key: {{ 'os.environ/VLLM_API_KEY' if vllm_api_key | length > 0 else 'local' }}
+{% if vllm_reasoning_effort | default('') | length > 0 %}
+      # Default effort for requests that send none; a request-level
+      # reasoning_effort (Open WebUI / MAGIE) overrides this default.
+      reasoning_effort: {{ vllm_reasoning_effort }}
+{% endif %}
+{% if vllm_repetition_detection | default({}) | dict2items | length > 0 %}
+      # Default repetition-loop detection (Gemma 4 structured-output bug,
+      # vllm-project/vllm#40080); a request-level repetition_detection
+      # overrides this default.
+      repetition_detection: {{ vllm_repetition_detection | to_json }}
+{% endif %}
+    model_info:
+      description: "{{ vllm_served_model_name }} - vLLM Ray cluster ({{ vllm_effective_tp }}xTP, {{ vllm_effective_pp }}xPP)"
+      max_input_tokens: {{ vllm_max_model_len }}
+      max_tokens: {{ vllm_max_model_len }}
+{% if vllm_reasoning_parser | default('') | length > 0 %}
+      supports_reasoning: true
+{% endif %}
+{% for effort in vllm_reasoning_efforts | default([]) %}
+      supports_{{ effort }}_reasoning_effort: true
+{% endfor %}
+{% else %}
+# Managed by Ansible (role: vllm_compute). Standalone replicas; LiteLLM
+# load balances across these endpoints.
+{% for host in vllm_endpoints %}
+  - model_name: {{ vllm_served_model_name }}
+    litellm_params:
+      model: openai/{{ vllm_served_model_name }}
+      api_base: http://{{ host }}:{{ vllm_port }}/v1
+      api_key: {{ 'os.environ/VLLM_API_KEY' if vllm_api_key | length > 0 else 'local' }}
+{% if vllm_reasoning_effort | default('') | length > 0 %}
+      # Default effort for requests that send none; a request-level
+      # reasoning_effort (Open WebUI / MAGIE) overrides this default.
+      reasoning_effort: {{ vllm_reasoning_effort }}
+{% endif %}
+{% if vllm_repetition_detection | default({}) | dict2items | length > 0 %}
+      # Default repetition-loop detection (Gemma 4 structured-output bug,
+      # vllm-project/vllm#40080); a request-level repetition_detection
+      # overrides this default.
+      repetition_detection: {{ vllm_repetition_detection | to_json }}
+{% endif %}
+    model_info:
+      description: "{{ vllm_served_model_name }} - vLLM on {{ host }}"
+      max_input_tokens: {{ vllm_max_model_len }}
+      max_tokens: {{ vllm_max_model_len }}
+{% if vllm_reasoning_parser | default('') | length > 0 %}
+      supports_reasoning: true
+{% endif %}
+{% for effort in vllm_reasoning_efforts | default([]) %}
+      supports_{{ effort }}_reasoning_effort: true
+{% endfor %}
+{% if vllm_adaptive_quality_tier | default('') | string | length > 0 %}
+      adaptive_router_preferences:
+        quality_tier: {{ vllm_adaptive_quality_tier }}
+        strengths: {{ vllm_adaptive_strengths | to_json }}
+      input_cost_per_token: {{ vllm_adaptive_input_cost_per_token }}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if vllm_flux_enabled | default(false) | bool and (vllm_flux_effective_models | default([]) | length > 0) %}
+# Flux image-generation servers, one entry per vllm_flux_models entry. These
+# land on every vllm_compute host; the rendered api_base points at the host
+# this run rendered from. mode: image_generation makes LiteLLM route
+# image-generation calls to them.
+{% for flux_item in vllm_flux_effective_models %}
+  - model_name: {{ flux_item.served_model_name }}
+    litellm_params:
+      model: openai/{{ flux_item.served_model_name }}
+      api_base: http://{{ vllm_host_ip }}:{{ flux_item.port }}/v1
+      api_key: {{ 'os.environ/VLLM_FLUX_API_KEY' if vllm_flux_api_key | length > 0 else 'local' }}
+    model_info:
+      mode: image_generation
+      description: "{{ flux_item.served_model_name }} - vLLM Flux on {{ inventory_hostname }}"
+      max_input_tokens: {{ flux_item.max_model_len }}
+      max_tokens: {{ flux_item.max_model_len }}
+      supports_function_calling: false
+      supports_vision: false
+{% endfor %}
+{% endif %}
+{% if vllm_aux_enabled | default(false) | bool and (vllm_aux_effective_models | default([]) | length > 0) %}
+# Aux model servers. Each vllm_aux_models entry placed on a hosts subset;
+# subelements renders one (entry, host) pair per placement, so a model on
+# two nodes appears twice under the same model_name (LiteLLM load balances
+# replicas). Explicit ports land on the named node; the endpoint list
+# covers every (node, entry) pair.
+{% for aux_pair in vllm_aux_effective_models | default([]) | subelements('hosts') %}
+  - model_name: {{ aux_pair.0.served_model_name }}
+    litellm_params:
+      model: openai/{{ aux_pair.0.served_model_name }}
+      api_base: http://{{ hostvars[aux_pair.1].vllm_host_ip }}:{{ aux_pair.0.port }}/v1
+      api_key: {{ 'os.environ/VLLM_AUX_API_KEY' if aux_pair.0.api_key | length > 0 else 'local' }}
+{% if aux_pair.0.reasoning_effort | default('') | length > 0 %}
+      # Default effort for requests that send none; a request-level
+      # reasoning_effort (Open WebUI / MAGIE) overrides this default.
+      reasoning_effort: {{ aux_pair.0.reasoning_effort }}
+{% endif %}
+{% if aux_pair.0.repetition_detection | default({}) | dict2items | length > 0 %}
+      # Default repetition-loop detection (Gemma 4 structured-output bug,
+      # vllm-project/vllm#40080); a request-level repetition_detection
+      # overrides this default.
+      repetition_detection: {{ aux_pair.0.repetition_detection | to_json }}
+{% endif %}
+    model_info:
+      description: "{{ aux_pair.0.served_model_name }} - vLLM aux on {{ aux_pair.1 }} ({{ aux_pair.0.model }})"
+      max_input_tokens: {{ aux_pair.0.max_model_len }}
+      max_tokens: {{ aux_pair.0.max_model_len }}
+{% if aux_pair.0.reasoning_parser | default('') | length > 0 %}
+      supports_reasoning: true
+{% endif %}
+{% for effort in aux_pair.0.reasoning_efforts | default([]) %}
+      supports_{{ effort }}_reasoning_effort: true
+{% endfor %}
+{% endfor %}
+{% endif %}

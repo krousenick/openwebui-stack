@@ -1,0 +1,1741 @@
+# =============================================================================
+# Shared Logging Configuration
+# =============================================================================
+x-logging: &default-logging
+  driver: "local"
+  options:
+    max-size: "10m"
+    max-file: "5"
+    compress: "true"
+
+services:
+  # ===========================================================================
+  # Traefik Reverse Proxy
+  # ===========================================================================
+  traefik:
+    image: traefik:v3.7
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./certs:/etc/traefik/certs:ro
+    environment:
+      TZ: UTC
+    networks:
+      frontend:
+        aliases:
+          - auth.${DOMAIN:-localhost}
+          - chatbot.${DOMAIN:-localhost}
+          - grafana.${DOMAIN:-localhost}
+          - litellm.${DOMAIN:-localhost}
+          - voice.${DOMAIN:-localhost}
+{%- if playwright_mcp_enabled | default(true) | bool %}
+          - playwright-mcp.${DOMAIN:-localhost}
+{% endif %}
+      backend:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.traefik.entrypoints=websecure"
+      - "traefik.http.routers.traefik.tls=true"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.traefik.middlewares=dashboard-auth"
+      # Dashboard with basic auth (credentials from environment)
+      - "traefik.http.middlewares.dashboard-auth.basicauth.users=${TRAEFIK_DASHBOARD_USER:-admin}:${TRAEFIK_DASHBOARD_PASSWORD_HASH:?error}"
+    healthcheck:
+      test: [ "CMD", "traefik", "healthcheck", "--ping" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ===========================================================================
+  # Open WebUI - Main Application Interface
+  # ===========================================================================
+  open-webui:
+    image: ${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui:main}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_open-webui
+    restart: unless-stopped
+    logging: *default-logging
+    volumes:
+      - openwebui_data:/app/backend/data
+      # Centralized SKILL.md packages: mounted read-only for the skill
+      # publishing task (tasks/openwebui_skills.yml reads SKILL.md and
+      # pushes it through the workspace API).
+      - ./skills:/app/skills:ro
+      # Provisioning scripts the playbook runs with this container's Python
+      # (tasks/container_script.yml). The service itself never loads them.
+      - ./container-scripts:{{ container_scripts_mount }}:ro
+      - ./certs:/etc/ssl/certs/local:ro
+{% if blender_mcp_enabled | default(false) | bool or freecad_mcp_enabled | default(false) | bool or printer_mcp_enabled | default(false) | bool %}
+      # Read-only view of the shared models volume for the
+      # tool_result_file_download filter (outlet): it reads
+      # /models/*.stl|3mf|step that blender/freecad/printer-mcp write and
+      # uploads them as real Open WebUI files so users can download them
+      # from the chat. The app itself never writes here.
+      - models:/models:ro
+{% endif %}
+{% if openwebui_code_interpreter_active | bool %}
+      # Read-only view of the files code-interpreter runs save for the user
+      # (/outputs/<chat id>/*.docx|xlsx|pptx|pdf, written by code-sandbox).
+      # The same filter uploads them as Open WebUI files for download.
+      - outputs:/outputs:ro
+{% endif %}
+    environment:
+      # Database configuration
+      DATABASE_URL: "postgresql://${OPENWEBUI_DB_USER:-openwebui}:${OPENWEBUI_DB_PASSWORD:?error}@postgres:5432/${OPENWEBUI_DB_NAME:-openwebui}"
+
+      # Security
+      WEBUI_SECRET_KEY: "${OPENWEBUI_SECRET_KEY:?error}"
+      WEBUI_URL: "https://chatbot.${DOMAIN:-localhost}"
+
+      # Redis caching configuration (using Valkey)
+      REDIS_URL: "redis://:${VALKEY_PASSWORD:?error}@valkey:6379"
+
+      # OpenTelemetry configuration for observability
+      ENABLE_OTEL: "true"
+      ENABLE_OTEL_TRACES: "true"
+      ENABLE_OTEL_METRICS: "true"
+      ENABLE_OTEL_LOGS: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm:4317"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_SERVICE_NAME: "open-webui"
+
+      # RAG configuration with Qdrant
+      VECTOR_DB: "qdrant"
+      QDRANT_URI: "http://qdrant:6333"
+      QDRANT_API_KEY: "${QDRANT_API_KEY:?error}"
+
+      # LiteLLM as the primary model provider
+      OPENAI_API_BASE_URL: "http://litellm:4000/v1"
+      OPENAI_API_KEY: "${LITELLM_MASTER_KEY:?error}"
+      OPENAI_API_CONFIGS: '{"0":{"enable":true,"auth_type":"system_oauth"}}'
+
+      # Disable Ollama
+      ENABLE_OLLAMA_API: "false"
+{% if openwebui_default_models_csv | length > 0 %}
+
+      # Default chat model. ConfigVar: persisted after first boot; the
+      # playbook enforces it through the API afterwards
+      # (tasks/openwebui_default_models.yml).
+      DEFAULT_MODELS: {{ openwebui_default_models_csv | to_json }}
+{% endif %}
+
+      # Production settings
+      ENABLE_SIGNUP: "false"
+      ENABLE_LOGIN_FORM: "false"
+      ENABLE_OAUTH: "true"
+      ENABLE_OAUTH_SIGNUP: "true"
+      ENABLE_OAUTH_PERSISTENT_CONFIG: "false"
+      OAUTH_PROVIDER_NAME: "SSO"
+      OAUTH_SCOPES: "openid email profile"
+      OAUTH_CLIENT_ID: "${OPENWEBUI_OIDC_CLIENT_ID:-open-webui}"
+      OAUTH_CLIENT_SECRET: "${OPENWEBUI_OIDC_CLIENT_SECRET:?error}"
+      OPENID_PROVIDER_URL: "http://keycloak:8080/realms/${KEYCLOAK_REALM:-platform}/.well-known/openid-configuration"
+      OAUTH_TOKEN_ENDPOINT: "http://keycloak:8080/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/token"
+      OAUTH_USERINFO_ENDPOINT: "http://keycloak:8080/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/userinfo"
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/local/cloudflare-origin-ca-rsa.pem
+      SSL_CERT_FILE: /etc/ssl/certs/local/cloudflare-origin-ca-rsa.pem
+      OPENID_REDIRECT_URI: "https://chatbot.${DOMAIN:-localhost}/oauth/oidc/callback"
+      # Single logout. Sign out redirects the browser to the discovery
+      # document's end_session_endpoint with id_token_hint, which ends the
+      # Keycloak SSO session; this URL is sent as post_logout_redirect_uri
+      # and must equal the open-webui entry in keycloak_apps (vars.yml), or
+      # Keycloak answers "Invalid redirect uri".
+      WEBUI_AUTH_SIGNOUT_REDIRECT_URL: "https://chatbot.${DOMAIN:-localhost}/auth"
+      # Other direction: Keycloak POSTs a logout token to
+      # /oauth/backchannel-logout when the SSO session ends from another
+      # app (backchannel_logout_url in keycloak_apps). Open WebUI drops the
+      # user's OAuth sessions and, through Valkey, revokes their JWTs.
+      ENABLE_OAUTH_BACKCHANNEL_LOGOUT: "true"
+      OAUTH_CODE_CHALLENGE_METHOD: "S256"
+      OAUTH_EMAIL_CLAIM: "email"
+      OAUTH_USERNAME_CLAIM: "preferred_username"
+      ENABLE_OAUTH_GROUP_MANAGEMENT: "true"
+      ENABLE_OAUTH_GROUP_CREATION: "true"
+      OAUTH_GROUP_CLAIM: "groups"
+      OAUTH_GROUP_DEFAULT_SHARE: "members"
+      ENABLE_OAUTH_ROLE_MANAGEMENT: "true"
+      OAUTH_ROLES_CLAIM: "roles"
+      OAUTH_ADMIN_ROLES: "openwebui_admin"
+      # Roles from the claim must literally match the allowed list or Open
+      # WebUI 403s the login (get_user_role rejects non-matching roles when
+      # role management is on). The Keycloak client role is openwebui_user.
+      OAUTH_ALLOWED_ROLES: "openwebui_user"
+      OAUTH_ROLES_SEPARATOR: ","
+      OAUTH_MERGE_ACCOUNTS_BY_EMAIL: "true"
+      DEFAULT_USER_ROLE: "user"
+      ENABLE_API_KEYS: "true"
+      ENABLE_VERSION_UPDATE_CHECK: "false"
+      # The signed-in user goes with every request to LiteLLM and to the tool
+      # servers. LiteLLM attributes spend by it, and its memory hook makes
+      # X-OpenWebUI-User-Email the owner of saved memories.
+      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
+      # Open WebUI's own memory, off while the shared one (memory-mcp) is on.
+      # ConfigVar: seeds the first boot only;
+      # tasks/openwebui_interface_defaults.yml sets it on every run.
+      ENABLE_MEMORIES: "{{ 'true' if openwebui_builtin_memories_enabled | bool else 'false' }}"
+      ENABLE_COMMUNITY_SHARING: "false"
+      ENABLE_CODE_EXECUTION: "false"
+      # Code interpreter: execute_code runs in the code-sandbox container
+      # (engine jupyter, wired below), never inside this one. ConfigVar:
+      # seeds the first boot only; tasks/code_sandbox.yml heals the stored
+      # value on every run.
+      ENABLE_CODE_INTERPRETER: "{{ 'true' if openwebui_code_interpreter_active | bool else 'false' }}"
+{% if code_sandbox_enabled | bool %}
+      CODE_INTERPRETER_ENGINE: "jupyter"
+      CODE_EXECUTION_ENGINE: "jupyter"
+      # Both engines point at the isolated code-sandbox container.
+      CODE_EXECUTION_JUPYTER_URL: "http://code-sandbox:8888"
+      CODE_EXECUTION_JUPYTER_AUTH: "token"
+      CODE_EXECUTION_JUPYTER_AUTH_TOKEN: "${CODE_SANDBOX_TOKEN:?error}"
+      CODE_EXECUTION_JUPYTER_TIMEOUT: "120"
+      CODE_INTERPRETER_JUPYTER_URL: "http://code-sandbox:8888"
+      CODE_INTERPRETER_JUPYTER_AUTH: "token"
+      CODE_INTERPRETER_JUPYTER_AUTH_TOKEN: "${CODE_SANDBOX_TOKEN:?error}"
+      CODE_INTERPRETER_JUPYTER_TIMEOUT: "120"
+{% endif %}
+
+      # Chatterbox TTS (OpenAI-compatible, devnen Chatterbox-TTS-Server).
+      # ConfigVars: persisted after first boot.
+      # https://docs.openwebui.com/features/chat-conversations/audio/text-to-speech/chatterbox-tts-api-integration
+      AUDIO_TTS_ENGINE: "openai"
+      AUDIO_TTS_OPENAI_API_BASE_URL: "http://chatterbox-tts-server:8004/v1"
+      AUDIO_TTS_OPENAI_API_KEY: "none"
+      AUDIO_TTS_MODEL: "${CHATTERBOX_TTS_MODEL:-tts-1}"
+      AUDIO_TTS_VOICE: "${CHATTERBOX_TTS_VOICE:-}"
+      AUDIO_TTS_SPLIT_ON: "paragraphs"
+
+      # Brave Search through the LiteLLM MCP gateway. ConfigVar: persisted after first boot.
+      ENABLE_TOOL_SERVERS: "true"
+      TOOL_SERVER_CONNECTIONS: '[{"type":"mcp","url":"http://litellm:4000/mcp/brave_search","auth_type":"bearer","key":"${LITELLM_MASTER_KEY}","config":{"enable":true},"info":{"id":"brave_search","name":"Brave Search","description":"Web search through the LiteLLM Brave MCP server"}}]'
+
+      ENABLE_ADMIN_CHAT_ACCESS: "true"
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      lgtm:
+        condition: service_started
+{% if code_sandbox_enabled | bool %}
+      code-sandbox:
+        condition: service_healthy
+{% endif %}
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
+      - traefik.http.routers.openwebui.rule=Host(`chatbot.${DOMAIN:-localhost}`)
+      - traefik.http.routers.openwebui.entrypoints=websecure
+      - traefik.http.routers.openwebui.tls=true
+      - traefik.http.services.openwebui.loadbalancer.server.port=8080
+      - traefik.http.services.openwebui.loadbalancer.server.scheme=http
+      # WebSocket support - passthrough mode for native WebSocket handling
+      - traefik.http.routers.openwebui.middlewares=secure-headers@file
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ===========================================================================
+  # LiteLLM Proxy - Unified LLM Gateway
+  # ===========================================================================
+  litellm:
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_litellm
+    restart: unless-stopped
+    logging: *default-logging
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+{% if brave_search_enabled | default(false) | bool and brave_search_api_key | default('') | length > 0 %}
+      - ./litellm/brave_mcp_callback.py:/app/brave_mcp_callback.py:ro
+{% endif %}
+      - ./litellm/context_compaction_callback.py:/app/context_compaction_callback.py:ro
+{% if not (litellm_ui_chat_enabled | default(false) | bool) %}
+      - ./litellm/ui_chat_block_callback.py:/app/ui_chat_block_callback.py:ro
+{% endif %}
+{% if memory_mcp_enabled | default(true) | bool %}
+      - ./litellm/memory_callback.py:/app/memory_callback.py:ro
+{% endif %}
+{% if skills_mcp_hook_enabled | default(false) | bool %}
+      - ./litellm/skills_callback.py:/app/skills_callback.py:ro
+{% endif %}
+      - ./litellm/guardrail_categories/prompt_injection_sql.yaml:/app/guardrail_categories/prompt_injection_sql.yaml:ro
+      - ./litellm/guardrail_categories/prompt_injection_jailbreak.yaml:/app/guardrail_categories/prompt_injection_jailbreak.yaml:ro
+      - ./litellm/guardrail_categories/prompt_injection_system_prompt.yaml:/app/guardrail_categories/prompt_injection_system_prompt.yaml:ro
+      - ./litellm/guardrail_categories/prompt_injection_malicious_code.yaml:/app/guardrail_categories/prompt_injection_malicious_code.yaml:ro
+      - ./litellm/guardrail_categories/prompt_injection_data_exfiltration.yaml:/app/guardrail_categories/prompt_injection_data_exfiltration.yaml:ro
+      # Centralized SKILL.md packages: mounted read-only for the Skills
+      # Gateway task (zip build for the /v1/skills proxy-hosted store) and
+      # the skills hook's index.
+      - ./skills:/app/skills:ro
+      # Provisioning scripts the playbook runs with this container's Python
+      # (tasks/container_script.yml). The service itself never loads them.
+      - ./container-scripts:{{ container_scripts_mount }}:ro
+      - ./certs:/etc/ssl/certs/local:ro
+    environment:
+      # Database for LiteLLM
+      DATABASE_URL: "postgresql://${LITELLM_DB_USER:-litellm}:${LITELLM_DB_PASSWORD:?error}@postgres:5432/${LITELLM_DB_NAME:-litellm}"
+      STORE_MODEL_IN_DB: "True"
+
+      # Authentication
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?error}"
+      LITELLM_SALT_KEY: "${LITELLM_SALT_KEY:?error}"
+{% if litellm_license | default('') | length > 0 %}
+      # Optional LiteLLM Enterprise license (lifts the 5-user UI SSO seat
+      # limit; only rendered when a license key is set in the vault).
+      LITELLM_LICENSE: "${LITELLM_LICENSE}"
+{% endif %}
+
+      # Redis/Valkey Cache Authentication
+      REDIS_PASSWORD: "${VALKEY_PASSWORD:?error}"
+      REDIS_HOST: valkey
+      REDIS_PORT: "6379"
+
+      # OpenTelemetry for observability
+      OTEL_EXPORTER: otlp_grpc
+      OTEL_ENDPOINT: "http://lgtm:4317"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm:4317"
+      OTEL_SERVICE_NAME: litellm
+
+      SSL_VERIFY: False
+      HTTPX_VERIFY: False
+      PYTHONHTTPSVERIFY: "0"
+      CURL_CA_BUNDLE: ""
+      REQUESTS_CA_BUNDLE: "/etc/ssl/certs/local/origin_ca_rsa_root.pem"
+      SSL_CERT_FILE: "/etc/ssl/certs/local/origin_ca_rsa_root.pem"
+      GLOBAL_SSL_VERIFY: "false"
+      # Startup hooks, in the order they run on a request:
+      #   ui_chat_block       refuses model calls from the admin UI's
+      #                       Playground and Chat pages; loaded unless
+      #                       litellm_ui_chat_enabled. Chat goes through Open
+      #                       WebUI or an API client.
+      #   brave_mcp           only when the brave-search-mcp container is
+      #                       deployed; without the server behind it the
+      #                       injected tool cannot execute.
+      #   memory              signs the owner of each saved-memory tool call
+      #                       for memory-mcp, and adds the user's memory index
+      #                       to chat requests that carry the memory tools
+      #                       (memory_mcp_enabled). Before the compactor, so
+      #                       the index counts toward the window.
+      #   skills              gives requests that carry no tools of their own
+      #                       the `skills` MCP server and an index of the
+      #                       skills, and the index alone to requests that
+      #                       carry the skills tools (skills_mcp_hook_enabled).
+      #                       After brave_mcp, whose gateway tool it joins
+      #                       and whose declined tool rounds it takes; before
+      #                       the compactor, so the index counts.
+      #   context_compaction  always on.
+{% set litellm_startup_hooks = [] %}
+{% if not (litellm_ui_chat_enabled | default(false) | bool) %}
+{%   set _ = litellm_startup_hooks.append('ui_chat_block_callback:register_callback') %}
+{% endif %}
+{% if brave_search_enabled | default(false) | bool and brave_search_api_key | default('') | length > 0 %}
+{%   set _ = litellm_startup_hooks.append('brave_mcp_callback:register_callback') %}
+{% endif %}
+{% if memory_mcp_enabled | default(true) | bool %}
+{%   set _ = litellm_startup_hooks.append('memory_callback:register_callback') %}
+{% endif %}
+{% if skills_mcp_hook_enabled | default(false) | bool %}
+{%   set _ = litellm_startup_hooks.append('skills_callback:register_callback') %}
+{% endif %}
+{% set _ = litellm_startup_hooks.append('context_compaction_callback:register_callback') %}
+      LITELLM_WORKER_STARTUP_HOOKS: "{{ litellm_startup_hooks | join(',') }}"
+{% if not (litellm_ui_chat_enabled | default(false) | bool) %}
+      # Named in the refusal the ui_chat_block hook returns.
+      UI_CHAT_BLOCK_OPENWEBUI_URL: "https://chatbot.${DOMAIN:-localhost}"
+{% endif %}
+{% if memory_mcp_enabled | default(true) | bool %}
+      # memory_callback.py: the key it signs memory tool calls with (memory-mcp
+      # checks it), and where it reads each user's memory index.
+      MEMORY_MCP_SIGNING_KEY: "${MEMORY_MCP_SIGNING_KEY:?error}"
+      MEMORY_MCP_URL: "http://memory-mcp:8080"
+      MEMORY_INDEX_ENABLED: "{{ 'true' if memory_index_enabled | default(true) | bool else 'false' }}"
+{% endif %}
+{% if skills_mcp_hook_enabled | default(false) | bool %}
+      # skills_callback.py: the size of the skills index it reads from
+      # /app/skills (mounted above).
+      SKILLS_INDEX_DESCRIPTION_CHARS: "{{ skills_index_description_chars | default(200) }}"
+      SKILLS_INDEX_MAX_CHARS: "{{ skills_index_max_chars | default(6000) }}"
+{% endif %}
+
+      # Lets the guardrail's prompt_injection_sql category_file point at the
+      # /app/guardrail_categories override, which lives outside the litellm
+      # package's content_filter_data directories.
+      LITELLM_CONTENT_FILTER_ALLOW_EXTERNAL_PATHS: "true"
+
+      # -----------------------------------------------------------------------
+      # Generic OIDC
+      # REF: https://docs.litellm.ai/docs/proxy/admin_ui_sso
+      # REF: https://docs.litellm.ai/docs/tutorials/openwebui_org_rollout
+      # -----------------------------------------------------------------------
+      GENERIC_CLIENT_ID: "${LITELLM_OIDC_CLIENT_ID:-litellm}"
+      GENERIC_CLIENT_SECRET: "${LITELLM_OIDC_CLIENT_SECRET:?error}"
+
+      GENERIC_AUTHORIZATION_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/auth"
+      GENERIC_TOKEN_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/token"
+      GENERIC_USERINFO_ENDPOINT: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/userinfo"
+
+      GENERIC_SCOPE: "${GENERIC_SCOPE:-openid profile email}"
+      GENERIC_CLIENT_USE_PKCE: "${GENERIC_CLIENT_USE_PKCE:-false}"
+
+      GENERIC_USER_ID_ATTRIBUTE: "${GENERIC_USER_ID_ATTRIBUTE:-sub}"
+      GENERIC_USER_EMAIL_ATTRIBUTE: "${GENERIC_USER_EMAIL_ATTRIBUTE:-email}"
+      GENERIC_USER_DISPLAY_NAME_ATTRIBUTE: "${GENERIC_USER_DISPLAY_NAME_ATTRIBUTE:-name}"
+      GENERIC_USER_FIRST_NAME_ATTRIBUTE: "${GENERIC_USER_FIRST_NAME_ATTRIBUTE:-given_name}"
+      GENERIC_USER_LAST_NAME_ATTRIBUTE: "${GENERIC_USER_LAST_NAME_ATTRIBUTE:-family_name}"
+      GENERIC_USER_ROLE_ATTRIBUTE: "${GENERIC_USER_ROLE_ATTRIBUTE:-roles}"
+
+      PROXY_BASE_URL: "https://litellm.${DOMAIN:-localhost}"
+      # Single logout: the Admin UI's Logout goes here instead of back to
+      # PROXY_BASE_URL. The UI holds no ID token, so client_id stands in
+      # for id_token_hint and Keycloak asks the user to confirm before it
+      # ends the SSO session. post_logout_redirect_uri must equal the
+      # litellm entry in keycloak_apps (vars.yml).
+      PROXY_LOGOUT_URL: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/logout?client_id=${LITELLM_OIDC_CLIENT_ID:-litellm}&post_logout_redirect_uri=https%3A%2F%2Flitellm.${DOMAIN:-localhost}%2Fui"
+      ENABLE_SSO_DEBUG: "${ENABLE_SSO_DEBUG:-false}"
+      GENERIC_CLIENT_STATE: "${GENERIC_CLIENT_STATE:?error}"
+
+      JWT_PUBLIC_KEY_URL: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/certs"
+      JWT_AUDIENCE: "${LITELLM_OIDC_CLIENT_ID:-litellm}"
+      JWT_ISSUER: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}"
+
+      LITELLM_LOG: INFO
+
+      # Optional provider credentials.
+      # config.yaml can reference these using its normal environment-variable
+      # interpolation mechanism.
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
+      AWS_REGION: "${AWS_REGION:-us-east-1}"
+
+    command:
+      - "--config=/app/config.yaml"
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      lgtm:
+        condition: service_started
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
+      - traefik.http.routers.litellm.rule=Host(`litellm.${DOMAIN:-localhost}`)
+      - traefik.http.routers.litellm.entrypoints=websecure
+      - traefik.http.routers.litellm.tls=true
+      - traefik.http.services.litellm.loadbalancer.server.port=4000
+
+    healthcheck:
+      test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4000 && echo -e 'GET /health/readiness HTTP/1.1\\r\\nHost: localhost\\r\\nAuthorization: Bearer ${LITELLM_MASTER_KEY}\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q 'HTTP/1.1 200'" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ===========================================================================
+  # PostgreSQL Database (Shared)
+  # ===========================================================================
+  postgres:
+    image: postgres:18-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_postgres
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?error}"
+      POSTGRES_DB: "${POSTGRES_DB:-postgres}"
+      # Open WebUI Database Configuration
+      OPENWEBUI_DB_NAME: "${OPENWEBUI_DB_NAME:-openwebui}"
+      OPENWEBUI_DB_USER: "${OPENWEBUI_DB_USER:-openwebui}"
+      OPENWEBUI_DB_PASSWORD: "${OPENWEBUI_DB_PASSWORD:?error}"
+      # LiteLLM Database Configuration
+      LITELLM_DB_NAME: "${LITELLM_DB_NAME:-litellm}"
+      LITELLM_DB_USER: "${LITELLM_DB_USER:-litellm}"
+      LITELLM_DB_PASSWORD: "${LITELLM_DB_PASSWORD:?error}"
+      # Keycloak Database Configuration
+      KEYCLOAK_DB_NAME: "${KEYCLOAK_DB_NAME:-keycloak}"
+      KEYCLOAK_DB_USER: "${KEYCLOAK_DB_USER:-keycloak}"
+      KEYCLOAK_DB_PASSWORD: "${KEYCLOAK_DB_PASSWORD:?error}"
+      # Query Optimization Settings
+      POSTGRES_INITDB_ARGS: "-c shared_buffers=256MB -c effective_cache_size=1GB -c maintenance_work_mem=64MB -c work_mem=16MB -c max_connections=200 -c max_prepared_transactions=100"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./init-db:/docker-entrypoint-initdb.d:ro
+    networks:
+      - backend
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" &&
+           psql -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$${KEYCLOAK_DB_USER}'\" | grep -q 1 &&
+           psql -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$${LITELLM_DB_USER}'\" | grep -q 1 &&
+           psql -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$${OPENWEBUI_DB_USER}'\" | grep -q 1"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ===========================================================================
+  # Valkey - For LiteLLM and Open WebUI
+  # ===========================================================================
+  valkey:
+    image: valkey/valkey:9-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_valkey
+    restart: unless-stopped
+    logging: *default-logging
+    volumes:
+      - valkey_data:/data
+    command:
+      - valkey-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - "900"
+      - "1"
+      - --save
+      - "300"
+      - "10"
+      - --save
+      - "60"
+      - "10000"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --requirepass
+      - "${VALKEY_PASSWORD:?error}"
+    networks:
+      - backend
+    healthcheck:
+      test: [ "CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD}", "ping" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ===========================================================================
+  # Qdrant Vector Database
+  # ===========================================================================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_qdrant
+    restart: unless-stopped
+    logging: *default-logging
+    volumes:
+      - qdrant_data:/qdrant/storage
+      - ./qdrant/config.yaml:/qdrant/config/config.yaml:ro
+    environment:
+      QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:?error}"
+    networks:
+      - backend
+    healthcheck:
+      test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && echo -e 'GET /readyz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q 'HTTP/1.1 200' <&3" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ===========================================================================
+  # Keycloak - Identity Provider (SSO)
+  # ===========================================================================
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak
+    restart: unless-stopped
+    command: start
+    logging: *default-logging
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+      - ./keycloak/import:/opt/keycloak/data/import:ro
+      - ./keycloak/themes:/opt/keycloak/themes:ro
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: "jdbc:postgresql://postgres:5432/${KEYCLOAK_DB_NAME:-keycloak}"
+      KC_DB_USERNAME: "${KEYCLOAK_DB_USER:-keycloak}"
+      KC_DB_PASSWORD: "${KEYCLOAK_DB_PASSWORD:?error}"
+
+      KC_DB_POOL_INITIAL_SIZE: "5"
+      KC_DB_POOL_MIN_SIZE: "5"
+      KC_DB_POOL_MAX_SIZE: "20"
+
+      KC_BOOTSTRAP_ADMIN_USERNAME: "${KEYCLOAK_ADMIN_USER:-admin}"
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:?error}"
+
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_PROXY_TRUSTED_ADDRESSES: "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
+      KC_PROXY: "edge"
+
+      KC_HOSTNAME: "https://auth.${DOMAIN:-localhost}"
+      KC_HOSTNAME_STRICT: "false"
+
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+
+      KC_SHUTDOWN_DELAY: 16s
+      KC_HTTP_METRICS_HISTOGRAMS_ENABLED: "true"
+      KC_HTTP_METRICS_SLOS: "250,500,1000,2500"
+      KC_EVENT_METRICS_USER_ENABLED: "true"
+      KC_EVENT_METRICS_USER_TAGS: "realm,idp,clientId"
+      KC_CACHE_METRICS_HISTOGRAMS_ENABLED: "true"
+
+      KC_LOG_LEVEL: INFO
+      KC_LOG_CONSOLE_FORMAT: "%d{yyyy-MM-dd HH:mm:ss} %-5p [%c] (%t) %s%e%n"
+
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm:4317"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_SERVICE_NAME: keycloak
+
+      # Cache configuration (standalone)
+      KC_CACHE: local
+
+{% if keycloak_default_theme | default('') | length > 0 %}
+      # Default theme for every realm that has not chosen its own
+      # (login, account console, admin console and emails)
+      KC_SPI_THEME__DEFAULT: {{ keycloak_default_theme }}
+
+{% endif %}
+      JAVA_OPTS_KC_HEAP: "-XX:MaxRAMPercentage=70.0"
+      # Import realm on startup (if files exist in ./keycloak/import/)
+      KC_IMPORT: "/opt/keycloak/data/import/realm-export.json"
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
+      - traefik.http.routers.keycloak.rule=Host(`auth.${DOMAIN:-localhost}`)
+      - traefik.http.routers.keycloak.entrypoints=websecure
+      - traefik.http.routers.keycloak.tls=true
+      # Service config with sticky sessions and health check
+      - traefik.http.services.keycloak.loadbalancer.server.port=8080
+      - traefik.http.services.keycloak.loadbalancer.sticky.cookie=true
+      - traefik.http.services.keycloak.loadbalancer.sticky.cookie.name=KC_ROUTE
+      - traefik.http.services.keycloak.loadbalancer.sticky.cookie.secure=true
+      - traefik.http.services.keycloak.loadbalancer.sticky.cookie.httpOnly=true
+
+      - traefik.http.services.keycloak.loadbalancer.healthcheck.path=/health/ready
+      - traefik.http.services.keycloak.loadbalancer.healthcheck.port=9000
+      - traefik.http.services.keycloak.loadbalancer.healthcheck.interval=10s
+      # Admin console with IP restriction
+      # - "traefik.http.routers.keycloak-admin.rule=Host(`auth.${DOMAIN:-localhost}`) && PathPrefix(`/admin`)"
+      # - "traefik.http.routers.keycloak-admin.middlewares=admin-whitelist"
+      # - "traefik.http.middlewares.admin-whitelist.ipwhitelist.sourcerange=${KEYCLOAK_ADMIN_IP_RANGE:-0.0.0.0/0}"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "4.0"
+        reservations:
+          memory: 1G
+          cpus: "1.0"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && cat <&3 | grep -q '200 OK'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+
+{% if keycloak_login_tracker_enabled | default(true) | bool %}
+  # ===========================================================================
+  # Keycloak login tracker (container-scripts/keycloak_login_tracker.py)
+  # Every interval it reads the realm's new LOGIN and LOGIN_ERROR events from
+  # Keycloak's event store as the login-tracker client (realm-management
+  # view-events only), looks up the place of public addresses in geoip/
+  # (DB-IP City Lite, tasks/geoip.yml), flags impossible travel and logins
+  # from a new country, and writes one line per login to Loki
+  # (service_name="keycloak-logins") for the Keycloak dashboard. Writes
+  # nothing to Keycloak. Only the image's Python runs: the litellm image is
+  # already on the host. Backend network only.
+  # ===========================================================================
+  keycloak-login-tracker:
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak-login-tracker
+    restart: unless-stopped
+    logging: *default-logging
+    entrypoint: [ "python3", "-u", "{{ container_scripts_mount }}/keycloak_login_tracker.py" ]
+    command:
+      - --realm
+      - "${KEYCLOAK_REALM:-platform}"
+      - --client-id
+      - "${KEYCLOAK_LOGIN_TRACKER_CLIENT_ID:-login-tracker}"
+      - --interval
+      - "{{ keycloak_login_tracker_interval }}"
+      - --max-speed-kmh
+      - "{{ keycloak_login_tracker_max_speed_kmh }}"
+      - --min-distance-km
+      - "{{ keycloak_login_tracker_min_distance_km }}"
+      - --history-days
+      - "{{ keycloak_login_tracker_history_days }}"
+      - --backfill-days
+      - "{{ keycloak_login_tracker_backfill_days }}"
+      - --internal-networks
+      - {{ keycloak_login_tracker_internal_networks | join(',') | to_json }}
+      - --geoip-db
+      - /geoip/{{ geoip_file }}
+    environment:
+      LOGIN_TRACKER_CLIENT_SECRET: "${KEYCLOAK_LOGIN_TRACKER_CLIENT_SECRET:?error}"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./container-scripts:{{ container_scripts_mount }}:ro
+      - ./geoip:/geoip:ro
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "python3", "{{ container_scripts_mount }}/keycloak_login_tracker.py", "--healthcheck" ]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+{% endif %}
+
+  # ===========================================================================
+  # LGTM Stack (Loki, Grafana, Tempo, Mimir/Prometheus)
+  # ===========================================================================
+  lgtm:
+    image: grafana/otel-lgtm:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_lgtm
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      ENABLE_LOGS_GRAFANA: "true"
+      GF_SERVER_DOMAIN: "grafana.${DOMAIN:-localhost}"
+      GF_SERVER_ROOT_URL: "https://grafana.${DOMAIN:-localhost}"
+      GF_PATHS_DATA: "/data/grafana"
+      GF_SECURITY_ADMIN_USER: "${GF_SECURITY_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GF_SECURITY_ADMIN_PASSWORD:?error}"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+
+      GF_AUTH_GENERIC_OAUTH_ENABLED: "${GF_AUTH_GENERIC_OAUTH_ENABLED:-true}"
+      GF_AUTH_GENERIC_OAUTH_NAME: "${GF_AUTH_GENERIC_OAUTH_NAME:-SSO}"
+      GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "${GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP:-true}"
+      GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN: "${GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN:-false}"
+      GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN: "true"
+      GF_AUTH_GENERIC_OAUTH_AUTO_SIGN_UP: "true"
+
+      GF_AUTH_GENERIC_OAUTH_CLIENT_ID: "${GF_OIDC_CLIENT_ID:-grafana}"
+      GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: "${GF_OIDC_CLIENT_SECRET:?error}"
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/auth"
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/token"
+      GF_AUTH_GENERIC_OAUTH_API_URL: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/userinfo"
+      GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE: "true"
+      GF_AUTH_GENERIC_OAUTH_SCOPES: "${GF_AUTH_GENERIC_OAUTH_SCOPES:-openid profile email}"
+      # The Keycloak grafana client enforces PKCE S256 (playbook default); the
+      # generic_oauth provider defaults to use_pkce=false, which Keycloak
+      # rejects with "Missing parameter: code_challenge_method".
+      GF_AUTH_GENERIC_OAUTH_USE_PKCE: "${GF_AUTH_GENERIC_OAUTH_USE_PKCE:-true}"
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "${GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH:-contains(roles[*], 'grafanaadmin') && 'GrafanaAdmin' || contains(roles[*], 'admin') && 'Admin' || contains(roles[*], 'editor') && 'Editor' || contains(roles[*], 'viewer') && 'Viewer' || 'None'}"
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT: "true"
+
+      GF_AUTH_GENERIC_OAUTH_EMAIL_ATTRIBUTE_NAME: "email"
+      GF_AUTH_GENERIC_OAUTH_LOGIN_ATTRIBUTE_PATH: "preferred_username"
+      GF_AUTH_GENERIC_OAUTH_NAME_ATTRIBUTE_PATH: "name"
+      GF_AUTH_GENERIC_OAUTH_USE_REFRESH_TOKEN: "true"
+      # Single logout: Sign out of an SSO session goes to the Keycloak
+      # end_session_endpoint (local admin logins are not redirected).
+      # Grafana appends id_token_hint itself; client_id covers a logout
+      # whose stored token has expired, where Keycloak asks for
+      # confirmation instead of failing. post_logout_redirect_uri must equal
+      # the grafana entry in keycloak_apps (vars.yml).
+      GF_AUTH_GENERIC_OAUTH_SIGNOUT_REDIRECT_URL: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}/protocol/openid-connect/logout?client_id=${GF_OIDC_CLIENT_ID:-grafana}&post_logout_redirect_uri=https%3A%2F%2Fgrafana.${DOMAIN:-localhost}%2Flogin"
+
+      # Alerting contact points provisioned from grafana/provisioning/alerting
+      # interpolate environment variables; the Discord webhook URL comes from
+      # the deployed .env (rendered by the ansible playbook).
+      GRAFANA_DISCORD_WEBHOOK_URL: "${GRAFANA_DISCORD_WEBHOOK_URL:-}"
+    ports:
+      # Loki push API for the remote compute nodes. Docker-published ports
+      # DNAT past the host firewall INPUT chain (same as Traefik's 443), so
+      # nodes on the LAN can push logs here. Binds to this host's primary
+      # IPv4, rendered into STACK_HOST_IP by the playbook (env.j2) and
+      # interpolated here, so no literal IP lives in the file.
+      - "${STACK_HOST_IP:?error}:3100:3100"
+    volumes:
+      - lgtm_data:/data
+      - ./grafana/provisioning:/otel-lgtm/grafana/conf/provisioning:ro
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
+      - traefik.http.routers.lgtm-grafana.rule=Host(`grafana.${DOMAIN:-localhost}`)
+      - traefik.http.routers.lgtm-grafana.entrypoints=websecure
+      - traefik.http.routers.lgtm-grafana.priority=100
+      - traefik.http.routers.lgtm-grafana.tls=true
+      - traefik.http.services.lgtm-grafana.loadbalancer.server.port=3000
+
+  # ===========================================================================
+  # Node Exporter - System Metrics
+  # ===========================================================================
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_node-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    # --pid=host so the processes collector sees the host PID namespace.
+    pid: "host"
+    volumes:
+      - "/:/host:ro"
+      # systemd collector talks to the host D-Bus system bus.
+      - "/var/run/dbus:/var/run/dbus:ro"
+    command:
+      - --path.rootfs=/host
+      - --collector.disable-defaults
+      - --collector.cpu
+      - --collector.meminfo
+      - --collector.diskstats
+      - --collector.netdev
+      - --collector.stat
+      - --collector.uname
+      - --collector.loadavg
+      - --collector.filesystem
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
+      # Extra collectors verified working on the Photon VM (the node-exporter
+      # dashboard rows for processes, vmstat, timex, netstat, sockstat, TCP
+      # states, softirqs, systemd and misc depend on them). Not supported by
+      # this VMware guest: hwmon (no /sys/class/hwmon), pressure/PSI (no
+      # /proc/pressure), thermal_zone (no thermal zones).
+      - --collector.processes
+      - --collector.schedstat
+      - --collector.vmstat
+      - --collector.timex
+      - --collector.time
+      - --collector.softnet
+      - --collector.softirqs
+      - --collector.filefd
+      - --collector.entropy
+      - --collector.netstat
+      - --collector.sockstat
+      - --collector.tcpstat
+      - --collector.arp
+      - --collector.dmi
+      - --collector.systemd
+    networks:
+      - backend
+    profiles:
+      - monitoring
+
+  # ===========================================================================
+  # PostgreSQL Exporter - Database Metrics
+  # ===========================================================================
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_postgres-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?error}@postgres:5432/${POSTGRES_DB:-postgres}?sslmode=disable"
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - monitoring
+
+  # ===========================================================================
+  # Brave Search MCP Server - Web Search for LLM
+  # ===========================================================================
+{% if brave_search_enabled | default(false) | bool and brave_search_api_key | default('') | length > 0 %}
+  brave-search-mcp:
+    image: mcp/brave-search:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_brave-search-mcp
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      BRAVE_API_KEY: "${BRAVE_SEARCH_API_KEY:?error}"
+      BRAVE_MCP_TRANSPORT: http
+      BRAVE_MCP_HOST: 0.0.0.0
+    networks:
+      - backend
+      - frontend
+{% endif %}
+
+{% if local_embedding_enabled | default(false) | bool %}
+  # ===========================================================================
+  # Local embedding model - Hugging Face Text Embeddings Inference (CPU)
+  # Serves {{ local_embedding_model }} on an OpenAI-compatible
+  # /v1/embeddings at http://text-embeddings:80/v1. LiteLLM lists it as
+  # local-embedding, and semantic skill search uses it by default, so search
+  # needs no provider key. Downloads the pinned model revision from Hugging
+  # Face into text_embeddings_data on first start (frontend network for
+  # egress); LiteLLM reaches it on backend. No Traefik route.
+  # LiteLLM sends every skill text it has not embedded yet in one request,
+  # hence the raised client batch size (TEI's default is 32 inputs).
+  # ===========================================================================
+  text-embeddings:
+    image: "{{ local_embedding_image }}"
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_text-embeddings
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - --model-id
+      - "{{ local_embedding_model }}"
+      - --revision
+      - "{{ local_embedding_model_revision }}"
+      - --hostname
+      - 0.0.0.0
+      - --port
+      - "80"
+      - --max-client-batch-size
+      - "1024"
+      - --json-output
+    environment:
+      # Worker threads; matches the CPU limit below (the image defaults to 8).
+      RAYON_NUM_THREADS: "2"
+    volumes:
+      - text_embeddings_data:/data
+    healthcheck:
+      test: [ "CMD", "curl", "-sf", "http://localhost:80/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+    networks:
+      - backend
+      - frontend
+{% endif %}
+
+{% if memory_mcp_enabled | default(true) | bool %}
+  # ===========================================================================
+  # Saved memories - memory-mcp (container-scripts/memory_mcp_server.py)
+  # The MCP server `memory` behind LiteLLM (mcp_servers.memory): five tools
+  # over each user's memories, which live in LiteLLM's own memory store
+  # (/v1/memory, the admin UI's Memory page). LiteLLM's memory_callback.py
+  # signs the owner of every tool call; a call without a valid signature is
+  # refused. Only the image's Python runs: the litellm image is already on
+  # the host. Backend network only; nothing but LiteLLM talks to it.
+  # ===========================================================================
+  memory-mcp:
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_memory-mcp
+    restart: unless-stopped
+    logging: *default-logging
+    entrypoint: [ "python3", "-u", "{{ container_scripts_mount }}/memory_mcp_server.py" ]
+    environment:
+      LITELLM_URL: "http://litellm:4000"
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?error}"
+      MEMORY_MCP_SIGNING_KEY: "${MEMORY_MCP_SIGNING_KEY:?error}"
+      MEMORY_EMBEDDING_MODEL: {{ memory_embedding_model_effective | to_json }}
+      MEMORY_INDEX_MAX_CHARS: "{{ memory_index_max_chars }}"
+      MEMORY_MAX_CONTENT_CHARS: "{{ memory_max_content_chars }}"
+      MEMORY_MAX_PER_USER: "{{ memory_max_per_user }}"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./container-scripts:{{ container_scripts_mount }}:ro
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+    healthcheck:
+      test: [ "CMD", "python3", "{{ container_scripts_mount }}/memory_mcp_server.py", "--healthcheck" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+{% endif %}
+
+{% if skills_mcp_enabled | default(true) | bool %}
+  # ===========================================================================
+  # Skills tool - skills-mcp (container-scripts/skills_mcp_server.py)
+  # The MCP server `skills` behind LiteLLM (mcp_servers.skills): search (by
+  # meaning, through LiteLLM's /v1/embeddings), list and get over the same
+  # ./skills packages the playbook publishes everywhere, read-only. Every
+  # LiteLLM key may call it. Only the image's Python runs; backend network
+  # only, nothing but LiteLLM talks to it.
+  # ===========================================================================
+  skills-mcp:
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_skills-mcp
+    restart: unless-stopped
+    logging: *default-logging
+    entrypoint: [ "python3", "-u", "{{ container_scripts_mount }}/skills_mcp_server.py" ]
+    environment:
+      LITELLM_URL: "http://litellm:4000"
+      # Used for /v1/embeddings only.
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?error}"
+      SKILLS_EMBEDDING_MODEL: {{ skills_mcp_embedding_model_effective | to_json }}
+      SKILLS_DIR: /app/skills
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./container-scripts:{{ container_scripts_mount }}:ro
+      - ./skills:/app/skills:ro
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+    healthcheck:
+      test: [ "CMD", "python3", "{{ container_scripts_mount }}/skills_mcp_server.py", "--healthcheck" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+{% endif %}
+
+{% if printer_mcp_enabled | default(false) | bool and bambu_host | default('') | length > 0 %}
+  # ===========================================================================
+  # Printer MCP - bambu-printer-mcp + Bambu Studio CLI slicer
+  # Serves the printer_3d MCP tool server (slice_stl / print_3mf /
+  # get_printer_status / resolve_3mf_ams_slots / camera_snapshot) on
+  # streamable HTTP :3000/mcp. Built from ./printer-mcp (bambu-printer-mcp
+  # 1.1.59 with H2C printing support + extracted Bambu Studio v02.08.02.60
+  # with H2C machine presets).
+  # Networks: frontend (LAN egress to the printer: MQTT 8883, FTPS 990, RTSP
+  # 322 - backend is internal with no route out) + backend (LiteLLM).
+  # No Traefik route: only LiteLLM reaches it.
+  # Reads model-generated STLs from the shared models volume (read-only).
+  # ===========================================================================
+  printer-mcp:
+    build:
+      context: ./printer-mcp
+      dockerfile: Dockerfile
+    image: ${PRINTER_MCP_IMAGE:-openwebui-stack/printer-mcp:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_printer-mcp
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PRINTER_TYPE: bambu
+      PRINTER_HOST: "${BAMBU_HOST:?error}"
+      BAMBU_SERIAL: "${BAMBU_SERIAL:?error}"
+      BAMBU_TOKEN: "${BAMBU_TOKEN:?error}"
+      BAMBU_MODEL: "${BAMBU_MODEL:-h2c}"
+      # Slicer paths are baked into the image (SLICER_TYPE / SLICER_PATH /
+      # BAMBU_PROFILES_ROOT ENV in printer-mcp/Dockerfile); bed and nozzle
+      # stay overridable here. textured_plate: supertack_plate is not
+      # verified through the CLI path.
+      BED_TYPE: "${PRINTER_MCP_BED_TYPE:-textured_plate}"
+      NOZZLE_DIAMETER: "${PRINTER_MCP_NOZZLE_DIAMETER:-0.4}"
+      MCP_TRANSPORT: streamable-http
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: "3000"
+      MCP_HTTP_PATH: /mcp
+    volumes:
+      - models:/models:ro
+    networks:
+      - backend
+      - frontend
+    healthcheck:
+      # TCP connect proves the MCP listener is up; the MCP endpoint answers
+      # only valid POST handshakes, and a GET would fail as a healthcheck.
+      test: ["CMD", "node", "-e", "const n=require('net');const s=n.connect(3000,'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),5000)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+{% endif %}
+
+{% if blender_mcp_enabled | default(false) | bool %}
+  # ===========================================================================
+  # Blender MCP - mesh modeling via mcp-for-blender
+  # Full Blender 5.0.1 GUI under Xvfb (the addon's socket server refuses
+  # background mode; it needs the GUI event loop) + mcp-for-blender 2.2.7
+  # addon with SAFE_MODE=1. The addon listener (:9876) is unauthenticated:
+  # backend-only network, no internet, no Traefik route; its only client is
+  # the in-container stdio MCP server bridged by supergateway to
+  # :8000/mcp for LiteLLM (mcp_servers.blender).
+  # Writes exported STLs to the shared models volume.
+  # ===========================================================================
+  blender:
+    build:
+      context: ./blender
+      dockerfile: Dockerfile
+    image: ${BLENDER_MCP_IMAGE:-openwebui-stack/blender-mcp:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_blender
+    # Relative export paths ("part.stl") resolve against the process cwd;
+    # start in the shared volume so they land where the download filter and
+    # the slicer look, not in the container's home directory.
+    working_dir: /models
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - models:/models
+    networks:
+      - backend
+    healthcheck:
+      # TCP connect to the supergateway MCP endpoint (:8000/mcp).
+      test: ["CMD", "node", "-e", "const n=require('net');const s=n.connect(8000,'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),5000)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Blender GUI boot + addon auto-start can take a while on first boot.
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+        reservations:
+          memory: 1G
+          cpus: "0.5"
+{% endif %}
+
+{% if freecad_mcp_enabled | default(false) | bool %}
+  # ===========================================================================
+  # FreeCAD MCP - parametric CAD via headless freecadcmd
+  # FreeCAD 1.1.4 (extracted AppImage, freecadcmd with bundled py311) +
+  # the alosslessdev headless XML-RPC bridge (freecad-mcp 0.1.24) +
+  # supergateway stdio->streamable-HTTP on :8000/mcp for LiteLLM
+  # (mcp_servers.freecad). No GUI, no display, no docker socket. The XML-RPC
+  # bridge (:9875) is unauthenticated: backend-only network, no internet,
+  # no Traefik route; its only client is the in-container stdio MCP server.
+  # Writes exported STL/STEP to the shared models volume.
+  # ===========================================================================
+  freecad:
+    build:
+      context: ./freecad
+      dockerfile: Dockerfile
+    image: ${FREECAD_MCP_IMAGE:-openwebui-stack/freecad-mcp:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_freecad
+    # Relative export paths ("part.stl") resolve against the process cwd;
+    # start in the shared volume so they land where the download filter and
+    # the slicer look, not in the container's home directory.
+    working_dir: /models
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - models:/models
+    networks:
+      - backend
+    healthcheck:
+      # TCP connect to the supergateway MCP endpoint (:8000/mcp).
+      test: ["CMD", "node", "-e", "const n=require('net');const s=n.connect(8000,'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),5000)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+        reservations:
+          memory: 1G
+          cpus: "0.5"
+{% endif %}
+{% if code_sandbox_enabled | bool %}
+  # ===========================================================================
+  # Code Sandbox - isolated Jupyter for model-authored Python
+  # Open WebUI calls http://code-sandbox:8888 with the token below: the code
+  # interpreter's execute_code runs here (openwebui_code_interpreter_enabled),
+  # never in the Open WebUI container. ENABLE_CODE_EXECUTION stays false.
+  # Backend-only network, no published port, no Traefik route: nothing
+  # outside the Docker backend network can reach it.
+  # https://docs.openwebui.com/getting-started/advanced-topics/hardening
+  # ===========================================================================
+  code-sandbox:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile
+      labels:
+        # Digest of the Dockerfile and requirements.txt the image was built
+        # from; tasks/code_sandbox.yml rebuilds the image when it differs.
+        org.openwebui-stack.sandbox-inputs: "{{ code_sandbox_inputs_digest }}"
+    image: ${CODE_SANDBOX_IMAGE:-openwebui-stack/code-sandbox:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_code-sandbox
+    restart: unless-stopped
+    logging: *default-logging
+    user: "1000:100"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      JUPYTER_TOKEN: "${CODE_SANDBOX_TOKEN:?error}"
+    volumes:
+      # Config: token auth, kernel culling, no terminals, work dir root.
+      - ./sandbox/jupyter_server_config.py:/etc/jupyter/jupyter_server_config.py:ro
+      # Writable scratch space for generated artifacts (STL, plots).
+      - code_sandbox_data:/home/jovyan/work
+      # Shared model artifacts (STL/STEP) written by Blender/FreeCAD MCP and
+      # read by printer-mcp; the sandbox also uses it for trimesh
+      # post-processing of generated meshes.
+      - models:/models
+      # Files the code interpreter saves for the user, one directory per
+      # chat; open-webui reads them (read-only) to attach them as downloads.
+      # The image creates /outputs owned by jovyan, and Docker copies that
+      # ownership onto the volume root whenever this container is created.
+      - outputs:/outputs
+    networks:
+      - backend
+    healthcheck:
+      # TCP connect proves the Jupyter server is up; the API answers 403
+      # without the token, and an authenticated check would put the token in
+      # `docker inspect` output.
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('localhost', 8888), timeout=5).close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+{% endif %}
+
+  # ===========================================================================
+  # Playwright MCP Server - Web Clicking for LLM
+  # ===========================================================================
+{% if playwright_mcp_enabled | default(true) | bool %}
+  playwright-mcp:
+    image: mcr.microsoft.com/playwright/mcp
+    # No container_name: replicas must have unique names (compose rejects both).
+    init: true
+    logging: *default-logging
+    environment:
+      PLAYWRIGHT_MCP_HEADLESS: true
+      PLAYWRIGHT_MCP_CONSOLE_LEVEL: info
+      PLAYWRIGHT_MCP_BROWSER: chromium
+      PLAYWRIGHT_MCP_CAPS: pdf,devtools
+      PLAYWRIGHT_MCP_IGNORE_HTTPS_ERRORS: true
+      PLAYWRIGHT_MCP_NO_SANDBOX: true
+      PLAYWRIGHT_MCP_HOST: 0.0.0.0
+      PLAYWRIGHT_MCP_PORT: 8931
+      # Traefik forwards the incoming Host header (playwright-mcp.<domain>),
+      # which is not in the server's default localhost allowlist -> 403.
+      PLAYWRIGHT_MCP_ALLOWED_HOSTS: "*"
+    deploy:
+      replicas: 5
+    restart: unless-stopped
+    networks:
+      - backend
+      - frontend
+    labels:
+      - "traefik.enable=true"
+      # The `web` entrypoint 308-redirects to websecure; httpx (LiteLLM's MCP
+      # client) does not follow redirects, so route on the non-redirecting
+      # `mcp` entrypoint instead.
+      - "traefik.http.routers.playwright.rule=Host(`playwright-mcp.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.playwright.entrypoints=mcp"
+      # Tell Traefik exactly which internal container port to load balance across
+      - "traefik.http.services.playwright.loadbalancer.server.port=8931"
+      # MCP sessions live in each replica's process memory; sticky cookies keep
+      # every request of a session on the replica that owns it (no 404s).
+      - "traefik.http.services.playwright.loadbalancer.sticky.cookie=true"
+      - "traefik.http.services.playwright.loadbalancer.sticky.cookie.name=pwsticky"
+{% endif %}
+
+  # ===========================================================================
+  # Chatterbox TTS - OpenAI-compatible voice cloning
+  # https://github.com/devnen/Chatterbox-TTS-Server
+  # UI: https://voice.${DOMAIN}  API (internal): http://chatterbox-tts:8004/v1
+  # One service, two build variants. The chatterbox role enables the profile
+  # for chatterbox_device (chatterbox-gpu -> Dockerfile, chatterbox-cpu ->
+  # Dockerfile.cpu) and builds from the git checkout at ./chatterbox.
+  # Set chatterbox_enabled: false in group_vars to drop the service entirely.
+  # ===========================================================================
+{% if chatterbox_enabled | bool %}
+  chatterbox-tts-server:
+    build:
+      context: ./chatterbox
+      dockerfile: Dockerfile
+      args:
+        # nvidia installs the CUDA torch stack; cpu keeps CPU-only torch.
+        - RUNTIME=${CHATTERBOX_RUNTIME:-nvidia}
+    profiles:
+      - chatterbox-gpu
+    image: ${CHATTERBOX_IMAGE:-openwebui-stack/chatterbox-tts:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox-tts
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      # Host loopback only: the Ansible role probes the API; external access
+      # goes through the Traefik voice.<domain> router.
+      - "127.0.0.1:${CHATTERBOX_PORT:-8004}:8004"
+    environment:
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HF_HUB_ENABLE_HF_TRANSFER: "1"
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      # Mount local config file for persistence (rendered by the Ansible role)
+      - ./chatterbox/config.yaml:/app/config.yaml
+      # Bind-mounted app data
+      - ./chatterbox/voices:/app/voices
+      - ./chatterbox/reference_audio:/app/reference_audio
+      - ./chatterbox/outputs:/app/outputs
+      - ./chatterbox/logs:/app/logs
+      # Named volume for the Hugging Face model cache (persists across rebuilds)
+      - chatterbox_models:/app/hf_cache
+    networks:
+      frontend:
+        aliases:
+          - chatterbox-tts
+      backend:
+        aliases:
+          - chatterbox-tts
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+          cpus: "8.0"
+        reservations:
+          memory: 8G
+          cpus: "2.0"
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      # devnen exposes no /health; /api/ui/initial-data is the status probe.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/api/ui/initial-data', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+
+  chatterbox-tts-server-cpu:
+    build:
+      context: ./chatterbox
+      dockerfile: Dockerfile.cpu
+    profiles:
+      - chatterbox-cpu
+    image: ${CHATTERBOX_CPU_IMAGE:-openwebui-stack/chatterbox-tts:cpu}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox-tts
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      # Host loopback only: the Ansible role probes the API; external access
+      # goes through the Traefik voice.<domain> router.
+      - "127.0.0.1:${CHATTERBOX_PORT:-8004}:8004"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HF_HUB_ENABLE_HF_TRANSFER: "1"
+    volumes:
+      - ./chatterbox/config.yaml:/app/config.yaml
+      - ./chatterbox/voices:/app/voices
+      - ./chatterbox/reference_audio:/app/reference_audio
+      - ./chatterbox/outputs:/app/outputs
+      - ./chatterbox/logs:/app/logs
+      - chatterbox_models:/app/hf_cache
+    networks:
+      frontend:
+        aliases:
+          - chatterbox-tts
+      backend:
+        aliases:
+          - chatterbox-tts
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+          cpus: "6.0"
+        reservations:
+          memory: 4G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/api/ui/initial-data', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+{% endif %}
+
+  # ===========================================================================
+  # OAuth2 Proxy - Keycloak gate for voice.${DOMAIN}
+  # Chatterbox has no SSO. Traefik ForwardAuth calls this before the UI or API.
+  # Open WebUI still calls http://chatterbox-tts:8004 on the backend network.
+  # Rides the same chatterbox_enabled toggle as the chatterbox services:
+  # without them there is no voice.<domain> origin to gate.
+  # https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/keycloak_oidc/
+  # ===========================================================================
+{% if chatterbox_enabled | default(false) | bool %}
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.1
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_oauth2-proxy
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      OAUTH2_PROXY_PROVIDER: keycloak-oidc
+      OAUTH2_PROXY_CLIENT_ID: voice
+      OAUTH2_PROXY_CLIENT_SECRET: "${VOICE_OIDC_CLIENT_SECRET:?error}"
+      OAUTH2_PROXY_OIDC_ISSUER_URL: "https://auth.${DOMAIN:-localhost}/realms/${KEYCLOAK_REALM:-platform}"
+      OAUTH2_PROXY_REDIRECT_URL: "https://voice.${DOMAIN:-localhost}/oauth2/callback"
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
+      OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
+      OAUTH2_PROXY_COOKIE_SECRET: "${OAUTH2_PROXY_COOKIE_SECRET:?error}"
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_HTTPONLY: "true"
+      OAUTH2_PROXY_COOKIE_SAMESITE: lax
+      OAUTH2_PROXY_COOKIE_NAME: __Secure-voice-auth
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
+      OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      # Prometheus metrics on a dedicated listener; scraped by the OTel
+      # collector's prometheus receiver (job "oauth2-proxy").
+      OAUTH2_PROXY_METRICS_ADDRESS: 0.0.0.0:4181
+      OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY: "${OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY:-false}"
+      # Upstream mode: oauth2-proxy owns the browser OAuth flow and proxies
+      # authenticated traffic to Chatterbox itself. Traefik sends voice.<domain>
+      # straight here (no forwardAuth), avoiding the sign-in redirect loop.
+      OAUTH2_PROXY_UPSTREAMS: "http://chatterbox-tts:8004"
+      # TTS synthesis on long text can run minutes. Keep the proxy from
+      # cutting off the Chatterbox request stream.
+      OAUTH2_PROXY_UPSTREAM_TIMEOUT: "10m"
+      OAUTH2_PROXY_FLUSH_INTERVAL: "1s"
+      OAUTH2_PROXY_SCOPE: "openid email profile"
+      OAUTH2_PROXY_PASS_USER_HEADERS: "true"
+      OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER: "true"
+      # auth.<domain> is whitelisted so /oauth2/sign_out?rd= can bounce to the
+      # Keycloak end_session_endpoint for single logout (SLO), not just a
+      # local cookie clear. Comma-separated: the env list parser is comma-
+      # based (space-separated values parse as one domain entry).
+      OAUTH2_PROXY_WHITELIST_DOMAINS: "voice.${DOMAIN:-localhost},auth.${DOMAIN:-localhost}"
+    networks:
+      - frontend
+      - backend
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
+      # Single catch-all router for voice.<domain>. oauth2-proxy (upstream mode)
+      # serves its own /oauth2/* endpoints and proxies everything else to
+      # Chatterbox after authentication.
+      - traefik.http.routers.voice.rule=Host(`voice.${DOMAIN:-localhost}`) && PathPrefix(`/`)
+      - traefik.http.routers.voice.entrypoints=websecure
+      - traefik.http.routers.voice.tls=true
+      - traefik.http.routers.voice.priority=100
+      - traefik.http.routers.voice.service=oauth2-proxy
+      - traefik.http.routers.voice.middlewares=secure-headers@file
+      - traefik.http.services.oauth2-proxy.loadbalancer.server.port=4180
+      # Image ships no shell/wget, so no Docker healthcheck; Traefik probes
+      # /ping itself and only routes to healthy instances.
+      - traefik.http.services.oauth2-proxy.loadbalancer.healthcheck.path=/ping
+      - traefik.http.services.oauth2-proxy.loadbalancer.healthcheck.interval=10s
+      - traefik.http.services.oauth2-proxy.loadbalancer.healthcheck.timeout=3s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+{% endif %}
+{% if launcher_enabled | default(false) | bool and launcher_follow_enabled | default(true) | bool and launcher_nodes | length > 0 %}
+
+  # ===========================================================================
+  # LLM Launcher follower
+  # A compute node whose launcher runs one model at a time (vllm_launcher_swap)
+  # changes what its primary port serves whenever a model is swapped in or
+  # retuned from the GUI. Every interval this reads each node's
+  # GET /api/stack/slot through its gate (LAUNCHER_STATUS_TOKEN), points
+  # LiteLLM's entry for that endpoint at the served model (PATCH: name,
+  # context, reasoning flags; id, api_base and key stay) and attaches the Open
+  # WebUI Thinking switch to it. container-scripts/launcher_follower.py
+  # ===========================================================================
+{% set launcher_follow_nodes = [] %}
+{% for node in launcher_nodes %}
+{%   set label = node | lower | regex_replace('[^a-z0-9-]', '-') %}
+{%   set address = (launcher_node_addresses | default({}))[node] | default((hostvars[node] | default({})).ansible_host | default(node)) %}
+{%   set _ = launcher_follow_nodes.append({'name': node, 'gate': 'http://' ~ address ~ ':' ~ launcher_auth_port, 'host': launcher_hostname_prefix ~ label ~ '.' ~ domain}) %}
+{% endfor %}
+  launcher-follower:
+    # Only the image's Python runs: the litellm image is already on the host.
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_launcher-follower
+    restart: unless-stopped
+    logging: *default-logging
+    entrypoint: [ "python3", "-u", "{{ container_scripts_mount }}/launcher_follower.py" ]
+    command: [ "--interval", "{{ launcher_follow_interval }}"{% if not (openwebui_reasoning_switch_enabled | default(true) | bool) %}, "--no-thinking-switch"{% endif %}{% if not (openwebui_reasoning_switch_default_on | default(true) | bool) %}, "--thinking-default-off"{% endif %}{% if openwebui_reasoning_models_exclude | default([]) | length > 0 %}, "--thinking-exclude", {{ openwebui_reasoning_models_exclude | join(',') | to_json }}{% endif %} ]
+    environment:
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?error}"
+      OPENWEBUI_API_KEY: "${OPENWEBUI_API_ADMIN_KEY:?error}"
+      LAUNCHER_STATUS_TOKEN: "${LAUNCHER_STATUS_TOKEN:?error}"
+      LAUNCHER_FOLLOW_NODES: {{ launcher_follow_nodes | to_json | to_json }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./container-scripts:{{ container_scripts_mount }}:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      # backend: the LiteLLM and Open WebUI admin APIs. frontend: the route
+      # to the compute nodes' gates (backend is internal).
+      - backend
+      - frontend
+    depends_on:
+      litellm:
+        condition: service_healthy
+      open-webui:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "python3", "{{ container_scripts_mount }}/launcher_follower.py", "--healthcheck" ]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+{% endif %}
+
+  # ===========================================================================
+  # NVIDIA GPU Exporter (Optional - requires NVIDIA runtime)
+  # ===========================================================================
+  nvidia-gpu-exporter:
+    image: nvidia/dcgm-exporter:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_nvidia-gpu-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+    networks:
+      - backend
+    profiles:
+      - gpu
+
+  # ===========================================================================
+  # JSON Exporter - Chatterbox status and memory APIs
+  # Chatterbox has no Prometheus endpoint. This maps /status, /memory,
+  # /health, /voices, /languages, and /config into scrapeable metrics.
+  # ===========================================================================
+  json-exporter:
+    image: quay.io/prometheuscommunity/json-exporter:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_json-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    user: "0:0"
+    command:
+      - --config.file=/config.yml
+    volumes:
+      - ./json-exporter/config.yml:/config.yml:ro
+    networks:
+      - backend
+    profiles:
+      - monitoring
+
+  # ===========================================================================
+  # Grafana Alloy - Docker container logs
+  # The local logging driver has no json-file for the collector to tail.
+  # Alloy reads each container through the Docker API and pushes to Loki.
+  # https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.docker/
+  # ===========================================================================
+  alloy:
+    image: grafana/alloy:v1.21.3
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_alloy
+    restart: unless-stopped
+    logging: *default-logging
+    user: "0:0"
+    group_add:
+      - "${DOCKER_GID:-999}"
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy_data:/var/lib/alloy/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - backend
+    depends_on:
+      - lgtm
+    profiles:
+      - monitoring
+
+  # ===========================================================================
+  # OpenTelemetry Collector - Metrics and application logs
+  # docker_stats needs the engine socket. The official collector image runs
+  # as non-root, so the host docker group is added. Set DOCKER_GID to the
+  # host `getent group docker` value when 999 is wrong. Container stdout is
+  # collected by Alloy, not this collector.
+  # ===========================================================================
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_otel-collector
+    restart: unless-stopped
+    logging: *default-logging
+    user: "0:0"
+    group_add:
+      - "${DOCKER_GID:-999}"
+    command: [ "--config=/etc/otel/config.yaml" ]
+    environment:
+      # otel/config.yaml interpolates these for authenticated scrapes:
+      # litellm /metrics (Bearer master key), qdrant /metrics (Bearer API key).
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?error}"
+      QDRANT_API_KEY: "${QDRANT_API_KEY:?error}"
+    volumes:
+      - ./otel/config.yaml:/etc/otel/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - backend
+      # The backend network is internal:true, which gives containers no
+      # route to the LAN; the remote-node / remote-nvidia-gpu / remote-vllm
+      # scrape targets (the compute nodes, on another subnet) need frontend to
+      # reach them.
+      - frontend
+    depends_on:
+      - lgtm
+      - json-exporter
+    profiles:
+      - monitoring
+
+  # ===========================================================================
+  # Optional Keycloak Backup
+  # ===========================================================================
+  keycloak-backup:
+    image: postgres:18-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak-backup
+    restart: "no"
+    logging: *default-logging
+    environment:
+      PGHOST: postgres
+      PGDATABASE: "${KEYCLOAK_DB_NAME:-keycloak}"
+      PGUSER: "${KEYCLOAK_DB_USER:-keycloak}"
+      PGPASSWORD: "${KEYCLOAK_DB_PASSWORD:?error}"
+      BACKUP_RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-7}"
+    volumes:
+      # Bind mount so dumps land on the host data disk instead of a Docker
+      # volume that dies with the host; restore is a plain host path.
+      - {{ project_root }}/backups:/backups
+      - ./scripts/backup-keycloak.sh:/backup.sh:ro
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - backup
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  frontend:
+    driver: bridge
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_frontend
+  backend:
+    driver: bridge
+    internal: true
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_backend
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_postgres_data
+  openwebui_data:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_openwebui_data
+  valkey_data:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_valkey_data
+  qdrant_data:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_qdrant_data
+  lgtm_data:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_lgtm_data
+  keycloak_data:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak_data
+  chatterbox_models:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_chatterbox_models
+  code_sandbox_data:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_code_sandbox_data
+  models:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_models
+  outputs:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_outputs
+  alloy_data:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_alloy_data
+  text_embeddings_data:
+    name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_text_embeddings_data

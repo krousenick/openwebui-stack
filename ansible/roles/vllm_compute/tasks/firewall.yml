@@ -1,0 +1,107 @@
+---
+# Ray cluster traffic on the 10/25GbE compute network. The zone source
+# restricts access to the compute segment because Ray's protocol is
+# unencrypted and can execute arbitrary code if an attacker reaches it.
+#
+# Rules go through the ansible.posix.firewalld module (needs python3-firewall
+# + python3-dbus on the node; the prerequisites role installs both) rather
+# than firewall-cmd calls: the module is idempotent by itself, so no
+# query-then-change bookkeeping is needed.
+
+- name: Check firewalld is active
+  ansible.builtin.command:
+    cmd: firewall-cmd --state
+  register: vllm_firewalld_state
+  changed_when: false
+  failed_when: false
+
+- name: Manage cluster firewall
+  when: vllm_firewalld_state.stdout | default('') | trim == 'running'
+  block:
+    - name: Create the vLLM cluster zone
+      # Zone transactions must be permanent-only (a firewalld limitation the
+      # module documents); the reload below makes the zone visible at runtime.
+      ansible.posix.firewalld:
+        zone: vllm-cluster
+        state: present
+        permanent: true
+      register: vllm_zone_create
+
+    - name: Reload firewalld so the new zone is usable
+      ansible.builtin.command:
+        cmd: firewall-cmd --reload
+      when: vllm_zone_create is changed
+      changed_when: true
+
+    - name: Restrict the zone to the compute network
+      ansible.posix.firewalld:
+        zone: vllm-cluster
+        source: "{{ vllm_firewall_zone_source }}"
+        state: enabled
+        permanent: true
+        immediate: true
+      register: vllm_zone_source
+      # Concurrent plays against the same firewalld (e.g. the rig's two
+      # inventory hosts on one VM) race their immediate+permanent writes;
+      # ALREADY_ENABLED means the desired state is already converged.
+      failed_when: >-
+        vllm_zone_source is failed and
+        'ALREADY_ENABLED' not in (vllm_zone_source.msg | default(''))
+
+    # Binding a source routes ALL traffic from that subnet into the zone,
+    # not just the listed ports. The zone therefore has to admit SSH
+    # explicitly, or the management host(s) in the source subnet lose shell
+    # access to the node the moment the zone reloads.
+    - name: Admit SSH in the vllm-cluster zone
+      ansible.posix.firewalld:
+        zone: vllm-cluster
+        service: ssh
+        state: enabled
+        permanent: true
+        immediate: true
+      register: vllm_zone_ssh
+      # Same concurrent-writer race as the zone source task.
+      failed_when: >-
+        vllm_zone_ssh is failed and
+        'ALREADY_ENABLED' not in (vllm_zone_ssh.msg | default(''))
+
+    - name: Open vLLM API and Ray cluster ports
+      ansible.posix.firewalld:
+        zone: vllm-cluster
+        port: "{{ item }}/tcp"
+        state: enabled
+        permanent: true
+        immediate: true
+      register: vllm_fw_ports
+      # Same concurrent-writer race as the zone source task.
+      failed_when: >-
+        vllm_fw_ports is failed and
+        'ALREADY_ENABLED' not in (vllm_fw_ports.msg | default(''))
+      loop:
+        - "{{ vllm_port }}"
+        - "{{ vllm_ray_head_port }}"
+        - "{{ vllm_ray_dashboard_port }}"
+        - "{{ vllm_ray_node_manager_port }}"
+        - "{{ vllm_ray_object_manager_port }}"
+        - "{{ vllm_ray_runtime_env_agent_port }}"
+        - "{{ vllm_ray_min_worker_port }}-{{ vllm_ray_max_worker_port }}"
+
+    - name: Open the monitoring exporter ports
+      # Scraped by the stack host's OTel collector from the management
+      # subnet. The ports open regardless of whether this role deploys the
+      # exporter or reuses a foreign one already serving the port (e.g. the
+      # prometheus-node-exporter rpm): the collector needs the port open
+      # either way. Skipped when monitoring is disabled.
+      ansible.posix.firewalld:
+        zone: vllm-cluster
+        port: "{{ item }}/tcp"
+        state: enabled
+        permanent: true
+        immediate: true
+      register: vllm_fw_monitoring_ports
+      # Same concurrent-writer race as the zone source task.
+      failed_when: >-
+        vllm_fw_monitoring_ports is failed and
+        'ALREADY_ENABLED' not in (vllm_fw_monitoring_ports.msg | default(''))
+      loop: "{{ vllm_monitoring_exporters | default([]) | map(attribute='port') | list }}"
+      when: vllm_monitoring_enabled | bool

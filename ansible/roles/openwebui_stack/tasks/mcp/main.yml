@@ -1,0 +1,104 @@
+---
+# MCP servers are optional. Each server lives in its own task file and is
+# included here when its toggle variable is true and its required secrets
+# are present. Add a future MCP server by dropping <name>.yml in this
+# directory and guarding it with mcp_<name>_enabled below.
+- name: Configure Brave Search MCP
+  ansible.builtin.import_tasks:
+    file: brave.yml
+  when: brave_search_enabled | bool and brave_search_api_key | length > 0
+
+- name: Configure Playwright MCP cluster
+  ansible.builtin.import_tasks:
+    file: playwright.yml
+  when: playwright_mcp_enabled | bool
+
+- name: Configure Printer MCP (Bambu H2C slice + print)
+  ansible.builtin.import_tasks:
+    file: printer.yml
+  when: printer_mcp_enabled | default(false) | bool
+
+- name: Configure Blender MCP (mesh modeling)
+  ansible.builtin.import_tasks:
+    file: blender.yml
+  when: blender_mcp_enabled | default(false) | bool
+
+- name: Configure FreeCAD MCP (parametric CAD)
+  ansible.builtin.import_tasks:
+    file: freecad.yml
+  when: freecad_mcp_enabled | default(false) | bool
+
+- name: Configure saved memories (memory MCP)
+  ansible.builtin.import_tasks:
+    file: memory.yml
+  when: memory_mcp_enabled | default(true) | bool
+  tags:
+    - memory
+
+# The skills tool (skills-mcp behind LiteLLM's `skills` MCP server) as an
+# Open WebUI tool server; the service and the LiteLLM entry come from the
+# compose and LiteLLM config templates.
+- name: Configure the skills tool (skills MCP)
+  ansible.builtin.import_tasks:
+    file: litellm_tool_server.yml
+  vars:
+    litellm_tool_server_id: skills
+    litellm_tool_server_name: Skills
+    litellm_tool_server_description: >-
+      Search and read the stack's skills, the same ones Claude Code, opencode
+      and agents get through LiteLLM
+  when: skills_mcp_enabled | default(true) | bool
+  tags:
+    - skills
+
+# The models volume is shared by the pipeline above (and code-sandbox); it
+# must be uid-1000 writable or every export from chat fails. Runs whenever
+# any 3D-pipeline writer is enabled; printer-only setups never write.
+- name: Fix the models volume ownership for writer containers
+  ansible.builtin.import_tasks:
+    file: models_volume.yml
+  when: >-
+    blender_mcp_enabled | default(false) | bool
+    or freecad_mcp_enabled | default(false) | bool
+    or code_sandbox_enabled | default(false) | bool
+
+# Publish chat-created CAD/print artifacts (/models STL/3MF/STEP) and
+# code-interpreter documents (/outputs DOCX/XLSX/PPTX/PDF) as downloadable
+# Open WebUI files. Needs the models:ro mount the compose template adds to
+# open-webui when any 3D-pipeline service is enabled, or the outputs:ro
+# mount it adds when the code interpreter is enabled.
+- name: Configure the tool result file download filter
+  ansible.builtin.import_tasks:
+    file: tool_file_filter.yml
+  when: >-
+    blender_mcp_enabled | default(false) | bool
+    or freecad_mcp_enabled | default(false) | bool
+    or printer_mcp_enabled | default(false) | bool
+    or openwebui_code_interpreter_active | bool
+
+# Skills Gateway: register every ./skills SKILL.md package in LiteLLM's
+# skill store (semantic search) and the Claude Code marketplace. Runs
+# unconditionally: skills are plain instructions, not tied to any MCP
+# server being enabled (each skill's SKILL.md states which tools it
+# assumes, and clients only load it when relevant).
+- name: Register pipeline skills (Skills Gateway)
+  ansible.builtin.import_tasks:
+    file: skills_gateway.yml
+  tags:
+    - skills
+
+# Runs after the MCP servers: the filter makes their image results (e.g.
+# Playwright screenshots) visible in the chat window.
+- name: Register the tool result image filter
+  ansible.builtin.import_tasks:
+    file: tool_image_filter.yml
+  when: playwright_mcp_enabled | bool
+
+# Runs last: it derives the global default tool IDs from which MCP servers
+# were wired above, so it must see both merge results.
+- name: Set global model default tools for enabled MCP servers
+  ansible.builtin.import_tasks:
+    file: tool_defaults.yml
+  tags:
+    - memory
+    - skills

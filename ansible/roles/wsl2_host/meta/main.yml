@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: wsl2_host
+  author: openwebui-stack
+  description: Provision WSL2 with Fedora on Windows for remote inference nodes
+  company: openwebui-stack
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Windows
+      versions:
+        - 10
+        - 11

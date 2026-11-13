@@ -1,0 +1,21 @@
+# Copy to vars.local.yml (gitignored) and fill in real values. Ansible reads
+# the files of this directory in alphabetical order, so vars.local.yml is
+# read BEFORE vars.yml: a variable that vars.yml also sets keeps the vars.yml
+# value. Everything below is left unset in vars.yml for that reason.
+
+# Paths on the GPU node (its /var is small; data lives under the node
+# user's home, ~396G free).
+vllm_podman_storage_root: /home/you/vllm/podman-storage
+vllm_hf_cache_dir: /home/you/vllm/huggingface
+
+# The compute segment the controller reaches the node on. The vllm-cluster
+# firewalld zone binds this as its source.
+vllm_firewall_zone_source: "192.0.2.0/24"
+
+# Controller (stack host) address for the Loki push API.
+vllm_controller_host: 192.0.2.10
+
+# LLM Launcher GUI and its sign-in gate on this node, and whether the GUI
+# owns the GPU instead of the vllm-serve unit (see vars.yml).
+# vllm_launcher_enabled: true
+# vllm_launcher_owns_primary: true

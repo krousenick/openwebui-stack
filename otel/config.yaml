@@ -16,13 +16,41 @@ receivers:
               labels:
                 job: "node"
 
-        # NVIDIA GPU Exporter
+        # NVIDIA GPU Exporter (local Tesla P4; the `gpu` profile runs the
+        # nvidia/dcgm-exporter container with the NVIDIA runtime). GPU
+        # metrics for the remote compute nodes come from the remote-* jobs
+        # injected by the vllm_compute role.
         - job_name: "nvidia-gpu"
           scrape_interval: 15s
           static_configs:
             - targets: ["nvidia-gpu-exporter:9400"]
               labels:
                 job: "nvidia-gpu"
+
+        # LiteLLM token counts, spend, and request latency.
+        # /metrics requires the proxy master key.
+        - job_name: "litellm"
+          scrape_interval: 15s
+          authorization:
+            type: Bearer
+            credentials: "${LITELLM_MASTER_KEY}"
+          static_configs:
+            - targets: ["litellm:4000"]
+              labels:
+                job: "litellm"
+          metrics_path: "/metrics"
+
+        # llama.cpp prompt and generation throughput. No llama.cpp edge node is
+        # deployed in this stack; the job is a placeholder. Uncomment and point
+        # it at a live edge node when one exists (litellm/config.yaml's
+        # LLAMA_CPP_EDGE_NODES template).
+        # - job_name: "llama-cpp"
+        #   scrape_interval: 15s
+        #   static_configs:
+        #     - targets: ["llama-cpp-test:8080"]
+        #       labels:
+        #         job: "llama-cpp"
+        #   metrics_path: "/metrics"
 
         # Traefik metrics
         - job_name: "traefik"
@@ -32,9 +60,14 @@ receivers:
               labels:
                 job: "traefik"
 
-        # Qdrant metrics
+        # Qdrant metrics. /metrics requires the API key (Bearer auth, verified
+        # 401 without / 200 with); QDRANT_API_KEY is exported to the collector
+        # by the compose service.
         - job_name: "qdrant"
           scrape_interval: 15s
+          authorization:
+            type: Bearer
+            credentials: "${QDRANT_API_KEY}"
           static_configs:
             - targets: ["qdrant:6333"]
               labels:
@@ -48,6 +81,119 @@ receivers:
             - targets: ["postgres-exporter:9187"]
               labels:
                 job: "postgres"
+
+        # Keycloak metrics (authentication, sessions, etc.)
+        - job_name: "keycloak"
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["keycloak:9000"]
+              labels:
+                job: "keycloak"
+          metrics_path: "/metrics"
+
+        # Chatterbox TTS JSON status endpoints (v2.0 API on port 8004).
+        # The old port-4123 monitoring API (/status, /memory, /voices, ...) was
+        # removed upstream; json-exporter maps the surviving JSON documents.
+        - job_name: "chatterbox"
+          scrape_interval: 15s
+          metrics_path: /probe
+          static_configs:
+            - targets:
+                - http://chatterbox-tts:8004/api/ui/initial-data
+              labels:
+                module: chatterbox_initial_data
+            - targets:
+                - http://chatterbox-tts:8004/api/model-info
+              labels:
+                module: chatterbox_model_info
+            - targets:
+                - http://chatterbox-tts:8004/get_predefined_voices
+              labels:
+                module: chatterbox_voices
+          relabel_configs:
+            - source_labels: [__address__]
+              target_label: __param_target
+            - source_labels: [module]
+              target_label: __param_module
+            - source_labels: [__param_target]
+              target_label: instance
+            - target_label: __address__
+              replacement: json-exporter:7979
+
+        # OAuth2 Proxy request metrics (metrics listener on :4181).
+        - job_name: "oauth2-proxy"
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["oauth2-proxy:4181"]
+              labels:
+                job: "oauth2-proxy"
+
+        # BEGIN vllm_compute remote scrape jobs (managed)
+        # (rendered by the vllm_compute role from the live inventory -
+        # see tasks/monitoring.yml; do not edit by hand)
+        # END vllm_compute remote scrape jobs (managed)
+
+  # Docker engine resource metrics for every running container.
+  # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/dockerstatsreceiver
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    collection_interval: 15s
+    timeout: 10s
+    metrics:
+      container.cpu.utilization:
+        enabled: true
+      container.cpu.usage.total:
+        enabled: true
+      container.cpu.usage.system:
+        enabled: true
+      container.cpu.limit:
+        enabled: true
+      container.cpu.throttling_data.throttled_periods:
+        enabled: true
+      container.cpu.throttling_data.throttled_time:
+        enabled: true
+      container.memory.percent:
+        enabled: true
+      container.memory.usage.total:
+        enabled: true
+      container.memory.usage.limit:
+        enabled: true
+      container.memory.usage.max:
+        enabled: true
+      container.memory.rss:
+        enabled: true
+      container.memory.fails:
+        enabled: true
+      container.network.io.usage.rx_bytes:
+        enabled: true
+      container.network.io.usage.tx_bytes:
+        enabled: true
+      container.network.io.usage.rx_packets:
+        enabled: true
+      container.network.io.usage.tx_packets:
+        enabled: true
+      container.network.io.usage.rx_errors:
+        enabled: true
+      container.network.io.usage.tx_errors:
+        enabled: true
+      container.network.io.usage.rx_dropped:
+        enabled: true
+      container.network.io.usage.tx_dropped:
+        enabled: true
+      container.blockio.io_service_bytes_recursive:
+        enabled: true
+      container.pids.count:
+        enabled: true
+      container.pids.limit:
+        enabled: true
+      container.restarts:
+        enabled: true
+      container.uptime:
+        enabled: true
+      container.state.status:
+        enabled: true
+      container.state.health.status:
+        enabled: true
 
   # OTLP receiver for traces and metrics from applications
   otlp:
@@ -71,6 +217,12 @@ processors:
     spike_limit_mib: 128
 
   # Resource processor to add metadata
+  #
+  # The prometheus receiver sets job to "<service.namespace>/<job_name>"
+  # (openwebui-stack/keycloak) because of the service.namespace attribute
+  # below. Dashboards and alert rules select the plain job label, so the
+  # namespace is moved to its own stack_namespace label and job is restored
+  # to the scrape job name via from_attribute.
   resource:
     attributes:
       - key: service.namespace
@@ -79,6 +231,11 @@ processors:
       - key: deployment.environment
         value: production
         action: upsert
+      - key: stack_namespace
+        from_attribute: service.namespace
+        action: upsert
+      - key: service.namespace
+        action: delete
 
 exporters:
   # Export to LGTM stack via OTLP
@@ -95,7 +252,7 @@ service:
   pipelines:
     # Metrics pipeline
     metrics:
-      receivers: [prometheus, otlp]
+      receivers: [prometheus, docker_stats, otlp]
       processors: [memory_limiter, batch, resource]
       exporters: [otlphttp]
 
@@ -105,7 +262,7 @@ service:
       processors: [memory_limiter, batch, resource]
       exporters: [otlphttp]
 
-    # Logs pipeline
+    # Application logs sent over OTLP. Container stdout is collected by Alloy.
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch, resource]

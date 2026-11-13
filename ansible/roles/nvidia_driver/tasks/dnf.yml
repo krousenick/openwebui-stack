@@ -1,0 +1,40 @@
+---
+# Fedora and the RHEL family: NVIDIA's own package repository, with the
+# open kernel modules built by DKMS. DKMS rebuilds the module when a new
+# kernel is installed, so the module_missing state normally only shows up
+# when the headers for the running kernel were not there at that moment.
+#
+#   module_missing  install the headers for the running kernel and let DKMS
+#                   build the module for it.
+#   not_installed   add the repository and install the driver packages.
+
+- name: Add NVIDIA's package repository
+  ansible.builtin.get_url:
+    url: "{{ nvidia_driver_dnf_repo_url }}"
+    dest: "/etc/yum.repos.d/{{ nvidia_driver_dnf_repo_url | basename }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: nvidia_driver_state == 'not_installed'
+
+- name: Install the kernel headers for the running kernel
+  # Pinned to the running kernel: an unversioned kernel-devel can bring the
+  # headers of a newer kernel, and DKMS would build for that one instead.
+  ansible.builtin.dnf:
+    name: "kernel-devel-{{ nvidia_driver_probe.kernel }}"
+    state: present
+
+- name: Install the driver packages
+  ansible.builtin.dnf:
+    name: "{{ nvidia_driver_dnf_packages }}"
+    state: present
+  when: nvidia_driver_state == 'not_installed'
+
+- name: Build the kernel module for the running kernel
+  ansible.builtin.command:
+    argv:
+      - dkms
+      - autoinstall
+      - -k
+      - "{{ nvidia_driver_probe.kernel }}"
+  changed_when: true

@@ -1,0 +1,170 @@
+---
+# Host prerequisites (base packages, Docker, docker compose) are checked first
+# by the global prerequisites role, which runs before this one in
+# playbooks/site.yml.
+#
+# Order matters: secrets and certs must exist before the .env and compose
+# file are rendered; Keycloak must be up before its realm is provisioned,
+# which the keycloak task handles by waiting on the endpoint.
+
+# First, and on every run: every compose call below reads
+# docker_compose_profiles, and this drops the gpu profile from it when the
+# host cannot run the GPU exporter.
+- name: Check that the host can run the gpu compose profile
+  ansible.builtin.import_tasks:
+    file: gpu_profile.yml
+  tags:
+    - always
+
+- name: Resolve stack secrets
+  ansible.builtin.import_tasks:
+    file: secrets.yml
+  tags:
+    - secrets
+    - environment
+
+- name: Manage host name resolution
+  ansible.builtin.import_tasks:
+    file: hosts.yml
+  when: manage_hosts_file | bool
+
+- name: Create project directories
+  ansible.builtin.import_tasks:
+    file: directories.yml
+
+- name: Provision TLS certificates
+  ansible.builtin.import_tasks:
+    file: certs.yml
+  tags:
+    - certs
+
+- name: Sync stack files
+  ansible.builtin.import_tasks:
+    file: sync.yml
+  tags:
+    - always
+
+# After the sync (it creates freecad/ in the deployed tree) and before the
+# compose step, which builds the image from that directory. Tagged compose
+# so a `--tags compose` run has the archive too.
+- name: Fetch the freecad-mcp source for the FreeCAD image build
+  ansible.builtin.import_tasks:
+    file: freecad_source.yml
+  when: freecad_mcp_enabled | default(false) | bool
+  tags:
+    - compose
+    - freecad
+
+# Before the compose step: the login tracker mounts geoip/ read-only.
+# Tagged compose like the FreeCAD archive, so a `--tags compose` run has it.
+- name: Fetch the GeoIP database of the Keycloak login tracker
+  ansible.builtin.import_tasks:
+    file: geoip.yml
+  when: keycloak_login_tracker_enabled | bool
+  tags:
+    - compose
+    - geoip
+    - login-tracker
+
+# After the sync: it creates traefik/dynamic in the deployed tree.
+- name: Publish the LLM Launcher portals through Traefik
+  ansible.builtin.import_tasks:
+    file: launcher.yml
+  tags:
+    - launcher
+    - environment
+
+- name: Render the LiteLLM config
+  ansible.builtin.import_tasks:
+    file: litellm_config.yml
+  tags:
+    - environment
+
+- name: Render application environment
+  ansible.builtin.import_tasks:
+    file: environment.yml
+  tags:
+    - environment
+
+- name: Render the Docker Compose file
+  ansible.builtin.import_tasks:
+    file: compose_template.yml
+  tags:
+    - environment
+
+- name: Verify compose bind-mount sources are present before starting
+  ansible.builtin.import_tasks:
+    file: compose_mount_check.yml
+  tags:
+    - compose
+
+- name: Deploy Docker Compose stack
+  ansible.builtin.import_tasks:
+    file: compose.yml
+  tags:
+    - compose
+
+- name: Assert Open WebUI connection config
+  ansible.builtin.import_tasks:
+    file: openwebui_config.yml
+  tags:
+    - openwebui-config
+
+- name: Configure the code sandbox wiring in Open WebUI
+  ansible.builtin.import_tasks:
+    file: code_sandbox.yml
+  when: code_sandbox_enabled | bool
+  tags:
+    - openwebui-config
+
+- name: Configure optional MCP servers
+  ansible.builtin.import_tasks:
+    file: mcp/main.yml
+
+- name: Publish skills into the Open WebUI workspace
+  ansible.builtin.import_tasks:
+    file: openwebui_skills.yml
+  tags:
+    - skills
+    - openwebui-config
+
+- name: Set the Open WebUI default model
+  ansible.builtin.import_tasks:
+    file: openwebui_default_models.yml
+  when: openwebui_default_models_csv | length > 0
+  tags:
+    - skills
+    - openwebui-config
+
+# After skill publishing: it upserts the admin API key this sync uses.
+- name: Sync the Open WebUI Thinking switch for reasoning models
+  ansible.builtin.import_tasks:
+    file: openwebui_reasoning.yml
+  tags:
+    - skills
+    - openwebui-config
+    - openwebui-reasoning
+
+# Also tagged openwebui-reasoning: showInputSelections is what shows an
+# enabled Thinking switch as a chip beside the + menu.
+- name: Set the Open WebUI default interface settings
+  ansible.builtin.import_tasks:
+    file: openwebui_interface_defaults.yml
+  tags:
+    - skills
+    - openwebui-config
+    - openwebui-reasoning
+
+# Runs with the switch off too, to remove what an earlier run added.
+- name: Keep the Claude subscription passthrough for Claude Code
+  ansible.builtin.import_tasks:
+    file: claude_subscription.yml
+  tags:
+    - openwebui-config
+    - claude-subscription
+
+- name: Configure Keycloak SSO
+  ansible.builtin.import_tasks:
+    file: keycloak.yml
+  tags:
+    - keycloak

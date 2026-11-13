@@ -1,0 +1,102 @@
+---
+# Global model default tools (models.default_metadata). Open WebUI fill-only
+# merges this into every model whose own meta has no toolIds (get_all_models),
+# so new chats start with the MCP tool servers already selected instead of
+# forcing a per-chat toggle. Built-in web search is off (web.search.enable
+# set to false in brave.yml); these MCP tool IDs are the default path for
+# web search and browser automation. Other keys in the row (capabilities,
+# description, ...) belong to the admin Model Defaults panel and are kept.
+
+- name: Require Open WebUI database settings for tool defaults
+  ansible.builtin.assert:
+    that:
+      - openwebui_db_user | length > 0
+      - openwebui_db_password | length > 0
+      - openwebui_db_name | length > 0
+    fail_msg: "Tool defaults require the Open WebUI database settings."
+
+- name: Read current global model default metadata
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+      - -tAc
+      - SELECT value::text FROM config WHERE key = 'models.default_metadata'
+  register: tool_defaults_current
+  changed_when: false
+  # Check mode skips this command, leaving stdout empty; the merge then
+  # reads an empty object instead of failing on a JSON parse of "".
+  failed_when: false
+  no_log: true
+
+- name: Build the desired default tool IDs
+  ansible.builtin.set_fact:
+    # Only the MCP tool servers this playbook wires up; a disabled server
+    # here would put a dead tool ID into every model's defaults.
+    tool_defaults_tool_ids: >-
+      {{ (['server:mcp:brave_search']
+          if brave_search_enabled | bool and brave_search_api_key | length > 0
+          else [])
+         + (['server:mcp:playwright_cluster'] if playwright_mcp_enabled | bool else [])
+         + (['server:mcp:printer_3d'] if printer_mcp_enabled | default(false) | bool else [])
+         + (['server:mcp:blender'] if blender_mcp_enabled | default(false) | bool else [])
+         + (['server:mcp:freecad'] if freecad_mcp_enabled | default(false) | bool else [])
+         + (['server:mcp:memory'] if memory_mcp_enabled | default(true) | bool else [])
+         + (['server:mcp:skills'] if skills_mcp_enabled | default(true) | bool else []) }}
+  no_log: true
+
+- name: Merge the tool IDs into the current default metadata
+  ansible.builtin.set_fact:
+    tool_defaults_desired: >-
+      {{ ((tool_defaults_current.stdout | trim | default('', true) or '{}') | from_json
+          | combine({'toolIds': tool_defaults_tool_ids})) }}
+  no_log: true
+
+- name: Update global model default metadata
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+    stdin: |
+      UPDATE config SET value = '{{ tool_defaults_desired | to_json | replace("'", "''") }}'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'models.default_metadata';
+  register: tool_defaults_update
+  # Compare only the toolIds entry (sorted lists), not the whole row: other
+  # keys are admin-owned, and psql's key order/spacing never matches to_json
+  # byte-for-byte, which would recreate the services on every run.
+  changed_when: >-
+    (((tool_defaults_current.stdout | trim | default('', true) or '{}') | from_json).toolIds | default([], true) | list | sort)
+    != (tool_defaults_tool_ids | sort)
+  no_log: true
+
+- name: Recreate Open WebUI to reload model defaults
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - open-webui
+    state: present
+    recreate: always
+    wait: true
+    wait_timeout: 180
+  when: tool_defaults_update is changed

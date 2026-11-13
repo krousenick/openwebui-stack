@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Managed by Ansible (role: vllm_compute). OAuth gate for the LLM Launcher.
+#
+# oauth2-proxy in upstream mode: it owns the browser sign-in against
+# Keycloak on the stack host and proxies authenticated requests to the
+# launcher on 127.0.0.1:{{ vllm_launcher_port }}. Traefik on the stack host
+# forwards https://{{ vllm_launcher_fqdn }} to port {{ vllm_launcher_auth_port }} here.
+# Settings and secrets come from {{ vllm_launcher_dir }}/auth.env (root-only).
+set -euo pipefail
+
+readonly IMAGE="{{ vllm_launcher_auth_image }}"
+readonly NAME="{{ vllm_container_name }}-launcher-auth"
+
+{{ vllm_container_cli }} pull --quiet "$IMAGE" >/dev/null 2>&1 || true
+
+exec {{ vllm_container_cli }} run \
+  --rm \
+  --name "$NAME" \
+  --network host \
+{% if vllm_container_init_flags | length > 0 %}
+  {{ vllm_container_init_flags }} \
+{% endif %}
+{% if vllm_rootless | bool %}
+{# podman run relays the container output to the unit, which is what
+   `journalctl -u` and the log shipper read. podman's own journald logging
+   would file every line a second time under the same unit; passthrough
+   would file it under the account's scope instead of the unit. #}
+  --log-driver none \
+{% endif %}
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --env-file {{ vllm_launcher_dir }}/auth.env \
+{% if vllm_launcher_keycloak_host_ip | default('') | length > 0 %}
+  --add-host auth.{{ vllm_launcher_effective_domain }}:{{ vllm_launcher_keycloak_host_ip }} \
+{% endif %}
+  "$IMAGE"

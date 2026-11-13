@@ -1,0 +1,123 @@
+---
+# Global outlet filter: promote MCP tool-result images to chat message files.
+# Open WebUI 0.13.0 stores MCP image content (Playwright screenshots) on the
+# function_call_output output item's files array. The frontend renders that
+# only inside the collapsed "Tool Executed" box, and the message node's own
+# files array stays empty, so screenshots never appear in the chat window
+# (upstream open-webui#33320 class; the PR that fixes image_generation_call
+# there, #33324, works the same way: attach as message files and emit a
+# files event). The filter re-emits the stored file URLs through the socket
+# emitter, which persists them onto the assistant message node and pushes
+# them to the frontend, where they render as chat images. It changes no
+# request or response content.
+- name: Require Open WebUI database settings for the tool image filter
+  ansible.builtin.assert:
+    that:
+      - openwebui_db_user | length > 0
+      - openwebui_db_password | length > 0
+      - openwebui_db_name | length > 0
+    fail_msg: "The tool result image filter requires the Open WebUI database settings."
+
+- name: Read the current tool result image filter row
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+      - -tAc
+      - >-
+        SELECT coalesce(
+          (SELECT to_jsonb(function)
+             FROM function
+            WHERE id = 'tool_result_image_display'),
+          '{}'::jsonb)
+  register: tool_image_filter_current
+  changed_when: false
+  # Check mode skips this command, leaving stdout empty; the comparison then
+  # reads an empty object instead of failing on a JSON parse of "".
+  failed_when: false
+  no_log: true
+
+- name: Stage the tool result image filter source
+  ansible.builtin.set_fact:
+    # content, is_active and is_global are compared below; meta carries the
+    # docstring fields the Functions admin page displays. The file lives in
+    # the openwebui_stack role's files/ dir; playbook_dir-relative works both
+    # when imported from the role (via tasks/mcp/main.yml) and from the scoped
+    # playbooks/tool_image_filter.yml.
+    tool_image_filter_content: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../roles/openwebui_stack/files/functions/tool_result_image_display.py') }}"
+  no_log: true
+
+- name: Record whether the tool result image filter changes
+  ansible.builtin.set_fact:
+    tool_image_filter_changed: >-
+      {{ ((tool_image_filter_current.stdout | trim | default('', true) or '{}') | from_json).get('content') != tool_image_filter_content
+         or ((tool_image_filter_current.stdout | trim | default('', true) or '{}') | from_json).get('is_active') != true
+         or ((tool_image_filter_current.stdout | trim | default('', true) or '{}') | from_json).get('is_global') != true }}
+  no_log: true
+
+- name: Upsert the tool result image filter
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+    stdin: |
+      INSERT INTO function (id, user_id, name, type, content, meta, valves, is_active, is_global, updated_at, created_at)
+      VALUES (
+        'tool_result_image_display',
+        NULL,
+        'Tool Result Image Display',
+        'filter',
+        $filter${{ tool_image_filter_content }}$filter$,
+        '{"description": "Promotes MCP tool-result images (Playwright screenshots, etc.) to chat message files so they render in the chat window", "manifest": {"version": "1.0.0"}}'::jsonb,
+        '{}'::jsonb,
+        true,
+        true,
+        (extract(epoch from now())*1000)::bigint,
+        (extract(epoch from now())*1000)::bigint
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        content = EXCLUDED.content,
+        meta = EXCLUDED.meta,
+        is_active = true,
+        is_global = true,
+        updated_at = (extract(epoch from now())*1000)::bigint;
+  when: tool_image_filter_changed | bool
+  register: tool_image_filter_update
+  no_log: true
+
+- name: Recreate Open WebUI to load the tool result image filter
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - open-webui
+    # The deployed compose file can reference images that are not published
+    # (e.g. a locally-built sandbox image); building them here would fail the
+    # recreate of an unrelated service.
+    build: never
+    state: present
+    recreate: always
+    wait: true
+    wait_timeout: 180
+  when: tool_image_filter_changed | bool

@@ -18,25 +18,80 @@ general_settings:
   # Background health checks
   background_health_checks: false # Disables periodic background pings
 
-  # User header mappings - maps headers from Open WebUI to LiteLLM roles
+  # The admin UI's Chat page (litellm_ui_chat_enabled). Off: chat goes
+  # through Open WebUI or an API client. A value here overrides the one
+  # saved from Admin Settings > UI Settings, so the toggle there has no
+  # effect while this line exists. The Playground has no such switch;
+  # ui_chat_block_callback.py refuses the model calls of both pages.
+  enable_chat_ui: false
+
+  # Open WebUI sends the logged-in user when ENABLE_FORWARD_USER_INFO_HEADERS=true.
+  # The username matches the LiteLLM user_id created by SSO, so Usage attributes spend to that user.
   user_header_mappings:
-    - header_name: X-OpenWebUI-User-Id
+    - header_name: X-OpenWebUI-User-Name
       litellm_user_role: internal_user
-    - header_name: X-OpenWebUI-User-Email
-      litellm_user_role: customer
+
+  # OIDC group to team mapping
+  # enable_jwt_auth: true
+  # litellm_jwtauth:
+  #   user_id_jwt_field: "email"
+  #   user_email_jwt_field: "email"
+  #   user_id_upsert: true
+  #   team_ids_jwt_field: "groups"
+  #   org_id_jwt_field: "org_id"
+  #   enforce_team_based_model_access: true
+
 
 # Litellm settings
 litellm_settings:
   # Enable streaming
   set_verbose: false
 
-  # Cache settings
+  # Agent Skills discovery index: publishes every proxy-hosted skill at
+  # /.well-known/agent-skills/index.json, each served as a zip at
+  # /v1/skills/{skill_id}/archive. Lets any Agent Skills client install
+  # the centralized skills with: npx skills add https://litellm.<domain>.
+  # Unauthenticated by design; rendered from templates/config.yaml.j2,
+  # gated on skills_public_index_enabled.
+  # https://docs.litellm.ai/docs/skills_gateway#agent-skills-discovery-index
+  public_skills_index: true
+
+  # Exact-response cache in Valkey. This is not provider prompt caching.
+  # https://docs.litellm.ai/docs/proxy/caching
   cache: true
   cache_params:
-    type: "redis"
+    type: redis
+    host: os.environ/REDIS_HOST
+    port: os.environ/REDIS_PORT
+    password: os.environ/REDIS_PASSWORD
 
-  # OpenTelemetry callbacks for traces, logs, metrics
-  callbacks: ["otel"]
+  # Provider prompt caching (NOT the Valkey exact-response cache above).
+  # enable_anthropic_prompt_caching (LiteLLM >= 1.94.0) auto-injects
+  # cache_control checkpoints (system prompt + trailing turn) on anthropic/
+  # and bedrock/ Claude models the cost map flags as cache-capable. It never
+  # double-injects when the client sets its own cache_control, and it does
+  # NOT touch any other provider.
+  # Every model family this stack serves, and why nothing further is set:
+  #   gemini/ (3.x)     - Google implicit caching is automatic and free; do
+  #                       NOT add cache_control_injection_points (switches
+  #                       to paid explicit context caching with storage).
+  #   bedrock/ OSS      - MiniMax/Qwen/Kimi are absent from AWS's prompt
+  #                       caching table; markers risk ValidationException.
+  #   openai/ + custom  - vLLM/llama.cpp/edge-node deployments: LiteLLM's
+  #     api_base         OpenAI marker mapping only fires against
+  #                       api.openai.com hosts; off a custom api_base the
+  #                       markers are stripped (no-op). Their caching is
+  #                       server-side (--enable-prefix-caching /
+  #                       --cache-prompt), already on.
+  #   ollama/           - LiteLLM ignores cache_control for ollama/;
+  #                       Ollama keeps context warm daemon-side.
+  # https://docs.litellm.ai/docs/tutorials/prompt_caching
+  enable_anthropic_prompt_caching: true
+
+  # OpenTelemetry callbacks for traces and logs. prometheus exposes
+  # token counts and latency on /metrics.
+  # https://docs.litellm.ai/docs/proxy/prometheus
+  callbacks: ["otel", "prometheus"]
 
   # Request timeout
   request_timeout: 6000
@@ -44,10 +99,367 @@ litellm_settings:
   # Number of retries
   num_retries: 3
 
+  # Drop unsupported parameters for providers. Claude tool calls depend on
+  # this: claude-opus-5-5, claude-sonnet-5-5, and claude-fable-5-2 answer a
+  # forced tool_choice ("required" or a named function) with a 400. With
+  # drop_params on, LiteLLM downgrades it to "auto" for the models its map
+  # flags supports_forced_tool_use: false; with it off, LiteLLM returns its
+  # own 400 for them. claude-haiku-5-5 still accepts a forced tool_choice.
+  drop_params: true
+
+  # Repair tool-call histories instead of failing the request. Claude needs
+  # every assistant tool call answered by exactly one tool result in the
+  # next turn and rejects a tool result that has no matching call. Open
+  # WebUI can send such a history: generation stopped during a tool call, a
+  # tool response that failed or was written twice, turns removed by
+  # context compaction. With modify_params on, LiteLLM adds a placeholder
+  # result for an unanswered call and drops an orphaned or duplicate result
+  # before the request reaches Anthropic. This repair runs only in
+  # LiteLLM's Anthropic message conversion, so requests to other providers
+  # are not rewritten by it. modify_params is a global LiteLLM flag: any
+  # other provider adapter that checks it makes its own repairs too.
+  # https://docs.litellm.ai/docs/completion/message_sanitization
+  modify_params: true
+
   # Fallback models configuration
   fallbacks: []
+
+  # Built-in content filter does not scan system or tool turns. Those are
+  # stack-owned prompts and tool results, not the user message.
+  # https://docs.litellm.ai/docs/proxy/guardrails/quick_start
+  skip_system_message_in_guardrail: true
+  skip_tool_message_in_guardrail: true
 
 # Router settings
 router_settings:
   routing_strategy: simple-shuffle # Prevents latency-based routing checks
   enable_pre_call_checks: false # Disables checking model health before every call
+  # Spoken replies. LiteLLM rewrites this to the target before the key allowlist
+  # check, so a voice key allows gemini-3.5-flash-lite, not the alias name.
+  model_group_alias:
+    voice-assistant: gemini-3.5-flash-lite
+
+# =============================================================================
+# Guardrails
+# =============================================================================
+# Built-in content filter. No extra service or API key. default_on runs on
+# every request, including when the client omits guardrails.
+# Secrets and SSN are blocked. Email and phone are masked so the model still
+# answers. Prompt-injection and harmful categories block the request.
+# https://docs.litellm.ai/docs/proxy/guardrails/litellm_content_filter
+guardrails:
+  - guardrail_name: default-content-filter
+    litellm_params:
+      guardrail: litellm_content_filter
+      mode: [pre_call, post_call]
+      default_on: true
+      patterns:
+        - pattern_type: prebuilt
+          pattern_name: us_ssn
+          action: BLOCK
+        - pattern_type: prebuilt
+          pattern_name: email
+          action: MASK
+        - pattern_type: prebuilt
+          pattern_name: us_phone
+          action: MASK
+        - pattern_type: prebuilt
+          pattern_name: aws_access_key
+          action: BLOCK
+        - pattern_type: prebuilt
+          pattern_name: aws_secret_key
+          action: BLOCK
+        - pattern_type: prebuilt
+          pattern_name: github_token
+          action: BLOCK
+      categories:
+        - category: prompt_injection_jailbreak
+          enabled: true
+          action: BLOCK
+          severity_threshold: high
+          # Overrides the built-in conditional match (roleplay/"enable" +
+          # "debug mode" etc. false-blocks normal feature-flag requests).
+          # Keeps the always-block payload list. See
+          # litellm/guardrail_categories/prompt_injection_jailbreak.yaml.
+          category_file: "/app/guardrail_categories/prompt_injection_jailbreak.yaml"
+        - category: prompt_injection_system_prompt
+          enabled: true
+          action: BLOCK
+          severity_threshold: high
+          # Overrides the built-in conditional match ("show"/"list" +
+          # "system prompt" false-blocks prompt-engineering discussion).
+          # Keeps the always-block payload list. See
+          # litellm/guardrail_categories/prompt_injection_system_prompt.yaml.
+          category_file: "/app/guardrail_categories/prompt_injection_system_prompt.yaml"
+        - category: prompt_injection_sql
+          enabled: true
+          action: BLOCK
+          severity_threshold: medium
+          # Overrides the built-in category: the built-in conditional match
+          # (SQL identifier + block word, e.g. "alter" + "alter table") blocks
+          # every legitimate SQL question. This override keeps only the
+          # always-block injection payloads. See
+          # litellm/guardrail_categories/prompt_injection_sql.yaml.
+          category_file: "/app/guardrail_categories/prompt_injection_sql.yaml"
+        - category: prompt_injection_malicious_code
+          enabled: true
+          action: BLOCK
+          severity_threshold: medium
+          # Overrides the built-in conditional match ("run"/"process" +
+          # "subprocess"/"crontab" false-blocks ordinary Python and its
+          # replies). Keeps the always-block payload list. See
+          # litellm/guardrail_categories/prompt_injection_malicious_code.yaml.
+          category_file: "/app/guardrail_categories/prompt_injection_malicious_code.yaml"
+        - category: prompt_injection_data_exfiltration
+          enabled: true
+          action: BLOCK
+          severity_threshold: high
+          # Overrides the built-in conditional match ("export"/"collect" +
+          # "user data"/"API keys" false-blocks ordinary app work). Keeps
+          # the always-block payload list. See
+          # litellm/guardrail_categories/prompt_injection_data_exfiltration.yaml.
+          category_file: "/app/guardrail_categories/prompt_injection_data_exfiltration.yaml"
+        - category: harmful_self_harm
+          enabled: true
+          action: BLOCK
+          severity_threshold: medium
+        - category: harmful_violence
+          enabled: true
+          action: BLOCK
+          severity_threshold: medium
+        - category: harmful_illegal_weapons
+          enabled: true
+          action: BLOCK
+          severity_threshold: medium
+        - category: harmful_child_safety
+          enabled: true
+          action: BLOCK
+          severity_threshold: medium
+
+# =============================================================================
+# Model Providers Configuration
+# =============================================================================
+# Models are configured via environment variables set by setup script
+# Environment variables used:
+#   - GEMINI_API_KEY: Google Gemini API key
+#   - ANTHROPIC_API_KEY: Anthropic API key
+#   - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY: AWS Bedrock credentials
+#   - AWS_REGION: AWS region (default: us-east-1)
+# Model IDs checked 2026-10-21 (Claude: 2026-11-09) against:
+#   https://docs.litellm.ai/docs/providers/gemini
+#   https://docs.litellm.ai/docs/providers/anthropic
+#   https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+#   https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html
+
+model_list:
+  # Google Gemini (Google AI Studio). gemini/ prefix uses GEMINI_API_KEY.
+  - model_name: gemini-3.8-flash
+    litellm_params:
+      model: gemini/gemini-3.8-flash
+      api_key: os.environ/GEMINI_API_KEY
+      web_search_options:
+        search_context_size: medium
+    model_info:
+      description: "Gemini 3.8 Flash - current fast model"
+      # Adaptive router pricing (input $/token, model_prices 2026-10-28)
+      input_cost_per_token: 0.00000075
+      adaptive_router_preferences:
+        quality_tier: 2
+        strengths: ["writing", "code_understanding"]
+
+  - model_name: gemini-3.5-flash-lite
+    litellm_params:
+      model: gemini/gemini-3.5-flash-lite
+      api_key: os.environ/GEMINI_API_KEY
+      web_search_options:
+        search_context_size: low
+    model_info:
+      description: "Gemini 3.5 Flash-Lite - current lightweight model"
+      input_cost_per_token: 0.0000003
+      adaptive_router_preferences:
+        quality_tier: 1
+        strengths: ["factual_lookup"]
+
+  - model_name: gemini-3.1-pro
+    litellm_params:
+      model: gemini/gemini-3.1-pro-preview
+      api_key: os.environ/GEMINI_API_KEY
+      web_search_options:
+        search_context_size: medium
+    model_info:
+      description: "Gemini 3.1 Pro preview - current reasoning model"
+      input_cost_per_token: 0.000002
+      adaptive_router_preferences:
+        quality_tier: 3
+        strengths: ["analytical_reasoning"]
+
+  - model_name: gemini-4-argon
+    litellm_params:
+      model: gemini/gemini-4-argon
+      api_key: os.environ/GEMINI_API_KEY
+      web_search_options:
+        search_context_size: medium
+    model_info:
+      description: "Gemini 4 Argon - current Gemini model"
+      input_cost_per_token: 0.000002
+      adaptive_router_preferences:
+        quality_tier: 3
+        strengths: ["code_generation", "technical_design", "analytical_reasoning"]
+
+  # Complexity auto-router. Call model "auto". The heuristic scorer picks a
+  # tier with no extra API call. Session affinity is off, so each turn is
+  # scored on its own. Checked against:
+  # https://docs.litellm.ai/docs/proxy/auto_routing
+  - model_name: auto
+    litellm_params:
+      model: auto_router/complexity_router
+      complexity_router_default_model: gemini-3.8-flash
+      complexity_router_config:
+        tiers:
+          SIMPLE: gemini-3.5-flash-lite
+          # MEDIUM picks randomly between two comparable models; the local
+          # vLLM node serves roughly half the mid-tier traffic.
+          MEDIUM: [gemini-3.8-flash, gemma-4-26b-a4b]
+          COMPLEX: gemini-4-argon
+          REASONING: gemini-3.1-pro
+        classifier_type: heuristic
+        session_affinity: false
+
+  # Adaptive router (beta). Call model "adaptive". A Thompson-sampling bandit
+  # learns which model wins per request type (code, writing, analysis...) from
+  # satisfaction/stagnation/misalignment signals, weighted quality vs cost.
+  # Cold start uses quality_tier + strengths declared above; ~10 requests per
+  # model per type before learned estimates take over. Needs the Postgres DB
+  # (state persists in LiteLLM_AdaptiveRouter* tables; already required here).
+  # Force frontier on one request: header x-litellm-min-quality-tier: 3.
+  # Inspect: GET /adaptive_router/state. Weights must sum to 1.0.
+  # https://docs.litellm.ai/docs/adaptive_router
+  - model_name: adaptive
+    litellm_params:
+      model: auto_router/adaptive_router
+      adaptive_router_config:
+        available_models:
+          [
+            "gemini-3.5-flash-lite",
+            "gemini-3.8-flash",
+            "gemini-3.1-pro",
+            "gemini-4-argon",
+            "gemma-4-26b-a4b",
+          ]
+        weights:
+          quality: 0.7
+          cost: 0.3
+
+  # Anthropic Claude (Anthropic API). anthropic/ prefix uses
+  # ANTHROPIC_API_KEY. Rendered from templates/config.yaml.j2 only when
+  # litellm_anthropic_models_enabled is true. model_names equal the
+  # Anthropic model IDs, so Anthropic-native clients can use /v1/messages
+  # unchanged. These models reject sampling parameters (400), hence
+  # additional_drop_params. Tool calls need nothing per model: forced
+  # tool_choice and tool call/result pairing are handled by drop_params and
+  # modify_params in litellm_settings above.
+  - model_name: claude-opus-5-5
+    litellm_params:
+      model: anthropic/claude-opus-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+    model_info:
+      description: "Claude Opus 5.5 - complex reasoning, coding, and agentic work"
+
+  - model_name: claude-sonnet-5-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+    model_info:
+      description: "Claude Sonnet 5.5 - balanced speed and capability"
+
+  - model_name: claude-haiku-5-5
+    litellm_params:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+    model_info:
+      description: "Claude Haiku 5.5 - fastest and cheapest Claude model"
+
+  - model_name: claude-fable-5-2
+    litellm_params:
+      model: anthropic/claude-fable-5-2
+      api_key: os.environ/ANTHROPIC_API_KEY
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+    model_info:
+      description: "Claude Fable 5.2 - most capable Claude model"
+
+  # AWS Bedrock OSS models. IDs are bedrock-runtime model IDs.
+  # Kimi K3 has no in-region ID; us-east-1 uses the US geo profile.
+  - model_name: minimax-m2.5
+    litellm_params:
+      model: bedrock/minimax.minimax-m2.5
+      aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
+      aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
+      aws_region_name: os.environ/AWS_REGION
+    model_info:
+      description: "MiniMax M2.5 via AWS Bedrock (us-east-1)"
+
+  - model_name: qwen3-next
+    litellm_params:
+      model: bedrock/qwen.qwen3-next-80b-a3b
+      aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
+      aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
+      aws_region_name: os.environ/AWS_REGION
+    model_info:
+      description: "Qwen3 Next 80B A3B via AWS Bedrock (us-east-1)"
+
+  - model_name: qwen3-coder
+    litellm_params:
+      model: bedrock/qwen.qwen3-coder-next
+      aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
+      aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
+      aws_region_name: os.environ/AWS_REGION
+    model_info:
+      description: "Qwen3 Coder Next via AWS Bedrock (us-east-1)"
+
+  - model_name: kimi-k3
+    litellm_params:
+      model: bedrock/us.moonshotai.kimi-k3
+      aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
+      aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
+      aws_region_name: os.environ/AWS_REGION
+    model_info:
+      description: "Kimi K3 via AWS Bedrock US geo inference"
+
+  # Local llama.cpp Edge Nodes (configured via setup script)
+  # Models are dynamically added based on LLAMA_CPP_EDGE_NODES env var
+  # Example edge node model config (template):
+  # - model_name: llama-3.1-8b-local
+  #   litellm_params:
+  #     model: openai/llama-3.1-8b-instruct
+  #     api_base: http://edge-node-hostname:8080/v1
+  #     api_key: local
+  #   model_info:
+  #     max_input_tokens: 32768
+  #     max_tokens: 32768
+
+  # vLLM Flux image generation moved to the vllm_compute Ansible role. The
+  # role deploys the containers as systemd services on the compute nodes and
+  # renders the model entries into litellm/vllm-models.yaml (one entry per
+  # configured model; see vllm_flux_models in the role). Merge that snippet
+  # here after running playbooks/inference.yml.
+
+# MCP Servers Configuration
+mcp_servers:
+  brave_search:
+    url: "http://brave-search-mcp:8080/mcp"
+    transport: "http"
+    auth_type: "none"
+    allow_all_keys: true
+  playwright_cluster:
+    # Route requests through Traefik's mcp entrypoint (:8082, no redirect),
+    # which distributes them across the playwright-mcp replicas.
+    # Sticky-cookie routing pins each MCP session to one replica.
+    url: "http://traefik:8082/mcp"
+    static_headers:
+      Host: "playwright-mcp.${DOMAIN:-localhost}" # Must match your Traefik router rule Host
+    transport: "http" # Connects via Streamable HTTP/SSE
+    auth_type: "none"
+    allow_all_keys: true

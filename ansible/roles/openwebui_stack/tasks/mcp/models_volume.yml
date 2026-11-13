@@ -1,0 +1,38 @@
+---
+# The shared `models` volume is created root-owned (docker local driver
+# default), but every container that writes to it runs as uid 1000
+# (blender, freecad, code-sandbox). Without this chown, every STL/STEP
+# export from chat fails with Permission denied while the containers
+# themselves stay healthy. printer-mcp reads the volume read-only and is
+# unaffected. Idempotent: stat is cheap and the chown only runs when the
+# mountpoint is not already 1000:1000.
+
+- name: Read the models volume mountpoint
+  ansible.builtin.command:
+    argv:
+      - docker
+      - volume
+      - inspect
+      - "{{ compose_project_name }}_models"
+      - --format
+      - "{{ '{{' }} .Mountpoint {{ '}}' }}"
+  register: openwebui_stack_models_volume_inspect
+  changed_when: false
+  failed_when: openwebui_stack_models_volume_inspect.rc != 0 or (openwebui_stack_models_volume_inspect.stdout | trim) == ""
+
+- name: Check models volume ownership
+  ansible.builtin.stat:
+    path: "{{ openwebui_stack_models_volume_inspect.stdout | trim }}"
+  register: openwebui_stack_models_volume_stat
+
+- name: Fix models volume ownership for uid-1000 writer containers
+  ansible.builtin.file:
+    path: "{{ openwebui_stack_models_volume_inspect.stdout | trim }}"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: "0755"
+  when: >-
+    openwebui_stack_models_volume_stat.stat.exists
+    and (openwebui_stack_models_volume_stat.stat.uid != 1000
+         or openwebui_stack_models_volume_stat.stat.gid != 1000)

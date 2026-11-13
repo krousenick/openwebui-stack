@@ -15,6 +15,8 @@ ping:
 entryPoints:
   web:
     address: ":80"
+    observability:
+      metrics: true
     http:
       redirections:
         entryPoint:
@@ -24,11 +26,22 @@ entryPoints:
 
   websecure:
     address: ":443"
+    observability:
+      metrics: true
     http:
       tls: {}
 
+  # Internal MCP entrypoint: no redirect, plain HTTP for LiteLLM's httpx
+  # client, which does not follow redirects and cannot verify internal TLS.
+  mcp:
+    address: ":8082"
+    observability:
+      metrics: true
+
   traefik:
     address: ":8080"
+    observability:
+      metrics: false
 
 # Providers
 providers:
@@ -46,18 +59,21 @@ providers:
 serversTransport:
   forwardingTimeouts:
     dialTimeout: "10s"
-    responseHeaderTimeout: "10s"
+    # Long enough for TTS synthesis through the oauth2-proxy voice chain.
+    # The chatterbox dynamic serversTransport disables it per-router.
+    responseHeaderTimeout: "300s"
     idleConnTimeout: "90s"
   maxIdleConnsPerHost: 10
 
 # Logging
+# No filePath: Traefik writes runtime and access logs to stdout, which
+# Grafana Alloy ships to Loki (see alloy/config.alloy). Setting filePath
+# redirects them into the container filesystem where no collector reads them.
 log:
   level: INFO
   format: json
-  filePath: /var/log/traefik/traefik.log
 
 accessLog:
-  filePath: /var/log/traefik/access.log
   format: json
   bufferingSize: 100
   filters:
@@ -71,3 +87,8 @@ metrics:
     addRoutersLabels: true
     addServicesLabels: true
     entryPoint: traefik
+    buckets:
+      - 0.1
+      - 0.3
+      - 1.2
+      - 5.0

@@ -1,0 +1,124 @@
+---
+- name: Require Brave Search settings
+  # No model provider key is required here: the Brave MCP server is wired
+  # into LiteLLM's MCP gateway and Open WebUI's tool servers, and every
+  # function-calling model the proxy serves (Gemini, Claude, Bedrock, vLLM)
+  # reaches it the same way. Requiring gemini_api_key failed the run on
+  # Anthropic-only deployments and left the Claude models without search.
+  ansible.builtin.assert:
+    that:
+      - brave_search_api_key | length > 0
+      - litellm_master_key | length > 0
+      - openwebui_db_user | length > 0
+      - openwebui_db_password | length > 0
+      - openwebui_db_name | length > 0
+    fail_msg: "Brave Search requires its API key, LiteLLM key, and Open WebUI database settings."
+
+- name: Record current Brave configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+      - -tAc
+      - >-
+        SELECT json_build_object(
+          'enabled', (SELECT value::text FROM config WHERE key = 'web.search.enable'),
+          'engine', (SELECT value::text FROM config WHERE key = 'web.search.engine'),
+          'connection', (SELECT value::text FROM config WHERE key = 'tool_server.connections')
+        )
+  register: brave_current_config
+  changed_when: false
+  # Check mode skips this command, leaving stdout empty; the merge task then
+  # falls back to defaults instead of failing on a JSON parse of "".
+  failed_when: false
+  no_log: true
+
+- name: Build the desired Brave connection entry
+  ansible.builtin.set_fact:
+    brave_connection_entry:
+      - type: mcp
+        url: http://litellm:4000/mcp/brave_search
+        path: ""
+        auth_type: bearer
+        key: "{{ litellm_master_key }}"
+        config:
+          enable: true
+        info:
+          id: brave_search
+          name: Brave Search
+          description: Web search through the LiteLLM Brave MCP server
+  no_log: true
+
+- name: Merge the Brave connection into the desired tool server list
+  ansible.builtin.set_fact:
+    # Keep existing connections (Playwright, anything added later) and
+    # append the Brave entry only when not already present, matching by
+    # info.id. Empty stdout (check mode, or no connections row yet) reads
+    # as an empty list. The Brave task runs first; the Playwright task
+    # merges the same row and must not drop Brave (and vice versa).
+    brave_tool_server_desired: >-
+      {{ (((brave_current_config.stdout | trim | from_json).connection | from_json
+          | selectattr('info.id', 'defined')
+          | rejectattr('info.id', 'equalto', 'brave_search')
+          | list
+          | union(brave_connection_entry))
+          | sort(attribute='info.id')) }}
+  no_log: true
+
+- name: Update persisted Brave Search configuration
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+    stdin: |
+      UPDATE config SET value = 'false'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'web.search.enable';
+      UPDATE config SET value = '"brave"'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'web.search.engine';
+      UPDATE config SET value = to_jsonb('{{ brave_search_api_key | replace("'", "''") }}'::text), updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'web.search.brave_search_api_key';
+      UPDATE config SET value = '{{ brave_tool_server_desired | to_json | replace("'", "''") }}'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'tool_server.connections';
+  register: brave_config_update
+  # Compare parsed structures, not raw strings: psql emits JSON with its own
+  # key order and spacing that never matches to_json byte-for-byte, which
+  # would recreate the services on every run.
+  changed_when: >-
+    (brave_current_config.stdout | trim | from_json).enabled != 'false'
+    or (brave_current_config.stdout | trim | from_json).engine != '"brave"'
+    or (((brave_current_config.stdout | trim | from_json).connection | from_json) | map(attribute='info.id') | list | sort)
+    != (brave_tool_server_desired | map(attribute='info.id') | list | sort)
+    or (((brave_current_config.stdout | trim | from_json).connection | from_json) | map('to_json') | list | sort)
+    != (brave_tool_server_desired | map('to_json') | list | sort)
+  no_log: true
+
+- name: Recreate Brave-enabled services
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - brave-search-mcp
+      - litellm
+      - open-webui
+    state: present
+    recreate: always
+    wait: true
+    wait_timeout: 180
+  when: brave_config_update is changed

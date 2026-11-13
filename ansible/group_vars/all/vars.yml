@@ -1,0 +1,487 @@
+---
+# ---------------------------------------------------------------------------
+# Deployment configuration. Every value is explicit; nothing reads from the
+# environment or from the deployed .env. Secrets live in vault.yml.
+#
+# Settings that belong to one site and should stay out of git (the real
+# domain, which model providers are on) go in vars.local.yml next to this
+# file. It is gitignored and loaded after this file, so a value there wins.
+# Copy vars.local.yml.example to start one.
+# ---------------------------------------------------------------------------
+
+project_root: /mnt/data1/openwebui-stack
+compose_project_name: openwebui-stack
+
+# Services are published as chatbot.<domain>, auth.<domain>, and so on.
+# localhost works for a local trial; set the real domain in vars.local.yml.
+domain: localhost
+
+timezone: UTC
+
+# ---------------------------------------------------------------------------
+# PostgreSQL databases (shared postgres instance; per-service roles and
+# databases provisioned by init-db/01-init-databases.sh)
+# ---------------------------------------------------------------------------
+
+postgres_db: postgres
+postgres_user: postgres
+
+openwebui_db_name: openwebui
+openwebui_db_user: openwebui
+
+litellm_db_name: litellm
+litellm_db_user: litellm
+
+keycloak_db_name: keycloak
+keycloak_db_user: keycloak
+
+# ---------------------------------------------------------------------------
+# Keycloak
+# ---------------------------------------------------------------------------
+
+keycloak_realm: platform
+keycloak_url: "https://auth.{{ domain }}"
+
+# TLS verification for the controller-side Keycloak API calls. The
+# deployment serves a Cloudflare Origin certificate on auth.<domain>; the
+# Origin CA is not in the host trust store, so verification is off here.
+# Set true when auth.<domain> serves a publicly trusted certificate.
+keycloak_validate_certs: false
+
+keycloak_provisioner_client_id: keycloak-provisioner
+keycloak_realm_management_client_id: master-realm
+keycloak_admin_user: admin
+
+# Keycloak 26 enables passkeys on the default browser flow. Users register
+# a passwordless credential, then sign in from the username form.
+keycloak_passkeys_enabled: true
+
+# Name of a Keycloak theme under keycloak/themes/ in the deployed tree, used
+# as the default for every realm that has not chosen its own (login,
+# account console, admin console and emails). Empty keeps Keycloak's stock
+# theme. A site's own theme belongs in vars.local.yml: the theme files are
+# not part of this repository.
+keycloak_default_theme: ""
+
+# User self-registration on the platform realm login page. When true the
+# Keycloak login page shows a Register link, and every self-registered
+# account lands in keycloak_default_groups, whose group role mappings
+# (user -> openwebui_user, internal_user) grant Open WebUI and LiteLLM
+# access. keycloak_verify_email gates the realm's verify-email flow: no
+# SMTP server is configured, so it stays false (true would strand new
+# users on the Verify Email screen). Flip both once SMTP exists.
+keycloak_registration_enabled: true
+keycloak_verify_email: false
+keycloak_default_groups:
+  - user
+
+# ---------------------------------------------------------------------------
+# TLS
+# ---------------------------------------------------------------------------
+
+ssl_cert_type: existing
+
+# Basenames under certs/ of the deployed pair. The Photon deployment uses
+# a Cloudflare Origin certificate; a fresh lab install sets these to
+# wildcard.crt / wildcard.key or switches ssl_cert_type to selfsigned.
+ssl_cert_file: "cf-origin.crt"
+ssl_key_file: "cf-origin.key"
+
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
+
+# Compose profiles the playbook starts (tasks/compose.yml).
+#   monitoring  the exporters, the OTel collector and Alloy
+#   gpu         nvidia-gpu-exporter (DCGM) for the stack host's own GPU. It
+#               feeds the nvidia-gpu scrape job and the NVIDIA DCGM
+#               dashboard, and needs the NVIDIA driver and container
+#               runtime on the host. When nvidia-smi or the runtime is
+#               missing, tasks/gpu_profile.yml leaves the profile out of
+#               that run with a warning instead of failing the deploy;
+#               remove it here on a host that has no GPU at all.
+# The chatterbox role adds its own profile (chatterbox_device below).
+docker_compose_profiles:
+  - monitoring
+  - gpu
+
+# gpu -> Dockerfile (CUDA). cpu -> Dockerfile.cpu. Selects the chatterbox profile.
+chatterbox_device: gpu
+
+# Include the chatterbox services in the rendered compose file at all.
+chatterbox_enabled: true
+
+# Write /etc/hosts entries on the deployment host for non-localhost
+# domains. Set false when name resolution is handled by DNS.
+manage_hosts_file: true
+
+# oauth2-proxy performs OIDC discovery against https://auth.<domain> and
+# verifies TLS like any Go client. With a Cloudflare Origin certificate
+# the Origin CA is not in the container trust store, so discovery fails
+# with x509 until this is true. Set false when auth.<domain> serves a
+# publicly trusted certificate.
+oauth2_proxy_ssl_insecure_skip_verify: true
+
+# LLM Launcher portals: a web control panel per vLLM inference server
+# (download models, tune and start `vllm serve`), each behind its own
+# oauth2-proxy gate. The GUI and the gate run on the compute nodes
+# (vllm_launcher_enabled in the vllm_compute group_vars, deployed by
+# playbooks/inference.yml). This flag is the stack-host half: Traefik
+# routes https://launcher-<node>.<domain>, the /etc/hosts entries, and
+# LAUNCHER_OIDC_CLIENT_SECRET in .env for the nodes to read. Off until the
+# portals are wanted: set true, run site.yml, then enable the nodes and run
+# inference.yml (the gates need the Keycloak client and secret first).
+#
+# Portals default to every vllm_compute host of this inventory at its
+# ansible_host. When the nodes are deployed from another inventory
+# (tests/vllm-remote) or this one holds placeholder addresses, name the
+# real ones. Addresses are site-specific, so set these two as inventory
+# vars in inventory/hosts.local.yml (gitignored), not here:
+#   launcher_nodes: [vllm-node-01]
+#   launcher_node_addresses:
+#     vllm-node-01: 192.0.2.20
+# Each launcher-<node> name needs a DNS record like the other service
+# names; a *.<domain> certificate already covers it. The gates reuse
+# oauth2_proxy_ssl_insecure_skip_verify above.
+launcher_enabled: false
+
+docker_compose_pull: true
+
+# ---------------------------------------------------------------------------
+# Optional integrations
+# ---------------------------------------------------------------------------
+
+# Brave Search MCP. Set the API key in vault.yml. When enabled and the key
+# is present, the playbook wires the gateway search path, Open WebUI
+# search, and the Brave MCP connection.
+brave_search_enabled: true
+
+# Saved memories per user (memory-mcp), one store shared by Open WebUI,
+# opencode, Claude Code and other MCP clients through LiteLLM. Signing key
+# in vault.yml (memory_mcp_signing_key). Turns Open WebUI's own memory off
+# while on. See roles/openwebui_stack/defaults/main.yml.
+memory_mcp_enabled: true
+
+# Chat from the LiteLLM admin UI (Playground and Chat pages). false: models
+# are only reachable for chat through Open WebUI or an API client such as
+# opencode; the admin UI refuses to send prompts. See
+# roles/openwebui_stack/defaults/main.yml.
+litellm_ui_chat_enabled: false
+
+# Isolated Jupyter code sandbox for model-authored Python (numpy-stl,
+# trimesh, matplotlib, and the Word/Excel/PowerPoint/PDF libraries the
+# docx, xlsx, pptx and pdf skills use). Token in vault.yml
+# (code_sandbox_token). Set false to remove the sandbox container and Open
+# WebUI's Jupyter wiring.
+code_sandbox_enabled: true
+
+# Skills tool: the published skills as LiteLLM's `skills` MCP server
+# (search by meaning, list, get) for every key, plus Open WebUI and opencode
+# tool server entries. Set false to remove it.
+skills_mcp_enabled: true
+
+# Open WebUI's code interpreter, run in that sandbox. Users turn it on per
+# chat (Code Interpreter in the chat input); files the model saves under
+# /outputs/<chat id>/ come back as downloads. The sandbox is shared by every
+# chat. Set false to keep chats from running code.
+openwebui_code_interpreter_enabled: true
+
+# 3D print pipeline MCP servers (docs/plans/3d-print-pipeline.md).
+# printer_mcp: bambu-printer-mcp (slice + print for the Bambu H2C, Bambu
+#   Studio CLI slicer in-image). Needs bambu_host / bambu_serial /
+#   bambu_token in vault.local.yml, printer in LAN Only + Developer Mode,
+#   Photon host on the printer's L2. Default bed/nozzle overridden by
+#   printer_mcp_bed_type / printer_mcp_nozzle_diameter in vars.yml.
+# blender_mcp: mcp-for-blender 2.2.7, full Blender 5.0.1 GUI under Xvfb,
+#   SAFE_MODE=1, first-class LiteLLM mcp_servers.blender entry. Organic /
+#   mesh modeling; exports STL to the shared models volume.
+# freecad_mcp: FreeCAD 1.1.4 headless (freecadcmd) + alosslessdev bridge,
+#   first-class LiteLLM mcp_servers.freecad entry. Parametric CAD; exports
+#   STL/STEP to the shared models volume.
+printer_mcp_enabled: false
+blender_mcp_enabled: true
+freecad_mcp_enabled: true
+
+printer_mcp_bed_type: textured_plate
+printer_mcp_nozzle_diameter: "0.4"
+
+# AWS Bedrock models in the LiteLLM model_list (MiniMax, Qwen, Kimi). Off
+# unless AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are set in the vault:
+# without credentials the models provision but cannot serve.
+litellm_bedrock_models_enabled: false
+
+# Google Gemini models in the LiteLLM model_list, plus the auto/adaptive
+# routers and the voice-assistant alias that route to them. Off unless
+# GEMINI_API_KEY is set in the vault: without a key the models provision
+# but cannot serve.
+litellm_gemini_models_enabled: false
+
+# Anthropic Claude models in the LiteLLM model_list (claude-opus-5-5,
+# claude-sonnet-5-5, claude-haiku-5-5, claude-fable-5-2). Off unless
+# anthropic_api_key is set in the vault: without a key the models
+# provision but cannot serve.
+litellm_anthropic_models_enabled: false
+
+# LiteLLM `auto` model: which model answers each complexity tier. Unset,
+# it follows the flags above: the Gemini models when
+# litellm_gemini_models_enabled is true, else the Claude models when
+# litellm_anthropic_models_enabled is true, otherwise no `auto` model. Set it
+# to route over other models (Bedrock, vLLM served names, llama.cpp); a
+# tier takes one model_name or a list. All four tiers are required.
+# litellm_auto_router_tiers:
+#   SIMPLE: gemini-3.5-flash-lite
+#   MEDIUM: [gemini-3.8-flash, my-vllm-model]
+#   COMPLEX: gemini-4-argon
+#   REASONING: gemini-3.1-pro
+
+# LiteLLM `adaptive` model (beta): the pool of models its bandit picks
+# from. Unset, it follows the flags the same way as the auto tiers (Gemini
+# models, else Claude haiku/sonnet/opus, otherwise no `adaptive` model).
+# Set it to pool other models; each needs the per-model settings below
+# (vLLM models get theirs from vllm_adaptive_quality_tier /
+# vllm_adaptive_strengths).
+# litellm_adaptive_router_models:
+#   - gemini-3.5-flash-lite
+#   - gemini-3.8-flash
+#   - claude-opus-5-5
+#   - my-vllm-model
+
+# Adaptive router settings per model (Gemini, Claude, Bedrock entries),
+# keyed by LiteLLM model_name. Entries merge over the role defaults key by
+# key, so list only what changes; the defaults for the Gemini and Claude
+# models are in roles/openwebui_stack/defaults/main.yml.
+#   quality_tier: 1 (budget), 2 (mid), 3 (frontier); null removes it
+#   strengths: code_generation, code_understanding, technical_design,
+#     analytical_reasoning, writing, factual_lookup, general
+#   input_cost_per_token: $/token (0 = free)
+# litellm_adaptive_router_preferences:
+#   claude-opus-5-5:
+#     quality_tier: 2
+#   kimi-k3:
+#     quality_tier: 3
+#     strengths: [analytical_reasoning]
+#     input_cost_per_token: 0.0000006
+
+# Open WebUI default model for new chats. Unset, it is `auto` whenever the
+# auto router above exists, otherwise the UI setting is left alone. Set a
+# LiteLLM model_name (or a list for a multi-model default) to pin one, or
+# "" to never manage it. Apply with:
+#   ansible-playbook playbooks/site.yml --tags openwebui-config
+# openwebui_default_models: auto
+
+# opencode (terminal AI coding agent). Host users who get an opencode
+# install pointed at the LiteLLM proxy. Empty list disables the role.
+opencode_users: []
+
+# ---------------------------------------------------------------------------
+# Applications
+# ---------------------------------------------------------------------------
+
+# Single logout (SLO): every app's Log out sends the browser to the Keycloak
+# end_session_endpoint, which ends the realm SSO session and returns to the
+# app. Keycloak only honours a post_logout_redirect_uri that the client
+# lists, and the match is exact, so each post_logout_redirect_uris entry
+# below must equal the URL the app sends (set in docker-compose.yml.j2,
+# or in roles/chatterbox/tasks/ui_auth.yml for voice).
+# backchannel_logout_url (optional) is where Keycloak POSTs a logout token
+# when the SSO session ends from any other app; it is called from the
+# keycloak container, so it is an internal compose-network URL.
+
+keycloak_apps:
+
+  - client_id: grafana
+    client_secret: "{{ grafana_oidc_client_secret }}"
+    name: Grafana
+    base_url: "https://grafana.{{ domain }}"
+    redirect_uris:
+      - "https://grafana.{{ domain }}/login/generic_oauth"
+    # GF_AUTH_GENERIC_OAUTH_SIGNOUT_REDIRECT_URL
+    post_logout_redirect_uris:
+      - "https://grafana.{{ domain }}/login"
+    roles:
+      - grafanaadmin
+      - admin
+      - editor
+      - viewer
+
+  - client_id: open-webui
+    client_secret: "{{ openwebui_oidc_client_secret }}"
+    name: Open WebUI
+    base_url: "https://chatbot.{{ domain }}"
+    redirect_uris:
+      - "https://chatbot.{{ domain }}/oauth/oidc/callback"
+    # WEBUI_AUTH_SIGNOUT_REDIRECT_URL
+    post_logout_redirect_uris:
+      - "https://chatbot.{{ domain }}/auth"
+    # Open WebUI is the one app here that accepts OIDC back-channel logout
+    # (ENABLE_OAUTH_BACKCHANNEL_LOGOUT). 8080 is its container port.
+    backchannel_logout_url: "http://open-webui:8080/oauth/backchannel-logout"
+    roles:
+      - openwebui_admin
+      - openwebui_user
+    include_groups: true
+
+  - client_id: voice
+    client_secret: "{{ voice_oidc_client_secret }}"
+    name: Voice
+    base_url: "https://voice.{{ domain }}"
+    redirect_uris:
+      - "https://voice.{{ domain }}/oauth2/callback"
+    # oauth2-proxy sign_out redirects to the Keycloak end_session_endpoint
+    # with post_logout_redirect_uri back to voice.<domain>.
+    post_logout_redirect_uris:
+      - "https://voice.{{ domain }}"
+    roles:
+      - voice_user
+
+  # One client for every LLM Launcher portal. The oauth2-proxy gate on each
+  # compute node signs in with it, so it lists one redirect URI and one
+  # post-logout URI per launcher-<node>.<domain> (derived from the
+  # vllm_compute inventory group in the role defaults). The gates admit
+  # only launcher_admin (OAUTH2_PROXY_ALLOWED_ROLES=launcher:launcher_admin):
+  # the launcher starts processes, downloads models and can hold a Hugging
+  # Face token, so self-registered users must not reach it.
+  - client_id: launcher
+    client_secret: "{{ launcher_oidc_client_secret }}"
+    name: LLM Launcher
+    base_url: "https://{{ launcher_fqdns | first }}"
+    redirect_uris: "{{ launcher_redirect_uris }}"
+    post_logout_redirect_uris: "{{ launcher_post_logout_redirect_uris }}"
+    roles:
+      - launcher_admin
+
+  - client_id: litellm
+    client_secret: "{{ litellm_oidc_client_secret }}"
+    name: LiteLLM
+    base_url: "https://litellm.{{ domain }}"
+    redirect_uris:
+      - "https://litellm.{{ domain }}/sso/callback"
+    # PROXY_LOGOUT_URL
+    post_logout_redirect_uris:
+      - "https://litellm.{{ domain }}/ui"
+    # LiteLLM generic SSO does not send a PKCE verifier unless
+    # GENERIC_CLIENT_USE_PKCE is true. Keycloak rejects the code exchange
+    # when this client requires S256 and LiteLLM does not.
+    pkce: false
+    roles:
+      - proxy_admin
+      - proxy_admin_viewer
+      - internal_user
+      - internal_user_viewer
+    include_groups: true
+
+# ---------------------------------------------------------------------------
+# Keycloak groups
+# Role names are the values docker-compose.yml reads from the roles claim.
+# ---------------------------------------------------------------------------
+
+# realm-management roles for the platform realm. Members administer the realm
+# from the Keycloak admin console (https://auth.{{ domain }}/admin/{{ keycloak_realm }}/console/).
+keycloak_platform_realm_admin_group: platform-admins
+keycloak_platform_realm_admin_roles:
+  - name: manage-realm
+  - name: view-realm
+  - name: manage-users
+  - name: view-users
+  - name: query-users
+  - name: manage-clients
+  - name: view-clients
+  - name: query-clients
+  - name: query-groups
+
+keycloak_group_role_mappings:
+  - group: platform-admins
+    client_id: grafana
+    role: grafanaadmin
+  - group: platform-admins
+    client_id: open-webui
+    role: openwebui_admin
+  - group: platform-admins
+    client_id: voice
+    role: voice_user
+  - group: platform-admins
+    client_id: litellm
+    role: proxy_admin
+  - group: platform-admins
+    client_id: launcher
+    role: launcher_admin
+  - group: admin
+    client_id: launcher
+    role: launcher_admin
+  - group: admin
+    client_id: grafana
+    role: admin
+  - group: admin
+    client_id: open-webui
+    role: openwebui_admin
+  - group: admin
+    client_id: litellm
+    role: proxy_admin
+  - group: editor
+    client_id: grafana
+    role: editor
+  - group: viewer
+    client_id: grafana
+    role: viewer
+  - group: user
+    client_id: open-webui
+    role: openwebui_user
+  - group: user
+    client_id: litellm
+    role: internal_user
+  - group: litellm-admin
+    client_id: litellm
+    role: proxy_admin
+  - group: litellm-viewer
+    client_id: litellm
+    role: proxy_admin_viewer
+
+# ---------------------------------------------------------------------------
+# Keycloak users
+# Passwords come from group_vars/all/vault.yml.
+# group_memberships is a list of {name: <group>} for keycloak_user.
+# ---------------------------------------------------------------------------
+
+keycloak_users:
+  - username: platform-admin
+    email: "platform-admin@{{ domain }}"
+    first_name: Platform
+    last_name: Admin
+    password: "{{ keycloak_user_platform_admin_password }}"
+    group_memberships:
+      - name: platform-admins
+  - username: grafana-editor
+    email: "grafana-editor@{{ domain }}"
+    first_name: Grafana
+    last_name: Editor
+    password: "{{ keycloak_user_grafana_editor_password }}"
+    group_memberships:
+      - name: editor
+  - username: grafana-viewer
+    email: "grafana-viewer@{{ domain }}"
+    first_name: Grafana
+    last_name: Viewer
+    password: "{{ keycloak_user_grafana_viewer_password }}"
+    group_memberships:
+      - name: viewer
+  - username: openwebui-user
+    email: "openwebui-user@{{ domain }}"
+    first_name: OpenWebUI
+    last_name: User
+    password: "{{ keycloak_user_openwebui_user_password }}"
+    group_memberships:
+      - name: user
+  - username: litellm-user
+    email: "litellm-user@{{ domain }}"
+    first_name: LiteLLM
+    last_name: User
+    password: "{{ keycloak_user_litellm_user_password }}"
+    group_memberships:
+      - name: user
+  - username: litellm-viewer
+    email: "litellm-viewer@{{ domain }}"
+    first_name: LiteLLM
+    last_name: Viewer
+    password: "{{ keycloak_user_litellm_viewer_password }}"
+    group_memberships:
+      - name: litellm-viewer

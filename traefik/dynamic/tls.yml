@@ -5,11 +5,10 @@
 # When no custom certificates are configured, Traefik uses its built-in
 # self-signed certificate (regenerated on each container restart).
 #
-# To use persistent self-signed certificates, run:
-#   ./scripts/generate-certs.sh
-#
-# This will generate certificates and create the certs.yml dynamic config
-# file that tells Traefik to use them.
+# To use persistent custom or self-signed certificates, set ssl_cert_type
+# in ansible/group_vars/all/vars.yml (existing | selfsigned | traefik) and
+# re-run the playbook. The certs.yml dynamic config file that tells Traefik
+# to use them is rendered by ansible/roles/openwebui_stack.
 
 tls:
   options:

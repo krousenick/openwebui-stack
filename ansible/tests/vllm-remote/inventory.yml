@@ -1,0 +1,25 @@
+---
+# Remote-node inventory for testing the vllm_compute role against the real
+# GPU node, reached through the bastion (the stack host), which has direct
+# SSH to the node; nothing else can reach it. Ansible runs ON the bastion.
+#
+# Connection: the bastion's root key authenticates the node user (the
+# node's authorized_keys already carries the bastion's key). The node user
+# has passwordless sudo, so become: true needs no become password.
+#
+# The committed file ships placeholders: create inventory.local.yml
+# (gitignored, same structure) with the real node IP and user, and pass
+# both inventories:
+#   -i tests/vllm-remote/inventory.yml -i tests/vllm-remote/inventory.local.yml
+# run.sh does this automatically when the local file exists.
+#
+# See group_vars/vllm_compute/vars.yml for the test configuration and
+# run.sh for the controller-side workflow.
+all:
+  children:
+    vllm_compute:
+      hosts:
+        vllm-node-01:
+          ansible_host: GPU_NODE_IP
+          ansible_user: GPU_NODE_USER
+          vllm_ray_head: true

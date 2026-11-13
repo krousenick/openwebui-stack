@@ -1,0 +1,123 @@
+---
+# Global filter: publish chat-created files as downloadable Open WebUI
+# files. Open WebUI 0.13.0 persists only image/* and audio/wav tool-result
+# content as real files; binary resources become text placeholders, so
+# chat-created CAD files were unreadable in the UI, and files the code
+# interpreter writes never leave the sandbox at all. The filter
+# (files/functions/tool_result_file_download.py) runs after each chat turn,
+# reads MCP-exported artifacts (STL/3MF/STEP) from the read-only /models
+# mount and the documents (DOCX/XLSX/PPTX/PDF) the code interpreter saved
+# in the chat's /outputs/<chat id>/ during that turn, uploads them through
+# Open WebUI's own upload handler (so ownership and storage limits apply),
+# and emits a files event; the message then carries a downloadable file
+# card. Its inlet tells code-interpreter chats that directory. Requires the
+# models:/models:ro volume (rendered when any 3D pipeline service is
+# enabled) or the outputs:/outputs:ro volume (rendered when the code
+# interpreter is enabled) on the open-webui service.
+- name: Require Open WebUI database settings for the tool result file download filter
+  ansible.builtin.assert:
+    that:
+      - openwebui_db_user | length > 0
+      - openwebui_db_password | length > 0
+      - openwebui_db_name | length > 0
+    fail_msg: "The tool result file download filter requires the Open WebUI database settings."
+
+- name: Read the current tool result file download filter row
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+      - -tAc
+      - >-
+        SELECT coalesce(
+          (SELECT to_jsonb(function)
+             FROM function
+            WHERE id = 'tool_result_file_download'),
+          '{}'::jsonb)
+  register: tool_file_filter_current
+  changed_when: false
+  # Check mode skips this command, leaving stdout empty; the comparison then
+  # reads an empty object instead of failing on a JSON parse of "".
+  failed_when: false
+  no_log: true
+
+- name: Stage the tool result file download filter source
+  ansible.builtin.set_fact:
+    tool_file_filter_content: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../roles/openwebui_stack/files/functions/tool_result_file_download.py') }}"
+  no_log: true
+
+- name: Record whether the tool result file download filter changes
+  ansible.builtin.set_fact:
+    tool_file_filter_changed: >-
+      {{ ((tool_file_filter_current.stdout | trim | default('', true) or '{}') | from_json).get('content') != tool_file_filter_content
+         or ((tool_file_filter_current.stdout | trim | default('', true) or '{}') | from_json).get('is_active') != true
+         or ((tool_file_filter_current.stdout | trim | default('', true) or '{}') | from_json).get('is_global') != true }}
+  no_log: true
+
+- name: Upsert the tool result file download filter
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+    stdin: |
+      INSERT INTO function (id, user_id, name, type, content, meta, valves, is_active, is_global, updated_at, created_at)
+      VALUES (
+        'tool_result_file_download',
+        NULL,
+        'Tool Result File Download',
+        'filter',
+        $filter${{ tool_file_filter_content }}$filter$,
+        '{"description": "Injects FreeCAD/Blender export rules into 3D modelling chats, tells code-interpreter chats where to save files, and publishes /models CAD artifacts (STL/3MF/STEP) and /outputs documents (DOCX/XLSX/PPTX/PDF) as downloadable Open WebUI files", "manifest": {"version": "1.4.0"}}'::jsonb,
+        '{}'::jsonb,
+        true,
+        true,
+        (extract(epoch from now())*1000)::bigint,
+        (extract(epoch from now())*1000)::bigint
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        content = EXCLUDED.content,
+        meta = EXCLUDED.meta,
+        is_active = true,
+        is_global = true,
+        updated_at = (extract(epoch from now())*1000)::bigint;
+  when: tool_file_filter_changed | bool
+  register: openwebui_stack_tool_file_filter_update
+  changed_when: true
+  no_log: true
+
+- name: Recreate Open WebUI to load the tool result file download filter
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - open-webui
+    # The deployed compose file can reference images that are not published
+    # (e.g. a locally-built sandbox image); building them here would fail the
+    # recreate of an unrelated service.
+    build: never
+    state: present
+    recreate: always
+    wait: true
+    wait_timeout: 180
+  when: tool_file_filter_changed | bool

@@ -1,0 +1,56 @@
+---
+# The gpu compose profile runs nvidia-gpu-exporter (DCGM) with the NVIDIA
+# container runtime. On a host that cannot run it the container never
+# starts, and `docker compose up --wait` would fail the whole deploy over
+# an optional exporter. Two situations lead there: a host with no GPU, and
+# a host whose kernel was updated without rebuilding the NVIDIA module
+# (the driver is installed, but nvidia-smi cannot reach it).
+#
+# So the profile is checked once per run and left out, with a warning,
+# when the host cannot run it. Every later compose call in the play reads
+# docker_compose_profiles, so the set_fact below covers all of them; the
+# value in group_vars is not changed. The exporter comes back by itself on
+# the next run once the driver works again.
+
+- name: Check for a working NVIDIA driver on the stack host
+  ansible.builtin.command:
+    cmd: nvidia-smi --query-gpu=name --format=csv,noheader
+  register: stack_gpu_driver_probe
+  changed_when: false
+  failed_when: false
+  # Read-only, and the profile list must be right in a dry run too.
+  check_mode: false
+  when: "'gpu' in docker_compose_profiles"
+
+- name: Check that Docker has the NVIDIA runtime
+  ansible.builtin.command:
+    cmd: "docker info --format {% raw %}'{{json .Runtimes}}'{% endraw %}"
+  register: stack_gpu_runtime_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: "'gpu' in docker_compose_profiles"
+
+- name: Leave the gpu profile out when the host cannot run it
+  when:
+    - "'gpu' in docker_compose_profiles"
+    - not (stack_gpu_driver_ok | bool and stack_gpu_runtime_ok | bool)
+  vars:
+    stack_gpu_driver_ok: "{{ stack_gpu_driver_probe.rc | default(1) == 0 }}"
+    stack_gpu_runtime_ok: "{{ '\"nvidia\"' in (stack_gpu_runtime_probe.stdout | default('')) }}"
+    stack_gpu_reason_driver: "nvidia-smi does not reach a driver: there is no GPU, or the kernel was updated and the NVIDIA module was not rebuilt for it"
+    stack_gpu_reason_runtime: "Docker has no nvidia runtime: install the NVIDIA Container Toolkit and run nvidia-ctk runtime configure"
+  block:
+    - name: Warn that the GPU exporter is skipped
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: docker_compose_profiles lists gpu, but this host cannot
+          run the NVIDIA GPU exporter
+          ({{ stack_gpu_reason_runtime if (stack_gpu_driver_ok | bool) else stack_gpu_reason_driver }}).
+          nvidia-gpu-exporter is left out of this run and the nvidia-gpu
+          scrape target stays down. Fix that and rerun, or remove gpu from
+          docker_compose_profiles on a host without a GPU.
+
+    - name: Drop the gpu profile for this run
+      ansible.builtin.set_fact:
+        docker_compose_profiles: "{{ docker_compose_profiles | difference(['gpu']) }}"

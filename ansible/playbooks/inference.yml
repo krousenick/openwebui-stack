@@ -1,0 +1,46 @@
+---
+# ===========================================================================
+# vLLM compute node deployment with automatic WSL2 provisioning
+# ===========================================================================
+# This playbook handles two scenarios:
+#   1. Linux hosts: run prerequisites + vllm_compute directly
+#   2. Windows hosts: provision WSL2 Fedora first, then run Linux tasks
+#
+# For Windows/WSL2 targets, the inventory should include:
+#   - wsl2_provisioned group after first run (contains WSL2 Fedora IPs)
+# ===========================================================================
+
+- name: Provision WSL2 on Windows hosts
+  hosts: wsl2_hosts
+  become: false
+  gather_facts: true
+
+  pre_tasks:
+    - name: Fail if not running on Windows
+      ansible.builtin.fail:
+        msg: "wsl2_hosts must be Windows hosts. Use ansible_connection=winrm"
+      when: ansible_facts.os_family != "Windows"
+
+  roles:
+    - role: ../roles/wsl2_host
+
+- name: Deploy vLLM compute nodes (Linux or WSL2 Fedora)
+  hosts: vllm_compute
+  become: true
+  gather_facts: true
+
+  roles:
+    # A compute node is useless without its GPU, so here a driver that
+    # cannot be made to work stops the play. The role repairs what it can
+    # (a module that is not loaded, or missing for the running kernel) and
+    # installs a driver on a node that has none.
+    - role: ../roles/nvidia_driver
+      vars:
+        nvidia_driver_required: true
+      tags:
+        - nvidia_driver
+    - role: ../roles/prerequisites
+      # Override container CLI detection for WSL2: WSL2 Fedora
+      # uses docker but ansible_facts may detect as Windows at inventory
+      # time. The prerequisites role handles this.
+    - role: ../roles/vllm_compute

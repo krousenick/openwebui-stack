@@ -1,0 +1,21 @@
+---
+# Render the Traefik dashboard basic-auth entry. Compose interpolates
+# TRAEFIK_DASHBOARD_PASSWORD_HASH from .env; apr1 hashes embed literal
+# $ characters that compose treats as variable references, so each $ is
+# doubled ($$) before it lands in the rendered .env.
+
+- name: Hash the Traefik dashboard password
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - passwd
+      - -apr1
+      - "{{ traefik_dashboard_password }}"
+  register: openwebui_stack_traefik_hash
+  changed_when: false
+  no_log: true
+
+- name: Record the Traefik dashboard hash (compose-escaped)
+  ansible.builtin.set_fact:
+    traefik_dashboard_password_hash: "{{ openwebui_stack_traefik_hash.stdout | trim | replace('$', '$$') }}"
+  no_log: true

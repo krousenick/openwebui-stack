@@ -1,0 +1,16 @@
+# =============================================================================
+# Grafana Alerting Rules Provisioning
+# =============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: "Keycloak Alerts"
+    orgId: 1
+    folder: "Alerts"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/alerting

@@ -1,0 +1,121 @@
+---
+# GeoIP database of the Keycloak login tracker (defaults: geoip_*): DB-IP's
+# IP to City Lite. DB-IP publishes dbip-city-lite-YYYY-MM.mmdb.gz early in
+# each month, with no checksum to pin: HTTPS carries the file, and the
+# install step refuses anything that is not a City database. <file>.release
+# names the month the host has. A run downloads only when that is not the
+# current month: this month's release, or last month's while the new one is
+# not out yet. Nothing here fails the play. A failed or refused download
+# leaves the installed file (or none) in place and the next run tries again;
+# on a host without any file the tracker gives public addresses no place.
+# The tracker reopens the file when it changes, so nothing is restarted.
+
+- name: Create the GeoIP directory
+  ansible.builtin.file:
+    path: "{{ geoip_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Read which GeoIP release the host has
+  ansible.builtin.slurp:
+    src: "{{ geoip_dir }}/{{ geoip_file }}.release"
+  register: openwebui_stack_geoip_release
+  failed_when: false
+
+# Last month: go back as many days as the current day of the month, which
+# lands on its last day. Both in UTC, like DB-IP's file names.
+- name: Work out which GeoIP releases to look for
+  ansible.builtin.set_fact:
+    openwebui_stack_geoip_installed: >-
+      {{ (openwebui_stack_geoip_release.content | b64decode | trim)
+         if openwebui_stack_geoip_release.content is defined else '' }}
+    openwebui_stack_geoip_months:
+      - "{{ '%Y-%m' | strftime(ansible_date_time.epoch | int, utc=true) }}"
+      - >-
+        {{ '%Y-%m' | strftime((ansible_date_time.epoch | int)
+           - 86400 * ('%d' | strftime(ansible_date_time.epoch | int, utc=true) | int), utc=true) }}
+
+# A failed download is not a failed task (failed_when: false), so the steps
+# below test status_code: 200 only when the file arrived.
+- name: Download this month's GeoIP release
+  ansible.builtin.get_url:
+    url: "{{ geoip_url_template | format(openwebui_stack_geoip_months[0]) }}"
+    dest: "{{ geoip_dir }}/{{ geoip_file }}.{{ openwebui_stack_geoip_months[0] }}.gz"
+    force: true
+    owner: root
+    group: root
+    mode: "0600"
+    timeout: 300
+  register: openwebui_stack_geoip_current
+  when: openwebui_stack_geoip_installed != openwebui_stack_geoip_months[0]
+  failed_when: false
+
+- name: Download last month's GeoIP release while this month's is not out
+  ansible.builtin.get_url:
+    url: "{{ geoip_url_template | format(openwebui_stack_geoip_months[1]) }}"
+    dest: "{{ geoip_dir }}/{{ geoip_file }}.{{ openwebui_stack_geoip_months[1] }}.gz"
+    force: true
+    owner: root
+    group: root
+    mode: "0600"
+    timeout: 300
+  register: openwebui_stack_geoip_previous
+  when:
+    - not ansible_check_mode
+    - openwebui_stack_geoip_current is not skipped
+    - (openwebui_stack_geoip_current.status_code | default(0)) != 200
+    - openwebui_stack_geoip_installed != openwebui_stack_geoip_months[1]
+  failed_when: false
+
+- name: Note which GeoIP release arrived
+  ansible.builtin.set_fact:
+    openwebui_stack_geoip_downloaded: >-
+      {{ openwebui_stack_geoip_months[0] if (openwebui_stack_geoip_current.status_code | default(0)) == 200
+         else openwebui_stack_geoip_months[1] if (openwebui_stack_geoip_previous.status_code | default(0)) == 200
+         else '' }}
+
+# The metadata at the end of the file names the database type (DB-IP's is
+# DBIP-City-Lite). The new file replaces the old one by rename, so the
+# tracker never opens a half-written database.
+- name: Install the downloaded GeoIP release
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      gz={{ (geoip_dir ~ '/' ~ geoip_file ~ '.' ~ openwebui_stack_geoip_downloaded ~ '.gz') | quote }}
+      new={{ (geoip_dir ~ '/.' ~ geoip_file ~ '.new') | quote }}
+      trap 'rm -f "$new" "$gz"' EXIT
+      gzip -dc "$gz" >"$new"
+      size=$(stat -c %s "$new")
+      meta=$(tail -c 131072 "$new" | tr -c '[:print:]' ' ')
+      if (( size < 10000000 )) || [[ $meta != *MaxMind.com* || $meta != *City* ]]; then
+          echo "the download is not a City database ($size bytes)" >&2
+          exit 1
+      fi
+      chmod 0644 "$new"
+      mv -f "$new" {{ (geoip_dir ~ '/' ~ geoip_file) | quote }}
+      printf '%s\n' {{ openwebui_stack_geoip_downloaded | quote }} \
+          >{{ (geoip_dir ~ '/' ~ geoip_file ~ '.release') | quote }}
+  register: openwebui_stack_geoip_install
+  when: openwebui_stack_geoip_downloaded | length > 0
+  failed_when: false
+  changed_when: openwebui_stack_geoip_install.rc == 0
+
+- name: Warn when the host has no current GeoIP release
+  ansible.builtin.debug:
+    msg: >-
+      No new GeoIP database was installed
+      ({{ openwebui_stack_geoip_install.stderr | default('', true)
+          or openwebui_stack_geoip_previous.msg | default('', true)
+          or openwebui_stack_geoip_current.msg | default('download failed', true) }}).
+      The login tracker keeps
+      {{ ('release ' ~ openwebui_stack_geoip_installed) if openwebui_stack_geoip_installed
+         else 'no database: public addresses get no place' }}; the next run tries again.
+  when:
+    - not ansible_check_mode
+    - >-
+      (openwebui_stack_geoip_downloaded | length > 0 and openwebui_stack_geoip_install.rc | default(1) != 0)
+      or (openwebui_stack_geoip_downloaded | length == 0
+          and openwebui_stack_geoip_installed not in openwebui_stack_geoip_months)

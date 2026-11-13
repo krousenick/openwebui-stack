@@ -1,0 +1,70 @@
+---
+# Fail fast before `docker compose up` when a file-kind bind-mount source in
+# the deployed tree is missing or has become a stale empty directory.
+#
+# Why: docker compose auto-creates a missing short-syntax bind source as an
+# empty directory, and tasks/sync.yml (ansible.posix.synchronize with
+# delete: false) cannot replace that directory with the file the checkout
+# has. This bit twice when the guardrail category_file overrides were first
+# mounted: a `--tags environment,compose` run deployed the new compose file
+# while skipping the sync, compose created the mount targets as directories,
+# and litellm then mounted empty directories instead of the category files.
+#
+# Two pieces prevent it: the sync import in main.yml carries the `always`
+# tag, so tag-limited runs still sync before compose up; and this check
+# compares every active bind source against the checkout (same relative path
+# under playbook_dir/../..) and fails with the exact remediation when the
+# deployed tree does not have the checkout's file. Sources whose checkout
+# path does not exist (host-generated certs/, the gitignored chatterbox
+# tree) are not judged: there is nothing to sync for them. A stale directory
+# must be removed by hand (rsync cannot replace a directory with a file);
+# the failure message names the exact rm command.
+
+- name: Resolve the deployed compose file's active services
+  ansible.builtin.command:
+    cmd: docker compose --profile {{ docker_compose_profiles | join(' --profile ') }} -f {{ compose_file }} config --format json
+  register: openwebui_stack_compose_config_json
+  changed_when: false
+
+- name: Collect the short-syntax bind mounts from the compose config
+  ansible.builtin.set_fact:
+    openwebui_stack_bind_mounts: >-
+      {{ openwebui_stack_bind_mounts | default([])
+         + [{'service': item[0].key, 'source': item[1].source}] }}
+  when: item[1].type | default('') == 'bind'
+  loop: >-
+    {{ (openwebui_stack_compose_config_json.stdout | from_json).services
+       | dict2items | subelements('value.volumes', skip_missing=True) }}
+
+- name: Stat each bind source in the deployed tree
+  ansible.builtin.stat:
+    path: "{{ item.source }}"
+  loop: "{{ openwebui_stack_bind_mounts }}"
+  register: openwebui_stack_bind_source_stats
+
+- name: Stat the matching checkout path for each bind source
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../../{{ item.source | replace(project_root ~ '/', '') }}"
+  loop: "{{ openwebui_stack_bind_mounts }}"
+  delegate_to: localhost
+  register: openwebui_stack_checkout_source_stats
+
+- name: Fail when a checkout file is missing or a stale directory in the deployed tree
+  ansible.builtin.assert:
+    that:
+      - >-
+        not openwebui_stack_checkout_source_stats.results[bind_mount_idx].stat.exists
+        or openwebui_stack_checkout_source_stats.results[bind_mount_idx].stat.isdir
+        or (openwebui_stack_bind_source_stats.results[bind_mount_idx].stat.exists
+            and openwebui_stack_bind_source_stats.results[bind_mount_idx].stat.isreg)
+    fail_msg: >-
+      {{ item.service }} binds {{ item.source }}, but the deployed tree does
+      not have it as a file (missing or a directory). docker compose
+      auto-creates missing short-syntax bind sources as empty directories,
+      which the config sync cannot replace. Remove the stale directory
+      (rm -rf {{ item.source }}) and re-run the playbook so tasks/sync.yml
+      copies the file from the checkout.
+    quiet: true
+  loop: "{{ openwebui_stack_bind_mounts }}"
+  loop_control:
+    index_var: bind_mount_idx

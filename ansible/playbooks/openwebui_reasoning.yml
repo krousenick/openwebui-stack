@@ -1,0 +1,34 @@
+---
+# Scoped sync of the Open WebUI Thinking switch (the reasoning selector in
+# the chat input). Runs only tasks/openwebui_reasoning.yml and
+# tasks/openwebui_interface_defaults.yml (the default that shows an enabled
+# switch as a chip beside +) from the openwebui_stack role, with the role's
+# defaults, so it is the quick rerun after playbooks/inference.yml
+# registers or retires a reasoning model:
+#
+#   ansible-playbook playbooks/openwebui_reasoning.yml
+#   ansible-playbook playbooks/openwebui_reasoning.yml --check   # preview
+#
+# Needs litellm_master_key and openwebui_api_admin_key from
+# vault.local.yml, and the skill-publisher admin key already in Open WebUI
+# (a full site.yml run, or --tags openwebui-config, creates it).
+- name: Sync the Open WebUI Thinking switch
+  hosts: openwebui
+  become: true
+  vars_files:
+    - ../group_vars/all/vars.yml
+    # This site's own settings; optional, as in site.yml.
+    - - ../group_vars/all/vars.local.yml
+      - ../group_vars/all/vars.yml
+    - ../group_vars/all/vault.yml
+    - ../group_vars/all/vault.local.yml
+  tasks:
+    - name: Import the Thinking switch task file
+      ansible.builtin.import_role:
+        name: ../roles/openwebui_stack
+        tasks_from: openwebui_reasoning.yml
+
+    - name: Import the default interface settings task file
+      ansible.builtin.import_role:
+        name: ../roles/openwebui_stack
+        tasks_from: openwebui_interface_defaults.yml

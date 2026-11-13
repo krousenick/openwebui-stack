@@ -1,0 +1,69 @@
+---
+# The login-tracker client of the keycloak-login-tracker service: a
+# confidential client with a service account and no browser or password
+# flow. Its service account holds realm-management's view-events role and
+# nothing else, so the tracker can read the realm's saved events
+# (GET /admin/realms/<realm>/events) and change nothing.
+#
+# These tasks sign in as the master realm's admin, like the provisioner
+# bootstrap: Keycloak lets an admin grant only roles the admin holds, and
+# the provisioner does not hold view-events.
+
+- name: Create the login-tracker client
+  middleware_automation.keycloak.keycloak_client:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    client_id: "{{ keycloak_login_tracker_client_id }}"
+    name: Keycloak Login Tracker
+    description: Reads the realm's login events for the Grafana Keycloak dashboard (view-events only)
+    protocol: openid-connect
+    enabled: true
+    public_client: false
+    standard_flow_enabled: false
+    implicit_flow_enabled: false
+    direct_access_grants_enabled: false
+    service_accounts_enabled: true
+    # The token must carry the service account's realm-management role.
+    full_scope_allowed: true
+    secret: "{{ keycloak_login_tracker_client_secret }}"
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
+
+# kc-admin-api puts the admin API audience in the token; without it the
+# events API answers 401 (see the provisioner in keycloak_bootstrap.yml).
+# roles carries the role itself.
+- name: Give the login-tracker client the scopes the admin API needs
+  middleware_automation.keycloak.keycloak_client_scope_type:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    client_id: "{{ keycloak_login_tracker_client_id }}"
+    default_client_scopes:
+      - service_account
+      - acr
+      - basic
+      - roles
+      - kc-admin-api
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
+
+- name: Let the login-tracker service account read the realm's events
+  middleware_automation.keycloak.keycloak_user_rolemapping:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    client_id: realm-management
+    target_username: "service-account-{{ keycloak_login_tracker_client_id }}"
+    roles:
+      - name: view-events
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost

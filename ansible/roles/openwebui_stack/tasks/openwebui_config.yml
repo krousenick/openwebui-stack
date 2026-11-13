@@ -1,0 +1,92 @@
+---
+# Open WebUI stores its OpenAI-connection settings in the config table of
+# its own database. OAuth login flows can rewrite the connection's
+# auth_type to system_oauth, which forwards the user's Keycloak token to
+# LiteLLM instead of the master key; LiteLLM rejects that token (JWT Auth
+# is enterprise-only) and Open WebUI swallows the per-connection error,
+# leaving the chat with an empty model list. This task asserts the
+# intended bearer auth and heals it on every playbook run.
+
+- name: Assert Open WebUI connection settings
+  ansible.builtin.assert:
+    that:
+      - openwebui_db_password | length > 0
+      - openwebui_db_name | length > 0
+    fail_msg: "Open WebUI connection settings require the Open WebUI database settings."
+
+- name: Record current OpenAI connection config
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+      - -tAc
+      - >-
+        SELECT coalesce(
+          (SELECT value::text FROM config WHERE key = 'openai.api_configs'),
+          'null'
+        )
+  register: openwebui_stack_current_api_configs
+  changed_when: false
+  no_log: true
+
+- name: Build the desired OpenAI connection config
+  ansible.builtin.set_fact:
+    openwebui_stack_desired_api_configs:
+      "0":
+        enable: true
+        auth_type: bearer
+  no_log: true
+
+- name: Heal the OpenAI connection config in the database
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+    stdin: |
+      INSERT INTO config (key, value, updated_at)
+      VALUES (
+        'openai.api_configs',
+        '{{ openwebui_stack_desired_api_configs | to_json | replace("'", "''") }}'::json,
+        (extract(epoch from now())*1000)::bigint
+      )
+      ON CONFLICT (key) DO UPDATE
+      SET value = EXCLUDED.value,
+          updated_at = EXCLUDED.updated_at;
+  register: openwebui_stack_config_update
+  changed_when: >-
+    (openwebui_stack_current_api_configs.stdout | trim | from_json)
+    != (openwebui_stack_desired_api_configs | to_json | from_json)
+  no_log: true
+
+- name: Recreate Open WebUI to clear its cached model list
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - open-webui
+    state: present
+    recreate: always
+    wait: true
+    wait_timeout: 180
+  when: openwebui_stack_config_update is changed

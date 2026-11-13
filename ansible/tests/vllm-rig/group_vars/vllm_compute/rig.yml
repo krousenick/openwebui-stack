@@ -1,0 +1,57 @@
+---
+# Rig-only overrides, applied after group_vars. run.sh exports these as
+# environment variables; group_vars/vllm_compute/vars.yml keeps the real
+# production values for real nodes.
+#
+# vllm_image: the CPU stub image built by stub-setup.yml (real ray, stubbed
+#             vllm serve). Production uses vllm/vllm-openai:latest.
+# vllm_model: a local path; the stub ignores it but a real image would try to
+#             download from Hugging Face, which the rig avoids.
+vllm_image: vllm/vllm-openai:test-stub
+vllm_model: /opt/models/test-model
+
+# Standalone mode: every node serves the model and LiteLLM load balances.
+# This avoids depending on real Ray cluster formation in the rig. Ray mode
+# is exercised separately by services.yml's ray tasks on the head node.
+vllm_deployment_mode: standalone
+
+# The rig VM has no /mnt/data1; use a local path.
+vllm_hf_cache_dir: /opt/vllm-hf-cache
+
+# The rig has no real GPUs, so --gpus all fails at Docker's CDI GPU-vendor
+# discovery. The stub-setup registers a fake nvidia runtime backed by runc;
+# --runtime=nvidia selects it without touching device discovery.
+vllm_container_gpu_flag: "--runtime=nvidia"
+
+# No real GPU in the rig: the stub nvidia-smi reports fake "RTX 409D" cards
+# (GeForce), so the flavor detection picks the nvidia-smi exporter - whose
+# container cannot query a nonexistent NVML. Skip the GPU exporter entirely.
+vllm_monitoring_enabled: true
+vllm_gpu_exporter_flavor: none
+
+# Firewalld IS running in the rig; the real zone rules are the point of the
+# test. The OrbStack network is not the production compute segment, so open
+# the zone to the VM's own /24.
+vllm_manage_firewall: true
+
+# Exercise the flux tasks with the stub image. Both models land on the same
+# VM; ports follow vllm_flux_base_port.
+vllm_flux_enabled: true
+vllm_flux_models:
+  - name: flux
+    model: black-forest-labs/FLUX.1-dev
+  - name: flux-schnell
+    model: black-forest-labs/FLUX.1-schnell
+
+# Exercise the aux tasks with the stub image. Both rig inventory hosts
+# alias ONE VM, so entries must place on both nodes (identical per-node
+# slices); a hosts-subset entry would race node-02's cleanup against
+# node-01's deploy on the shared VM. Real fleets use subsets freely.
+vllm_aux_enabled: true
+vllm_aux_models:
+  - name: vision-analyst
+    model: Qwen/Qwen3.5-VL-8B
+    hosts: [vllm-node-01, vllm-node-02]
+  - name: gatekeeper
+    model: Qwen/Qwen3-0.6B
+    hosts: all

@@ -51,3 +51,10 @@ http:
         accessControlAllowCredentials: true
         accessControlAllowHeaders:
           - "*"
+
+  serversTransports:
+    chatterbox:
+      forwardingTimeouts:
+        dialTimeout: 30s
+        responseHeaderTimeout: 0s
+        idleConnTimeout: 180s

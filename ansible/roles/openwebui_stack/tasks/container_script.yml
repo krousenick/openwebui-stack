@@ -1,0 +1,77 @@
+---
+# Run one provisioning script from ./container-scripts with the Python of
+# a stack container. Every Python job of this role goes through here; there
+# is no inline `python3 -c` in the task files.
+#
+# The scripts run inside the containers because the LiteLLM and Open WebUI
+# admin APIs only listen on container-local ports. The compose template
+# mounts ./container-scripts read-only at container_scripts_mount in both
+# containers, and tasks/sync.yml keeps the deployed copy current on every
+# run, tag-limited runs included.
+#
+# Import this file with:
+#   container_script          file name in ./container-scripts
+#   container_script_service  compose service whose container runs it
+#                             (litellm or open-webui)
+#   container_script_args     optional list of script arguments
+#   container_script_env      optional dict of secrets. Only the names reach
+#                             the docker command line (`--env=NAME` forwards
+#                             the value from this task's environment), so a
+#                             secret never shows in argv, in `ps`, or in the
+#                             output of a failed task.
+#   container_script_payload  optional dict of structured input, passed as
+#                             base64 JSON on stdin
+#
+# Result: container_script_report, the JSON object the script printed
+# (defaults/main.yml). Its `changed` key sets the task status and `actions`
+# lists what was written; the other keys are per script, documented in each
+# script's docstring. Read it right after the import: the next import
+# replaces it.
+#
+# Check mode: the script still runs, with --check, so it reads the live
+# state, writes nothing and reports what a real run would change.
+
+- name: "Run the container script {{ container_script }}"
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'exec']
+         + (['-i'] if container_script_payload is defined else [])
+         + (container_script_env | default({}) | list | map('regex_replace', '^', '--env=') | list)
+         + [compose_project_name ~ '_' ~ container_script_service,
+            'python3', container_scripts_mount ~ '/' ~ container_script]
+         + (container_script_args | default([]))
+         + (['--check'] if ansible_check_mode else []) }}
+    # base64: the templating layer would parse a bare JSON string back into
+    # a dict and hand the container its Python repr.
+    stdin: "{{ (container_script_payload | to_json | b64encode) if container_script_payload is defined else omit }}"
+  environment: "{{ container_script_env | default({}) }}"
+  register: container_script_run
+  changed_when: container_script_report.changed | default(false)
+  # The next task reports a failure in readable form.
+  failed_when: false
+  check_mode: false
+
+- name: "Require a clean exit from {{ container_script }}"
+  ansible.builtin.assert:
+    that:
+      - container_script_run.rc | default(1) == 0
+    fail_msg: >-
+      {{ container_script }} failed in the {{ container_script_service }}
+      container (exit {{ container_script_run.rc | default('unknown') }}):
+      {{ container_script_missing_hint
+         if "can't open file" in container_script_stderr
+         else (container_script_stderr | default(container_script_run.msg | default('no output'), true))[-1000:] }}
+    quiet: true
+  vars:
+    container_script_stderr: "{{ container_script_run.stderr | default('') }}"
+    container_script_missing_hint: >-
+      {{ container_scripts_mount }}/{{ container_script }} does not exist
+      there. The container predates the ./container-scripts mount or the
+      script was not synced: run the playbook once with
+      --tags environment,compose (or without tags) so the compose file is
+      rendered with the mount and the container is recreated.
+
+- name: "Show the changes made by {{ container_script }}"
+  ansible.builtin.debug:
+    msg: "{{ container_script_report.actions }}"
+  when: container_script_report.actions | default([]) | length > 0

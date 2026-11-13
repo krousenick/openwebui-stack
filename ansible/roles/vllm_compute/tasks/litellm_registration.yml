@@ -1,0 +1,439 @@
+---
+# Render the LiteLLM model_list snippet for the vLLM endpoints and merge it
+# into litellm/config.yaml on the Open WebUI stack host. The task runs on the
+# compute node and delegates the file operations to the LiteLLM host when it
+# is present in the inventory.
+#
+# With store_model_in_db enabled on the proxy, models can ALSO be
+# registered directly through POST /model/new, which this role does
+# idempotently. Flow: fetch what the gateway has -> prune what this run no
+# longer serves under current settings -> register what is missing. Delete+
+# re-register is the refresh path for changed settings (e.g. a
+# max_model_len bump: the gateway enforces the stored max_input_tokens, so
+# Open WebUI's 16385-token prompt failed against a stale 16384 until the
+# old entry was pruned and re-registered with 32768). Requires
+# LITELLM_MASTER_KEY on the controller (same secret the proxy validates).
+
+- name: Render the LiteLLM model snippet
+  ansible.builtin.template:
+    src: litellm-models.yaml.j2
+    dest: "{{ playbook_dir }}/../../litellm/vllm-models.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Resolve the LiteLLM admin endpoint on the controller
+  # The controller (the stack host) reaches the litellm container on its
+  # docker-network IP; the API is not published to the LAN. docker inspect
+  # resolves it on the fly so the task survives container recreation.
+  ansible.builtin.shell: |
+    set -o pipefail
+    cid=$(docker ps --filter name=_litellm --format '{{ "{{" }}.Names{{ "}}" }}' | head -1)
+    if [ -z "$cid" ]; then
+        echo "LITELLM_NOT_RUNNING"
+        exit 0
+    fi
+    ip=$(docker exec "$cid" hostname -i | awk '{print $1}')
+    if [ -z "$ip" ]; then
+        echo "LITELLM_NOT_RUNNING"
+        exit 0
+    fi
+    echo "http://${ip}:4000"
+  register: vllm_litellm_endpoint
+  changed_when: false
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Collect the primary endpoints the launcher's single-model slot owns
+  # vllm_launcher_slot nodes (launcher_placement.yml): the launcher swaps the
+  # model on the primary port, and the stack's launcher follower renames and
+  # re-describes that endpoint's LiteLLM entry to match what is served
+  # (PATCH, keeping the entry's id and stored API key). This run therefore
+  # only creates such an entry when none exists for the endpoint, and never
+  # prunes or replaces it. The group reference is '\1' with ONE backslash
+  # (a {{ }} template in a block scalar).
+  ansible.builtin.set_fact:
+    vllm_slot_api_bases: >-
+      {{ groups['vllm_compute'] | default([])
+         | map('extract', hostvars)
+         | selectattr('vllm_launcher_slot', 'defined')
+         | selectattr('vllm_launcher_slot', 'truthy', convert_bool=true)
+         | selectattr('vllm_host_ip', 'defined')
+         | map(attribute='vllm_host_ip')
+         | map('regex_replace', '^(.*)$', 'http://\1:' ~ (vllm_port | string) ~ '/v1')
+         | list }}
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Build the aux (node, entry) pairs for registration
+  # subelements flattens each entry's hosts list into one
+  # [entry, hostname] pair per placement; every pair is one LiteLLM
+  # endpoint. Empty when aux is disabled or no entry lists hosts.
+  ansible.builtin.set_fact:
+    vllm_aux_endpoint_pairs: "{{ vllm_aux_effective_models | default([]) | subelements('hosts') | list }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Fetch the full model info
+  # /model/info carries litellm_params with the api_base, which is how db
+  # models registered by this role are told apart from config-declared
+  # ones (gemini, routers, voice-assistant have no api_base), plus the
+  # stored max_input_tokens the gateway enforces.
+  ansible.builtin.uri:
+    url: "{{ vllm_litellm_endpoint.stdout }}/model/info"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') }}"
+    status_code: [200]
+    return_content: true
+  register: vllm_litellm_model_info
+  delegate_to: localhost
+  run_once: true
+  become: false
+  no_log: true
+  when:
+    - vllm_litellm_endpoint.stdout != 'LITELLM_NOT_RUNNING'
+    - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
+
+- name: Compute the stale vLLM registrations
+   # Builds the prune list per item (selectattr cannot compare against a
+   # per-model expected value). An entry is stale when any of:
+   #   1. its model_name is not registered by this run (retired model,
+   #      removed aux entry, model moved to another node), or
+    #   2. its stored max_input_tokens no longer matches the context length
+    #      this run would register - the gateway enforces the stored value,
+    #      so a max_model_len change must invalidate the old entry - or is
+    #      not a JSON number (a string "262144" equals 262144 after int()
+    #      but clients gating on Number.isFinite reject string limits), or
+    #   3. (primary only) its stored adaptive_router_preferences /
+    #      input_cost_per_token no longer match vllm_adaptive_model_info -
+    #      the gateway serves the stored model_info, so a tier/strengths/
+    #      cost edit only lands via delete + re-register, or
+    #   4. its stored supports_reasoning no longer matches whether this
+    #      run sets a reasoning parser (vllm_reasoning_parser /
+    #      aux reasoning_parser), or
+    #   5. its stored repetition_detection no longer matches the effective
+    #      model setting - same delete + re-register refresh path, or
+    #   6. its stored default reasoning_effort (litellm_params) no longer
+    #      matches vllm_reasoning_effort / the aux entry's reasoning_effort, or
+    #   7. its stored supports_<level>_reasoning_effort flags no longer
+    #      match vllm_reasoning_efforts / the aux entry's reasoning_efforts.
+   # int()-normalized: LiteLLM stores the primary's value as int and
+   # older registrations may hold a string. Only db models whose api_base
+   # points at a vLLM endpoint (http(s)://<host>:<port>/v1) are considered;
+   # config-declared models never reach this loop. The delete + re-register
+   # cycle below is the refresh path. Entries of a launcher slot endpoint
+   # (vllm_slot_api_bases) are never stale here: the launcher follower keeps
+   # them in step with whatever model the node serves.
+  ansible.builtin.set_fact:
+    vllm_stale_models: "{{ (vllm_stale_models | default([])) + [candidate_item] }}"
+  vars:
+    vllm_registered_names: >-
+      {{ ([vllm_served_model_name]
+        + (vllm_aux_endpoint_pairs | default([]) | map(attribute='0.served_model_name') | list)) }}
+    vllm_expected_max_input: >-
+      {{ dict((vllm_aux_endpoint_pairs | default([])
+          | map(attribute='0.served_model_name') | list
+          + [vllm_served_model_name])
+        | zip(
+            (vllm_aux_endpoint_pairs | default([])
+              | map(attribute='0.max_model_len') | map('int') | list
+              + [vllm_max_model_len | int]))) }}
+    # The primary model is stale on an adaptive-preferences change too:
+    # the gateway serves the stored model_info, so a tier/strengths edit
+    # only lands via delete + re-register. Only adaptive_router_preferences
+    # is compared: /model/new strips input_cost_per_token from model_info
+    # (without_server_derived_pricing), and the adaptive router defaults a
+    # missing cost to 0.0 - correct for a self-hosted node - so the cost key
+    # never persists and must not invalidate. jsonb storage normalizes key
+    # order, so both sides serialize with sort_keys or the API's ordering
+    # (strengths before quality_tier) never matches the POST's.
+     # 'ABSENT' on both sides means "no prefs" (vars disabled and/or never
+     # registered): equal -> not stale.
+    vllm_expected_adaptive_prefs: >-
+      {{ vllm_adaptive_model_info['adaptive_router_preferences'] | default('ABSENT', true) }}
+    # Expected supports_reasoning per model: true only when this run passes
+    # a reasoning parser (vllm_reasoning_parser for the primary, the aux
+    # entry's reasoning_parser). Missing key == false on both sides.
+    vllm_expected_supports_reasoning: >-
+      {{ dict((vllm_aux_endpoint_pairs | default([])
+          | map(attribute='0.served_model_name') | list
+          + [vllm_served_model_name])
+        | zip(
+          ((vllm_aux_endpoint_pairs | default([])
+            | map(attribute='0.reasoning_parser') | map('default', '') | list
+            + [vllm_reasoning_parser | default('')])
+           | map('ternary', true, false) | list))) }}
+    # LiteLLM keeps deployment defaults under litellm_params, so changing
+    # repetition detection also requires replacing the stored db model.
+    vllm_expected_repetition_detection: >-
+      {{ dict((vllm_aux_endpoint_pairs | default([])
+          | map(attribute='0.served_model_name') | list
+          + [vllm_served_model_name])
+        | zip(
+          ((vllm_aux_endpoint_pairs | default([])
+            | map(attribute='0.repetition_detection') | list)
+           + [vllm_repetition_detection | default({})]))) }}
+    # Default reasoning_effort lives in litellm_params like
+    # repetition_detection; '' on both sides means "no default".
+    vllm_expected_reasoning_effort: >-
+      {{ dict((vllm_aux_endpoint_pairs | default([])
+          | map(attribute='0.served_model_name') | list
+          + [vllm_served_model_name])
+        | zip(
+          (vllm_aux_endpoint_pairs | default([])
+            | map(attribute='0.reasoning_effort') | map('default', '') | list
+           + [vllm_reasoning_effort | default('')]))) }}
+    # Offered effort levels, compared as sorted level names against the
+    # stored supports_<level>_reasoning_effort: true keys.
+    vllm_expected_reasoning_efforts: >-
+      {{ dict((vllm_aux_endpoint_pairs | default([])
+          | map(attribute='0.served_model_name') | list
+          + [vllm_served_model_name])
+        | zip(
+          (vllm_aux_endpoint_pairs | default([])
+            | map(attribute='0.reasoning_efforts') | map('default', []) | list
+           + [vllm_reasoning_efforts | default([])]))) }}
+  loop: "{{ vllm_litellm_model_info.json.data | default([])
+    | selectattr('litellm_params.api_base', 'defined')
+    | selectattr('litellm_params.api_base', 'match', '^https?://[0-9.]+:[0-9]+/v1$')
+    | list }}"
+  loop_control:
+    loop_var: candidate_item
+  when:
+    - vllm_litellm_endpoint.stdout != 'LITELLM_NOT_RUNNING'
+    - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
+    - candidate_item.litellm_params.api_base not in (vllm_slot_api_bases | default([]))
+    - candidate_item.model_name not in vllm_registered_names
+      or (candidate_item.model_info.max_input_tokens | default(0) | int)
+        != (vllm_expected_max_input[candidate_item.model_name] | default(0) | int)
+      or (candidate_item.model_info.max_input_tokens | default(none) is not number)
+      or (candidate_item.model_name == vllm_served_model_name
+        and (candidate_item.model_info.adaptive_router_preferences | default('ABSENT', true)
+             | to_json(sort_keys=true))
+            != (vllm_expected_adaptive_prefs | to_json(sort_keys=true)))
+      or (candidate_item.model_info.supports_reasoning | default(false) | bool)
+        != (vllm_expected_supports_reasoning[candidate_item.model_name] | default(false))
+      or ((candidate_item.litellm_params.repetition_detection | default({}))
+          | to_json(sort_keys=true))
+        != ((vllm_expected_repetition_detection[candidate_item.model_name] | default({}))
+          | to_json(sort_keys=true))
+      or (candidate_item.litellm_params.reasoning_effort | default('', true) | string)
+        != (vllm_expected_reasoning_effort[candidate_item.model_name] | default('', true) | string)
+      or (candidate_item.model_info | dict2items
+          | selectattr('key', 'match', '^supports_[a-z]+_reasoning_effort$')
+          | selectattr('value', 'equalto', true)
+          | map(attribute='key')
+          | map('regex_replace', '^supports_', '')
+          | map('regex_replace', '_reasoning_effort$', '')
+          | sort | list)
+        != (vllm_expected_reasoning_efforts[candidate_item.model_name] | default([]) | sort | list)
+  delegate_to: localhost
+  run_once: true
+  become: false
+  no_log: true
+
+- name: Prune vLLM models this deployment no longer serves
+  # The model db is the source of truth for what the gateway serves, so
+  # stale entries must be pruned or they linger in every client's model
+  # list forever (e.g. Qwen2.5-7B-Instruct after the primary was switched)
+  # or enforce an outdated context limit (the 16384 vs 32768 case).
+  # /model/delete needs the db model id; model_name is not accepted.
+  # Idempotent: nothing stale -> empty loop -> no request.
+  ansible.builtin.uri:
+    url: "{{ vllm_litellm_endpoint.stdout }}/model/delete"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      id: "{{ stale_vllm_item.model_info.id }}"
+    status_code: [200]
+  register: vllm_litellm_prune
+  changed_when: vllm_litellm_prune.status == 200
+  loop: "{{ vllm_stale_models | default([]) }}"
+  loop_control:
+    loop_var: stale_vllm_item
+  delegate_to: localhost
+  run_once: true
+  become: false
+  no_log: true
+  when:
+    - vllm_litellm_endpoint.stdout != 'LITELLM_NOT_RUNNING'
+    - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
+
+- name: Fetch the existing LiteLLM model list
+  # AFTER the prune: the register tasks skip names already in /v1/models,
+  # and a pruned entry must no longer read as present. Both this fetch and
+  # the model_info fetch are no-change GETs, so the order costs nothing.
+  ansible.builtin.uri:
+    url: "{{ vllm_litellm_endpoint.stdout }}/v1/models"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') }}"
+    status_code: [200]
+    return_content: true
+  register: vllm_litellm_models
+  delegate_to: localhost
+  run_once: true
+  become: false
+  no_log: true
+  when:
+    - vllm_litellm_endpoint.stdout != 'LITELLM_NOT_RUNNING'
+    - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
+
+- name: Register the vLLM model with LiteLLM
+  # One POST per endpoint entry the snippet rendered (standalone renders
+  # one per node under the same model_name; LiteLLM treats identical
+  # model_name entries as load-balanced replicas). Entries already present
+  # are skipped, so re-runs are idempotent - the prune above removed the
+  # stale entry, so a context-length change lands here as a re-register.
+  # A launcher slot endpoint is registered only while LiteLLM has no entry
+  # for its api_base at all, whatever that entry is named: the launcher
+  # follower renames it to the model the node serves.
+  # model_info is rendered to a JSON string because uri's json serializer
+  # turns a YAML/Ansible multi-line string body scalar into a quoted
+  # string; LiteLLM's /model/new accepts a model_info object, so the
+  # template must produce the object, not its serialization.
+  ansible.builtin.uri:
+    url: "{{ vllm_litellm_endpoint.stdout }}/model/new"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      model_name: "{{ vllm_served_model_name }}"
+      litellm_params: "{{ {'model': 'openai/' ~ vllm_served_model_name,
+          'api_base': 'http://' ~ item ~ ':' ~ vllm_port ~ '/v1',
+          'api_key': (vllm_api_key if vllm_api_key | length > 0 else 'local')}
+        | combine({'reasoning_effort': vllm_reasoning_effort}
+            if vllm_reasoning_effort | default('') | length > 0 else {})
+        | combine({'repetition_detection': vllm_repetition_detection}
+            if (vllm_repetition_detection | default({}) | dict2items | length > 0) else {}) }}"
+      # max_input_tokens/max_tokens must serialize as JSON numbers, not
+      # strings: the /model/info response round-trips whatever type was
+      # POSTed, and clients that gate on Number.isFinite (MAGIE's discovery
+      # plugin) never learn a string limit, so they fall back to a default
+      # context window and refuse to send large prompts.
+      model_info: "{{ ({'description': vllm_served_model_name ~ ' - vLLM on ' ~ item,
+            'max_input_tokens': vllm_max_model_len | int,
+            'max_tokens': vllm_max_model_len | int}
+           | combine(vllm_adaptive_model_info | default({})))
+        | combine({'supports_reasoning': true} if vllm_reasoning_parser | default('') | length > 0 else {})
+        | combine(dict(vllm_reasoning_efforts | default([])
+            | map('regex_replace', '^', 'supports_')
+            | map('regex_replace', '$', '_reasoning_effort')
+            | zip([true] * (vllm_reasoning_efforts | default([]) | length)))) }}"
+    status_code: [200]
+  register: vllm_litellm_register
+  changed_when: vllm_litellm_register.status == 200
+  delegate_to: localhost
+  run_once: true
+  become: false
+  no_log: true
+  loop: "{{ vllm_endpoints if vllm_deployment_mode == 'standalone' else [vllm_ray_head_address] }}"
+  vars:
+    vllm_register_api_base: "{{ 'http://' ~ item ~ ':' ~ (vllm_port | string) ~ '/v1' }}"
+  when:
+    - vllm_litellm_endpoint.stdout != 'LITELLM_NOT_RUNNING'
+    - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
+    - >-
+      (vllm_register_api_base in (vllm_slot_api_bases | default([]))
+       and vllm_register_api_base not in (vllm_litellm_model_info.json.data | default([])
+           | selectattr('litellm_params.api_base', 'defined')
+           | map(attribute='litellm_params.api_base') | list))
+      or (vllm_register_api_base not in (vllm_slot_api_bases | default([]))
+          and vllm_served_model_name not in (vllm_litellm_models.json.data | default([])
+              | map(attribute='id') | list))
+
+- name: Register the aux models with LiteLLM
+  # Same idempotent pattern as the primary model: one POST per (node,
+  # entry) pair, skipped when the model_name is already registered.
+  ansible.builtin.uri:
+    url: "{{ vllm_litellm_endpoint.stdout }}/model/new"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      model_name: "{{ aux_pair.0.served_model_name }}"
+      litellm_params: "{{ {'model': 'openai/' ~ aux_pair.0.served_model_name,
+          'api_base': 'http://' ~ hostvars[aux_pair.1].vllm_host_ip ~ ':' ~ aux_pair.0.port ~ '/v1',
+          'api_key': (aux_pair.0.api_key if aux_pair.0.api_key | length > 0 else 'local')}
+        | combine({'reasoning_effort': aux_pair.0.reasoning_effort}
+            if aux_pair.0.reasoning_effort | default('') | length > 0 else {})
+        | combine({'repetition_detection': aux_pair.0.repetition_detection}
+            if (aux_pair.0.repetition_detection | default({}) | dict2items | length > 0) else {}) }}"
+      model_info: "{{ ({'description': aux_pair.0.served_model_name ~ ' - vLLM aux on '
+            ~ aux_pair.1 ~ ' (' ~ aux_pair.0.model ~ ')',
+          'max_input_tokens': aux_pair.0.max_model_len | int,
+          'max_tokens': aux_pair.0.max_model_len | int})
+        | combine({'supports_reasoning': true} if aux_pair.0.reasoning_parser | default('') | length > 0 else {})
+        | combine(dict(aux_pair.0.reasoning_efforts | default([])
+            | map('regex_replace', '^', 'supports_')
+            | map('regex_replace', '$', '_reasoning_effort')
+            | zip([true] * (aux_pair.0.reasoning_efforts | default([]) | length)))) }}"
+    status_code: [200]
+  register: vllm_aux_litellm_register
+  changed_when: vllm_aux_litellm_register.status == 200
+  delegate_to: localhost
+  run_once: true
+  become: false
+  no_log: true
+  loop: "{{ vllm_aux_endpoint_pairs | default([]) }}"
+  loop_control:
+    loop_var: aux_pair
+  when:
+    - vllm_aux_endpoint_pairs | default([]) | length > 0
+    - vllm_litellm_endpoint.stdout != 'LITELLM_NOT_RUNNING'
+    - lookup('ansible.builtin.env', 'LITELLM_MASTER_KEY') | default('', true) | length > 0
+    - aux_pair.0.served_model_name not in (vllm_litellm_models.json.data | default([])
+      | map(attribute='id') | list)
+
+- name: Registration result
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Registered ' ~ vllm_served_model_name ~ ' with LiteLLM ('
+        ~ (vllm_litellm_register.results | default([]) | selectattr('changed', 'true') | list | length)
+        ~ ' endpoint(s) added)'
+        ~ (', registered '
+          ~ (vllm_aux_litellm_register.results | default([]) | selectattr('changed', 'true') | list | length)
+          ~ ' aux endpoint(s)' if (vllm_aux_litellm_register.results | default([]) | selectattr('changed', 'true') | list | length) > 0 else '')
+      if (vllm_litellm_register.results | default([]) | selectattr('changed', 'true') | list | length) > 0
+        or (vllm_aux_litellm_register.results | default([]) | selectattr('changed', 'true') | list | length) > 0
+      else vllm_served_model_name ~ ' already registered with LiteLLM - skipped'
+      }}
+  delegate_to: localhost
+  run_once: true
+  become: false
+  # selectattr('changed', 'true'), not selectattr('changed'): under --check
+  # the uri tasks above are skipped, and their results carry no changed key.
+
+- name: Prune result
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Pruned stale vLLM model(s) from LiteLLM: '
+        ~ (vllm_litellm_prune.results | default([])
+          | selectattr('changed', 'true')
+          | map(attribute='stale_vllm_item.model_name') | join(', ')
+          | default('', true)) }}
+  delegate_to: localhost
+  run_once: true
+  become: false
+  when: (vllm_litellm_prune.results | default([]) | selectattr('changed', 'true') | list | length) > 0
+
+- name: Point the operator to the generated snippet
+  ansible.builtin.debug:
+    msg:
+      - "LiteLLM model_list snippet written to litellm/vllm-models.yaml in the repository"
+      - "Merge the snippet into model_list in litellm/config.yaml on the stack host for file-based deployments, then:"
+      - "docker compose restart litellm"

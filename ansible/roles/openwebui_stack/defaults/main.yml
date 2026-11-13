@@ -1,0 +1,611 @@
+---
+# Role mechanics only. Deployment configuration (domain, TLS mode, compose
+# profiles, chatterbox_device) lives in group_vars/all/vars.yml; secrets in
+# group_vars/all/vault.yml + vault.local.yml. Nothing here reads the
+# environment. These defaults exist so the role fails fast when a required
+# group_vars value is missing instead of silently falling back.
+
+compose_file: "{{ project_root }}/docker-compose.yml"
+
+env_file: "{{ project_root }}/.env"
+
+docker_compose_wait_timeout: 180
+
+# Traefik dashboard basic-auth user. The apr1 hash is computed at run time
+# from traefik_dashboard_password (vault).
+traefik_dashboard_user: admin
+
+selfsigned_key_size: 4096
+selfsigned_valid_days: 365
+selfsigned_subject:
+  country: US
+  state: State
+  city: City
+  org: Open WebUI Stack
+  ou: Development
+selfsigned_san:
+  - "DNS:{{ domain }}"
+  - "DNS:*.{{ domain }}"
+  - "DNS:localhost"
+  - "DNS:*.localhost"
+  - "IP:127.0.0.1"
+  - "IP:::1"
+
+# Every stack secret the .env render needs. tasks/secrets.yml generates any
+# that are unset, empty, or still a template placeholder, and persists them
+# to stack_vault_local_file.
+stack_vault_local_file: "{{ playbook_dir }}/../group_vars/all/vault.local.yml"
+stack_secret_placeholders:
+  - CHANGE_ME
+  - change-me-before-production
+# Generated with an sk- prefix (LiteLLM and Open WebUI require it).
+stack_secret_sk_prefixed:
+  - litellm_master_key
+  - openwebui_api_admin_key
+stack_secret_names:
+  - litellm_generic_client_state
+  - postgres_password
+  - openwebui_db_password
+  - litellm_db_password
+  - openwebui_secret_key
+  - litellm_master_key
+  - litellm_salt_key
+  - grafana_admin_password
+  - qdrant_api_key
+  - valkey_password
+  - keycloak_db_password
+  - keycloak_admin_password
+  - openwebui_oidc_client_secret
+  - litellm_oidc_client_secret
+  - grafana_oidc_client_secret
+  - voice_oidc_client_secret
+  - oauth2_proxy_cookie_secret
+  - launcher_oidc_client_secret
+  - launcher_status_token
+  - memory_mcp_signing_key
+  - keycloak_provisioner_client_secret
+  - keycloak_login_tracker_client_secret
+  - traefik_dashboard_password
+  - code_sandbox_token
+  - openwebui_api_admin_key
+  - keycloak_user_platform_admin_password
+  - keycloak_user_grafana_editor_password
+  - keycloak_user_grafana_viewer_password
+  - keycloak_user_openwebui_user_password
+  - keycloak_user_litellm_user_password
+  - keycloak_user_litellm_viewer_password
+
+docker_gid: "999"
+
+backup_retention_days: 7
+
+# Keycloak admin console IP allowlist (commented Traefik ipwhitelist in the
+# compose file consumes it).
+keycloak_admin_ip_range: "0.0.0.0/0"
+
+# User self-registration on the platform realm login page. Off by default.
+# When true the Keycloak login page shows a Register link, and every new
+# account lands in keycloak_default_groups (role mappings in group_vars
+# keycloak_group_role_mappings grant it access).
+# Default groups are applied after the groups exist, and Keycloak's realm
+# update replaces the whole list, so while registration is enabled clearing
+# this list removes the realm's default groups on the next run.
+# keycloak_verify_email needs an SMTP server configured in Keycloak; leave
+# false until one exists or self-registered users cannot finish signup.
+keycloak_registration_enabled: false
+keycloak_verify_email: false
+keycloak_default_groups: []
+
+# LLM Launcher portals. The launcher GUI and its oauth2-proxy gate run on
+# the vLLM compute nodes (role vllm_compute, vllm_launcher_enabled); this
+# role provides the stack-host half: the `launcher` Keycloak client, one
+# Traefik route per portal (https://<prefix><node>.<domain> -> the node's
+# gate), and the /etc/hosts entries. When false the routes and hosts
+# entries are removed; the Keycloak client stays (like voice).
+launcher_enabled: false
+
+# Nodes that get a portal: every vllm_compute host of THIS inventory by
+# default. A node without a running gate (a ray worker, or the launcher
+# disabled on the nodes) only yields a route Traefik reports as unhealthy,
+# so the default needs no knowledge of the compute topology. The names must
+# be the inventory hostnames playbooks/inference.yml deploys under, because
+# each gate answers as <prefix><its inventory hostname>.<domain>. When the
+# compute nodes are deployed from a different inventory (tests/vllm-remote)
+# or this one carries placeholder addresses, list the names here and give
+# their addresses in launcher_node_addresses.
+launcher_nodes: "{{ groups['vllm_compute'] | default([]) | list }}"
+
+# Address Traefik reaches each node's gate on, keyed by the name in
+# launcher_nodes. A node not listed here uses its inventory ansible_host.
+#   launcher_node_addresses:
+#     vllm-node-01: 192.0.2.20
+launcher_node_addresses: {}
+
+# Must match vllm_launcher_hostname_prefix / vllm_launcher_auth_port in the
+# vllm_compute role: the node's gate answers under this name on this port.
+launcher_hostname_prefix: "launcher-"
+launcher_auth_port: 4180
+
+# Launcher follower (container-scripts/launcher_follower.py, service
+# launcher-follower): a node whose launcher runs one model at a time
+# (vllm_launcher_swap) changes what its primary port serves whenever a
+# model is swapped in or retuned from the GUI. Every interval the follower
+# reads each portal node's GET /api/stack/slot through its gate (bearer
+# launcher_status_token), renames and re-describes LiteLLM's entry for that
+# endpoint to match, and attaches the Open WebUI Thinking switch to it. A
+# node without the slot is only reported in the service log.
+launcher_follow_enabled: true
+launcher_follow_interval: 30
+
+# Derived, not configured. Portal names follow the same rule as the
+# vllm_compute role: prefix + inventory hostname, lowercased, anything
+# outside [a-z0-9-] replaced with "-". launcher.<domain> stands in when no
+# compute host exists, so the Keycloak client always has a redirect URI.
+# The group references are '\1' with ONE backslash: these are {{ }}
+# templates in block scalars, where Ansible hands the backslash to the
+# filter as written ('\\1' would insert a literal "\1").
+launcher_node_labels: >-
+  {{ launcher_nodes | map('lower') | map('regex_replace', '[^a-z0-9-]', '-') | list }}
+launcher_fqdns: >-
+  {{ (launcher_node_labels
+      | map('regex_replace', '^(.*)$', launcher_hostname_prefix ~ '\1.' ~ domain) | list)
+     or ['launcher.' ~ domain] }}
+launcher_redirect_uris: >-
+  {{ launcher_fqdns | map('regex_replace', '^(.*)$', 'https://\1/oauth2/callback') | list }}
+launcher_post_logout_redirect_uris: >-
+  {{ launcher_fqdns | map('regex_replace', '^(.*)$', 'https://\1') | list }}
+
+# Keycloak login tracking (container-scripts/keycloak_login_tracker.py,
+# service keycloak-login-tracker). Keycloak saves the realm's logins in its
+# event store (tasks/keycloak_bootstrap.yml: events_enabled, kept 30 days)
+# but logs only the failed ones. Every interval the tracker reads the new
+# LOGIN and LOGIN_ERROR events as the login-tracker client, whose service
+# account holds only realm-management's view-events role
+# (tasks/keycloak_login_tracker.yml), looks up the place of each public
+# address in the local GeoIP file below, and pushes one JSON line per login
+# to Loki (service_name="keycloak-logins"). The Keycloak dashboard's Logins
+# row shows them, and the KeycloakLogins alert rules fire on two flags:
+#   impossible_travel  a successful login more than min_distance_km from the
+#                      user's previous located login, which it could only
+#                      have reached faster than max_speed_kmh;
+#   new_country        a successful login from a country the user has no
+#                      located login from in the last history_days, while
+#                      it has some from other countries.
+# Private addresses show as LAN and the internal networks (Docker's) as
+# stack-internal; neither gets a place or takes part in the checks, and
+# neither do failed logins. Turning the tracker off removes the service and
+# leaves the Keycloak client in place.
+keycloak_login_tracker_enabled: true
+keycloak_login_tracker_client_id: login-tracker
+keycloak_login_tracker_interval: 30
+keycloak_login_tracker_max_speed_kmh: 1000
+keycloak_login_tracker_min_distance_km: 300
+keycloak_login_tracker_history_days: 30
+# How far back the first start pushes logins; Loki refuses entries older
+# than a week.
+keycloak_login_tracker_backfill_days: 6
+keycloak_login_tracker_internal_networks:
+  - 172.16.0.0/12
+
+# GeoIP database of the login tracker (tasks/geoip.yml): DB-IP's free IP to
+# City Lite (CC BY 4.0, https://db-ip.com), one release a month. It is kept
+# in geoip/ of the deployed tree and mounted read-only into the tracker, so
+# login addresses never leave the host. A run downloads the current month's
+# release when the host has an older one, or last month's while the new one
+# is not out yet; a failed download keeps the file already there. The
+# licence asks for a link to db-ip.com wherever the places are shown, which
+# the dashboard panels carry.
+geoip_dir: "{{ project_root }}/geoip"
+geoip_file: dbip-city-lite.mmdb
+geoip_url_template: "https://download.db-ip.com/free/dbip-city-lite-%s.mmdb.gz"
+
+# Playwright MCP cluster. When true, the playbook adds the Open WebUI tool
+# server connection for the playwright_cluster LiteLLM MCP server. The
+# containers and Traefik wiring live in docker-compose.yml. Set false in
+# group_vars to skip the wiring.
+playwright_mcp_enabled: true
+
+# Isolated code-sandbox (pinned jupyter/scipy-notebook image, backend-only
+# network, token auth). When true, the compose file adds the code-sandbox
+# container and Open WebUI's Jupyter code-execution wiring points at it.
+# The legacy in-process engines stay disabled either way. Set false in
+# group_vars to drop the sandbox entirely.
+code_sandbox_enabled: true
+
+# Open WebUI's code interpreter, executed in the code-sandbox above (engine
+# jupyter). A user who turns on Code Interpreter in a chat gives the model
+# an execute_code tool whose Python runs in the sandbox (python-docx,
+# openpyxl, python-pptx, pypdf, reportlab, pandas, matplotlib baked in;
+# see sandbox/requirements.txt). Files the model saves under
+# /outputs/<chat id>/ come back as downloads through the
+# tool_result_file_download filter, which also tells the model that
+# directory. One sandbox serves every chat, so code in one chat can read
+# what another chat wrote there; keep it for a trusted user base. Needs
+# code_sandbox_enabled. ENABLE_CODE_EXECUTION (the Run button on code
+# blocks) stays off either way.
+openwebui_code_interpreter_enabled: true
+
+# Derived, not configured: whether the interpreter is wired up.
+openwebui_code_interpreter_active: "{{ code_sandbox_enabled | bool and openwebui_code_interpreter_enabled | bool }}"
+
+# Derived, not configured: digest of the sandbox build inputs in the
+# checkout. The compose template stamps it on the image as a label and
+# tasks/code_sandbox.yml rebuilds the image when the running container's
+# label differs (compose itself only builds an image that is missing).
+code_sandbox_inputs_digest: >-
+  {{ (lookup('ansible.builtin.file', playbook_dir ~ '/../../sandbox/Dockerfile')
+      ~ lookup('ansible.builtin.file', playbook_dir ~ '/../../sandbox/requirements.txt'))
+     | hash('sha256') }}
+
+# AWS Bedrock models in the LiteLLM model_list. Off by default: they need
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (see .env.example) and provision
+# nothing useful without credentials. Set true in group_vars once the AWS
+# keys exist.
+litellm_bedrock_models_enabled: false
+
+# Google Gemini models in the LiteLLM model_list, plus the auto/adaptive
+# routers and the voice-assistant alias that route to them. Off by default:
+# they need GEMINI_API_KEY (see .env.example) and provision nothing useful
+# without a key. Set true in group_vars once the Gemini key exists.
+litellm_gemini_models_enabled: false
+
+# Anthropic Claude models in the LiteLLM model_list (claude-opus-5-5,
+# claude-sonnet-5-5, claude-haiku-5-5, claude-fable-5-2). Off by default:
+# they need ANTHROPIC_API_KEY (vault: anthropic_api_key) and provision
+# nothing useful without a key. Set true in group_vars once the key exists.
+litellm_anthropic_models_enabled: false
+
+# Claude Code on your own Claude subscription (Pro/Max) through LiteLLM, so
+# its token use is logged (tasks/claude_subscription.yml). true registers an
+# `anthropic/*` deployment with no API key through LiteLLM's model API;
+# LiteLLM forwards each caller's own claude.ai sign-in to Anthropic and logs
+# the request (Logs > Credential: Client OAuth token; spend shown at API
+# list prices). Only Claude Code can use it: started with ANTHROPIC_BASE_URL
+# at the proxy, no ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN, and a LiteLLM key
+# in ANTHROPIC_CUSTOM_HEADERS (x-litellm-api-key). Anthropic's terms allow
+# this for your own unmodified Claude Code signed in with your own plan,
+# never for routing other apps or other people through a plan (README
+# "Claude Code on a Claude subscription"). The ~26 names the wildcard
+# expands to are hidden in Open WebUI and get no Thinking switch. false
+# removes the deployment and the hidden entries.
+litellm_claude_subscription_enabled: false
+
+# LiteLLM `auto` model (auto_router/complexity_router): which model_name
+# answers each complexity tier. A tier value is one model_name or a list
+# (random pick per request). All four tiers are required; {} drops the
+# `auto` model. Derived from the provider flags: the Gemini models when
+# litellm_gemini_models_enabled is true, else the Claude models when
+# litellm_anthropic_models_enabled is true, otherwise nothing, because the
+# role cannot rank Bedrock, vLLM, or llama.cpp models by strength. Override
+# in group_vars to route over whatever the deployment serves, e.g.
+#   litellm_auto_router_tiers:
+#     SIMPLE: qwen3-next
+#     MEDIUM: [qwen3-next, my-vllm-model]
+#     COMPLEX: qwen3-coder
+#     REASONING: kimi-k3
+litellm_auto_router_gemini_tiers:
+  SIMPLE: gemini-3.5-flash-lite
+  MEDIUM: gemini-3.8-flash
+  COMPLEX: gemini-4-argon
+  REASONING: gemini-3.1-pro
+litellm_auto_router_anthropic_tiers:
+  SIMPLE: claude-haiku-5-5
+  MEDIUM: claude-sonnet-5-5
+  COMPLEX: claude-opus-5-5
+  REASONING: claude-opus-5-5
+litellm_auto_router_tiers: >-
+  {{ litellm_auto_router_gemini_tiers
+     if litellm_gemini_models_enabled | default(false) | bool
+     else (litellm_auto_router_anthropic_tiers
+           if litellm_anthropic_models_enabled | default(false) | bool else {}) }}
+
+# Model the auto router uses when a turn cannot be classified. Defaults to
+# the MEDIUM tier (its first entry when the tier is a list).
+litellm_auto_router_default_model: >-
+  {{ [litellm_auto_router_tiers.MEDIUM | default('')] | flatten | first | default('')
+     if litellm_auto_router_tiers | length > 0 else '' }}
+
+# LiteLLM `adaptive` model (auto_router/adaptive_router, beta): the pool of
+# model_names its bandit picks from. [] drops the `adaptive` model. Derived
+# from the provider flags the same way as the auto tiers: the Gemini models
+# when litellm_gemini_models_enabled is true, else the Claude models when
+# litellm_anthropic_models_enabled is true, otherwise nothing. Override in
+# group_vars to pool whatever the deployment serves. Every pool model needs
+# a quality tier, strengths, and an input price: set them with
+# litellm_adaptive_router_preferences below (vLLM models get theirs from
+# the vllm_compute role: vllm_adaptive_quality_tier, vllm_adaptive_strengths).
+# claude-fable-5-2 is left out of the Claude pool: it is the most expensive
+# model and returns a 400 for organizations under zero data retention.
+litellm_adaptive_router_gemini_models:
+  - gemini-3.5-flash-lite
+  - gemini-3.8-flash
+  - gemini-3.1-pro
+  - gemini-4-argon
+litellm_adaptive_router_anthropic_models:
+  - claude-haiku-5-5
+  - claude-sonnet-5-5
+  - claude-opus-5-5
+litellm_adaptive_router_models: >-
+  {{ litellm_adaptive_router_gemini_models
+     if litellm_gemini_models_enabled | default(false) | bool
+     else (litellm_adaptive_router_anthropic_models
+           if litellm_anthropic_models_enabled | default(false) | bool else []) }}
+
+# Adaptive router settings per model, keyed by LiteLLM model_name and
+# rendered into that model's model_info in templates/config.yaml.j2:
+#   quality_tier: 1 (budget), 2 (mid), 3 (frontier) - cold-start prior
+#   strengths: request types the model is strong at (code_generation,
+#     code_understanding, technical_design, analytical_reasoning, writing,
+#     factual_lookup, general)
+#   input_cost_per_token: $/token, the router's cost signal (0 = free)
+# Applies to the models that template declares: Gemini, Claude, Bedrock.
+# Set litellm_adaptive_router_preferences in group_vars to change or add
+# entries; it merges over the defaults key by key, so one field of one
+# model can be changed without restating the rest, e.g.
+#   litellm_adaptive_router_preferences:
+#     claude-opus-5-5:
+#       quality_tier: 2
+#     kimi-k3:
+#       quality_tier: 3
+#       strengths: [analytical_reasoning]
+#       input_cost_per_token: 0.0000006
+# quality_tier: null drops a model's tier and strengths. A model with no
+# entry renders none of these keys.
+# Default prices: Gemini from LiteLLM model_prices 2026-10-28; Claude from
+# Anthropic list prices 2026-11-03 (Haiku: prompts up to 100K tokens).
+litellm_adaptive_router_default_preferences:
+  gemini-3.5-flash-lite:
+    quality_tier: 1
+    strengths: [factual_lookup]
+    input_cost_per_token: 0.0000003
+  gemini-3.8-flash:
+    quality_tier: 2
+    strengths: [writing, code_understanding]
+    input_cost_per_token: 0.00000075
+  gemini-3.1-pro:
+    quality_tier: 3
+    strengths: [analytical_reasoning]
+    input_cost_per_token: 0.000002
+  gemini-4-argon:
+    quality_tier: 3
+    strengths: [code_generation, technical_design, analytical_reasoning]
+    input_cost_per_token: 0.000002
+  claude-haiku-5-5:
+    quality_tier: 1
+    strengths: [factual_lookup]
+    input_cost_per_token: 0.0000001
+  claude-sonnet-5-5:
+    quality_tier: 2
+    strengths: [writing, code_understanding]
+    input_cost_per_token: 0.000002
+  claude-opus-5-5:
+    quality_tier: 3
+    strengths: [code_generation, technical_design, analytical_reasoning]
+    input_cost_per_token: 0.000004
+litellm_adaptive_router_preferences: {}
+
+# Derived, not configured: the defaults with the group_vars entries merged
+# over them. This is what the template and the validation read.
+litellm_adaptive_router_model_info: >-
+  {{ litellm_adaptive_router_default_preferences
+     | combine(litellm_adaptive_router_preferences | default({}, true), recursive=true) }}
+
+# Open WebUI default model for new chats (admin Settings > Models >
+# Default Models). LiteLLM model_names as a list or a comma-separated
+# string; more than one opens new chats in multi-model mode. Defaults to
+# `auto` whenever the auto router above is rendered, otherwise empty, which
+# leaves whatever is set in the UI alone. Seeds DEFAULT_MODELS on first
+# boot and is enforced through the admin API on every run
+# (tasks/openwebui_default_models.yml), because the env var is a persisted
+# ConfigVar that Open WebUI ignores after first boot. A user's own
+# Settings > Interface default still wins for that user.
+openwebui_default_models: "{{ 'auto' if litellm_auto_router_tiers | length > 0 else '' }}"
+
+# Derived, not configured: the list or string above as the comma-separated
+# value Open WebUI stores.
+openwebui_default_models_csv: >-
+  {{ [openwebui_default_models | default('', true)] | flatten | join(',')
+     | split(',') | map('trim') | reject('equalto', '') | join(',') }}
+
+# Site-wide defaults for every user's Settings > Interface (Open WebUI's
+# default interface settings, set through the admin API by
+# tasks/openwebui_interface_defaults.yml). A user's own choice still wins.
+# Only the keys listed here are set on each run; other keys, for example
+# ones set in the admin UI, are kept. Removing a key here does not remove
+# it from Open WebUI: set the value you want instead. {} skips the task.
+#
+# showInputSelections shows what is on for a chat (the Thinking switch,
+# selected tools and skills) as chips beside the + menu. Open WebUI 0.13.3
+# added the setting, off by default, which left the Thinking switch visible
+# only inside the + menu. Clicking the Thinking chip opens its level
+# setting; its x turns thinking off for the chat.
+openwebui_default_interface_settings:
+  showInputSelections: true
+
+# Thinking switch: the reasoning selector in the Open WebUI chat input
+# (tasks/openwebui_reasoning.yml). A "Thinking" switch appears in the
+# chat input of every reasoning-capable model; on sends the level each
+# user picks in the switch's settings (low / medium / high), off sends
+# reasoning_effort none. false removes it from every model and disables
+# both filter functions.
+openwebui_reasoning_switch_enabled: true
+
+# New chats start with the switch on, matching a LiteLLM default effort
+# that already has the model thinking. false starts them off.
+openwebui_reasoning_switch_default_on: true
+
+# Read the model list from LiteLLM: the switch goes on every model whose
+# model_info has supports_reasoning: true, and the off state (none) only
+# where it also has supports_none_reasoning_effort: true. For a vLLM model
+# both come from vllm_reasoning_parser / vllm_reasoning_efforts. A router
+# (auto, adaptive) counts as reasoning-capable when every model it can
+# route to is, and as accepting "none" when every one of them does.
+openwebui_reasoning_discover_models: true
+
+# Hand-picked additions and removals, as LiteLLM model_names. _extra adds
+# the switch, _off_models_extra also marks a model as accepting "none"
+# (only list models that really can switch thinking off), _exclude wins
+# over both and over discovery.
+openwebui_reasoning_models_extra: []
+openwebui_reasoning_off_models_extra: []
+openwebui_reasoning_models_exclude: []
+
+# Agent Skills discovery index (litellm_settings.public_skills_index).
+# Serves every proxy-hosted skill in ./skills at
+# /.well-known/agent-skills/index.json for `npx skills add` (opencode,
+# Claude Code, and other Agent Skills clients). Unauthenticated by design;
+# set false to keep skills visible only to keys with store access.
+skills_public_index_enabled: true
+
+# Local embedding model: Hugging Face Text Embeddings Inference on CPU
+# (compose service text-embeddings), served by LiteLLM as `local-embedding`
+# on its OpenAI-compatible /v1/embeddings. Semantic skill search uses it by
+# default, so search works whichever chat providers are on: Claude has no
+# embedding model and Gemini's needs the Gemini key. bge-small-en-v1.5 is
+# 33M parameters and 384 dimensions, about 130 MB on disk and 550 MB of
+# memory; it is downloaded from Hugging Face into the text_embeddings_data
+# volume on first start. The revision pins the Hugging Face commit, so a
+# fresh download cannot change the vectors. It cannot chat, so it carries
+# model_info.stack_hidden and stays out of Open WebUI's chat picker (hidden
+# by tasks/claude_subscription.yml, which hides every stack_hidden row).
+# false removes the service and the model.
+local_embedding_enabled: true
+local_embedding_model: BAAI/bge-small-en-v1.5
+local_embedding_model_revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+local_embedding_image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
+
+# Model LiteLLM's semantic skill search embeds with
+# (litellm_settings.skill_search_embedding_model; GET /v1/skills?query= and
+# the skill_search MCP tool). Any model_name the proxy serves that can embed
+# works: local-embedding, Gemini's text-embedding, a Bedrock embedding
+# model, or one registered at runtime such as a vLLM embedding server.
+# Empty picks local-embedding when local_embedding_enabled, else Gemini's
+# text-embedding when litellm_gemini_models_enabled, else none: semantic
+# search is then off, and listing skills still works.
+litellm_skill_search_embedding_model: ""
+
+# Derived, not configured: the model the template renders.
+litellm_skill_search_embedding_model_effective: >-
+  {{ litellm_skill_search_embedding_model
+     or ('local-embedding' if local_embedding_enabled | bool
+         else ('text-embedding' if litellm_gemini_models_enabled | default(false) | bool else '')) }}
+
+# Skills tool: every skill in ./skills as the LiteLLM MCP server `skills`
+# (skills-mcp, container-scripts/skills_mcp_server.py) with the tools search
+# (by meaning), list and get, open to every LiteLLM key. It lets agents and
+# clients without skill support of their own find and load the same skills
+# the playbook publishes to LiteLLM, Open WebUI and opencode; LiteLLM's own
+# skill search only serves admin keys (README "Skills tool"). Open WebUI gets
+# it as a tool server on every model, opencode in its config. false removes
+# the service, the server entry and the tool server.
+skills_mcp_enabled: true
+
+# Embedding model skills-mcp ranks by meaning with (any model_name the proxy
+# serves that can embed). Empty uses the skill-search model
+# (litellm_skill_search_embedding_model_effective, local-embedding by
+# default); with none at all, search ranks by keywords only.
+skills_mcp_embedding_model: ""
+
+# Derived, not configured: the model skills-mcp embeds with.
+skills_mcp_embedding_model_effective: "{{ skills_mcp_embedding_model or litellm_skill_search_embedding_model_effective }}"
+
+# Saved memories per user, shared by every client of the gateway: Open
+# WebUI, opencode, Claude Code and other MCP clients with a LiteLLM key
+# (README "Saved memories"). Three pieces, all on this one switch:
+#   - memory-mcp (compose service; container-scripts/memory_mcp_server.py on
+#     the litellm image's Python): the LiteLLM MCP server `memory`, with the
+#     tools save, get, search, list and delete. The memories themselves live
+#     in LiteLLM's own memory store (/v1/memory, the admin UI's Memory page),
+#     one row per memory, key user:<owner>:<name>.
+#   - litellm/memory_callback.py (a startup hook) names the owner of every
+#     memory tool call and signs it with memory_mcp_signing_key (vault);
+#     memory-mcp refuses a call without that signature. Open WebUI users are
+#     their Keycloak email; any other caller is the user_id stored on its
+#     LiteLLM key, so a key that should share memories with its owner's Open
+#     WebUI account needs user_id set to that email.
+#   - the memory index: the same hook adds the user's memory names and
+#     one-line descriptions to chat requests that carry the memory tools,
+#     the way Claude Code loads its MEMORY.md index, and models read full
+#     entries with the tools.
+# Open WebUI gets the tool server on every model (models.default_metadata).
+# false removes the service, the hook and the tool server; the stored
+# memories stay in LiteLLM's database.
+memory_mcp_enabled: true
+
+# The index in chat requests. false keeps the tools and drops the index.
+# max_chars caps it (newest memories first; older ones stay reachable
+# through search and list).
+memory_index_enabled: true
+memory_index_max_chars: 2000
+
+# Limits per user: characters of one memory, and memories in all.
+memory_max_content_chars: 4000
+memory_max_per_user: 500
+
+# Embedding model that memory search ranks by meaning with (any model_name
+# the proxy serves that can embed). Empty uses the skill-search model
+# (litellm_skill_search_embedding_model_effective, local-embedding by
+# default); with none at all, search ranks by keywords only.
+memory_embedding_model: ""
+
+# Open WebUI's own memory (Settings > Personalization > Memory), which only
+# Open WebUI can use. Off while the shared memory is on, so each user has
+# one memory. Set through the admin API on every run
+# (tasks/openwebui_interface_defaults.yml).
+openwebui_builtin_memories_enabled: "{{ not (memory_mcp_enabled | bool) }}"
+
+# Derived, not configured: the model memory-mcp embeds with.
+memory_embedding_model_effective: "{{ memory_embedding_model or litellm_skill_search_embedding_model_effective }}"
+
+# Skills for every model (README "Skills for every model"):
+# litellm/skills_callback.py, a startup hook, hands the skills to callers
+# that wired none of their own. A request with no tools gets LiteLLM's
+# `skills` MCP server as a gateway tool, which LiteLLM runs itself, and a
+# short index of the skills in its system prompt: on /v1/messages streaming
+# or not, on /v1/chat/completions only when not streaming. A request that
+# already carries the skills tools gets the index only. Requests with other
+# tools, Open WebUI's (it lists its own copy of the skills) and Claude
+# models (the subscription passthrough) are left alone. Needs the `skills`
+# server (skills_mcp_enabled); while LiteLLM has none registered, the hook
+# adds nothing. Follows that switch; false drops the hook and keeps the
+# server for MCP clients.
+skills_mcp_hook_enabled: "{{ skills_mcp_enabled | default(false) | bool }}"
+
+# The index: each description cut to this many characters, the whole index
+# to max_chars (skills past it are listed by name only).
+skills_index_description_chars: 200
+skills_index_max_chars: 6000
+
+# Chat from the LiteLLM admin UI (its Playground and Chat pages). Off:
+# people talk to models through Open WebUI or an API client (opencode, an
+# IDE), and the admin UI stays for keys, models, usage and settings. Two
+# pieces, both off this one switch:
+#   - general_settings.enable_chat_ui in litellm/config.yaml removes the
+#     Chat page. LiteLLM has no switch for the Playground, so its menu
+#     entry stays.
+#   - litellm/ui_chat_block_callback.py (a startup hook) refuses model
+#     calls made with an admin UI session or from the proxy's own /ui
+#     pages, with a message that names Open WebUI. MCP tool tests, search
+#     tool tests and model health checks from the UI keep working.
+litellm_ui_chat_enabled: false
+
+# Source of the freecad-mcp fork the freecad image is built from.
+# tasks/freecad_source.yml downloads the archive into the build context
+# (freecad/) on the stack host and checks it against the sha256; the repo
+# does not carry it. The ref, the file name and the checksum belong
+# together, and freecad/Dockerfile repeats the ref (FREECAD_MCP_REF) and
+# the file name (its COPY line): change all of them in one go.
+freecad_mcp_source_ref: 6f0b530b3e562cb9b7fd79709d84191413fbd17d
+freecad_mcp_source_url: "https://github.com/alosslessdev/freecad-mcp/archive/{{ freecad_mcp_source_ref }}.tar.gz"
+freecad_mcp_source_file: "freecad-mcp-{{ freecad_mcp_source_ref[:7] }}.tar.gz"
+freecad_mcp_source_sha256: 5f94c3087b73501fe63b93abdf1fd9478cb531a8ecc6bba09cb49d26cdb9a0d7
+
+# Where the compose template mounts ./container-scripts (read-only) in the
+# litellm and open-webui containers. tasks/container_script.yml runs the
+# scripts from this path with the container's own Python.
+container_scripts_mount: /opt/stack-scripts
+
+# Derived, not configured: the JSON report of the latest
+# tasks/container_script.yml run, parsed. Empty when that run was skipped
+# or failed. Read it right after the import; the next run replaces it.
+container_script_report: "{{ container_script_run.stdout | default('{}', true) | from_json }}"

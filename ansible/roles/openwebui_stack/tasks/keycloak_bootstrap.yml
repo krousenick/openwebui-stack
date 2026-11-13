@@ -1,0 +1,140 @@
+---
+- name: Create platform realm
+  middleware_automation.keycloak.keycloak_realm:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    enabled: true
+    display_name: "Platform"
+    registration_allowed: "{{ keycloak_registration_enabled | bool }}"
+    # Email-as-username renames provisioned users to their emails on every
+    # module update, breaking keycloak_users.yml lookups (409 duplicate
+    # email). Keep false; self-registration collects a username instead.
+    registration_email_as_username: false
+    duplicate_emails_allowed: false
+    reset_password_allowed: true
+    login_with_email_allowed: true
+    # Email verification needs an SMTP server in Keycloak (Realm Settings →
+    # Email); without one the verification mail cannot be sent and a
+    # self-registered user is stuck on the Verify Email screen. Off until
+    # SMTP is configured.
+    verify_email: "{{ keycloak_verify_email | bool }}"
+    ssl_required: external
+    brute_force_protected: true
+    permanent_lockout: false
+    failure_factor: 5
+    wait_increment_seconds: 60
+    max_failure_wait_seconds: 900
+    # Applies to self-registration and manual credential sets; existing
+    # passwords are grandfathered. Keycloak 26 defaults to Argon2 hashing.
+    password_policy: >-
+      length(12) and upperCase(1) and digits(1) and notUsername
+      and notEmail and passwordHistory(5)
+    # Refresh token rotation: each refresh invalidates the previous token
+    # (refresh_token_max_reuse 0 = no reuse window; an old token fails
+    # immediately after a newer one is issued).
+    revoke_refresh_token: true
+    refresh_token_max_reuse: 0
+    # Login and admin event logging. events_expiration is seconds of DB
+    # retention (30 days); admin events include the full change payload.
+    events_enabled: true
+    events_expiration: 2592000
+    admin_events_enabled: true
+    admin_events_details_enabled: true
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
+
+- name: Create Keycloak provisioner client
+  middleware_automation.keycloak.keycloak_client:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    client_id: "{{ keycloak_provisioner_client_id }}"
+    name: Keycloak Provisioner
+    protocol: openid-connect
+    enabled: true
+    public_client: false
+    standard_flow_enabled: false
+    implicit_flow_enabled: false
+    direct_access_grants_enabled: false
+    service_accounts_enabled: true
+    full_scope_allowed: true
+    secret: "{{ keycloak_provisioner_client_secret }}"
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
+
+- name: Grant provisioner realm management roles
+  middleware_automation.keycloak.keycloak_user_rolemapping:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    client_id: realm-management
+    target_username: "service-account-{{ keycloak_provisioner_client_id }}"
+    roles:
+      - name: manage-clients
+      - name: manage-realm
+      - name: manage-users
+      - name: query-clients
+      - name: query-groups
+      - name: query-users
+      - name: view-clients
+      - name: view-realm
+      - name: view-users
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
+
+# Keycloak 26 admin REST (/admin/realms/...) requires the token to carry the
+# kc-admin-api client scope (its admin-api-audience mapper adds the admin
+# audience to the token). The realm-management roles alone are not enough:
+# without this scope every provisioner token 401s on the admin API ("HTTP 401
+# Unauthorized") while client_credentials still succeeds, which is why the
+# keycloak_app.yml client listing fails. The realm's default scope set for
+# new clients does not include kc-admin-api, so it must be attached to this
+# client explicitly. First ensure the scope exists (it is builtin; the check
+# is idempotent), then attach it as a default scope of the provisioner.
+- name: Ensure the kc-admin-api client scope exists
+  middleware_automation.keycloak.keycloak_client_scope:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    name: kc-admin-api
+    description: "Keycloak Admin REST API audience (builtin)"
+    protocol: openid-connect
+    state: present
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost
+
+- name: Attach the kc-admin-api scope to the provisioner client
+  # Authenticates as the admin user, not as the provisioner. Until this task
+  # has run, a provisioner token lacks the scope and the admin API answers
+  # 401, so on a new realm the provisioner cannot attach the scope itself
+  # (found on a from-scratch deploy, 2026-11-10).
+  middleware_automation.keycloak.keycloak_client_scope_type:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm }}"
+    client_id: "{{ keycloak_provisioner_client_id }}"
+    default_client_scopes:
+      - web-origins
+      - service_account
+      - acr
+      - kc-admin-api
+      - profile
+      - roles
+      - basic
+      - email
+    validate_certs: "{{ keycloak_validate_certs }}"
+  delegate_to: localhost

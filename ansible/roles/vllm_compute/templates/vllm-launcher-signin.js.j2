@@ -1,0 +1,198 @@
+// Managed by Ansible (role: vllm_compute). The stack's additions to the LLM
+// Launcher page on {{ inventory_hostname }}: the sign-in chip with its Log out
+// link, (when chat is off) hiding the launcher's "Test chat" button, and
+// (with the single-model slot) a "Tune settings" button on the running model.
+//
+// Sign-in chip:
+// The launcher has no login of its own: oauth2-proxy on this node sits in
+// front of it and serves /oauth2/* on the same origin. Anonymous requests
+// never reach this script (the proxy redirects them to Keycloak first), so a
+// failed lookup here only means the page is being served without the proxy
+// (a direct loopback visit on the node), and the chip stays hidden.
+{% if not (vllm_launcher_chat_enabled | bool) %}
+
+// Chat is off on this stack (vllm_launcher_chat_enabled: false): people talk
+// to models through Open WebUI or an API client. The launcher's "Test chat"
+// button has no class or id, so it is hidden by its label. This only tidies
+// the page; the image's entry point (stack_entry.py) refuses the request.
+(function () {
+  'use strict';
+
+  var LABELS = ['Test chat', 'Hide test chat'];
+
+  function hideChatButtons() {
+    var buttons = document.querySelectorAll('button');
+    for (var i = 0; i < buttons.length; i += 1) {
+      var button = buttons[i];
+      if (LABELS.indexOf((button.textContent || '').trim()) !== -1) {
+        // Inline and !important: the launcher's .btn rule sets display, which
+        // would win over the hidden attribute.
+        button.style.setProperty('display', 'none', 'important');
+      }
+    }
+  }
+
+  function start() {
+    hideChatButtons();
+    // React re-creates the server cards on every status change.
+    new MutationObserver(hideChatButtons)
+      .observe(document.body, { childList: true, subtree: true });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
+{% endif %}
+{% if vllm_launcher_slot | bool %}
+
+// Single-model slot (vllm_launcher_swap): the Launch page opens on the running
+// model with the settings it runs with as its first preset ("Running now"),
+// and launching from there restarts it with the changes (stack_slot.py). The
+// "Tune settings" button on the running server's card is a shortcut to that
+// page: it presses the top bar's "Launch a model", which opens Launch afresh.
+(function () {
+  'use strict';
+
+  var LABEL = 'Tune settings';
+  var MARK = 'data-stack-tune';
+  var LIVE = /^(Running|Starting up)/;
+
+  function openLaunch() {
+    var buttons = document.querySelectorAll('.topbar-btn-primary');
+    for (var i = 0; i < buttons.length; i += 1) {
+      if ((buttons[i].textContent || '').trim() === 'Launch a model') {
+        buttons[i].click();
+        return;
+      }
+    }
+  }
+
+  function syncTuneButtons() {
+    var cards = document.querySelectorAll('.server-card');
+    for (var i = 0; i < cards.length; i += 1) {
+      var controls = cards[i].querySelector('.server-controls');
+      if (!controls) {
+        continue;
+      }
+      var badge = cards[i].querySelector('.server-heading .badge');
+      var live = LIVE.test(((badge && badge.textContent) || '').trim());
+      var existing = controls.querySelector('[' + MARK + ']');
+      if (live && !existing) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-ghost sm';
+        button.setAttribute(MARK, '');
+        button.title = 'Open Launch with the settings this model runs with. Launching restarts it with your changes.';
+        button.appendChild(document.createTextNode(LABEL));
+        button.addEventListener('click', openLaunch);
+        controls.insertBefore(button, controls.firstChild);
+      } else if (!live && existing) {
+        existing.parentNode.removeChild(existing);
+      }
+    }
+  }
+
+  function start() {
+    syncTuneButtons();
+    // React re-creates the server cards on every status change.
+    new MutationObserver(syncTuneButtons)
+      .observe(document.body, { childList: true, subtree: true, characterData: true });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
+{% endif %}
+
+(function () {
+  'use strict';
+
+  var END_SESSION ='https://auth.{{ vllm_launcher_effective_domain }}/realms/{{ vllm_launcher_effective_realm }}/protocol/openid-connect/logout';
+  var NODE = {{ inventory_hostname | to_json }};
+
+  function logoutHref() {
+    // Keycloak's end_session_endpoint needs id_token_hint. oauth2-proxy
+    // replaces a literal "{id_token}" in the rd URL with the session's ID
+    // token at sign_out time. Keep the placeholder raw here and encode the
+    // whole URL exactly once: encoded twice, the proxy never sees the
+    // literal placeholder and Keycloak receives "{id_token}".
+    var endSession = END_SESSION
+      + '?id_token_hint={id_token}'
+      + '&post_logout_redirect_uri=' + encodeURIComponent(window.location.origin);
+    return '/oauth2/sign_out?rd=' + encodeURIComponent(endSession);
+  }
+
+  function build(info) {
+    var label = info.email || info.preferredUsername || info.user || 'Signed in';
+
+    var box = document.createElement('div');
+    box.id = 'stack-auth';
+    box.className = 'stack-auth';
+
+    var chip = document.createElement('span');
+    chip.className = 'stack-auth__chip';
+    chip.title = label + ' on ' + NODE;
+    chip.appendChild(document.createTextNode(label));
+
+    var node = document.createElement('span');
+    node.className = 'stack-auth__node';
+    node.appendChild(document.createTextNode('· ' + NODE));
+    chip.appendChild(node);
+
+    var logout = document.createElement('a');
+    logout.className = 'stack-auth__logout';
+    logout.href = logoutHref();
+    logout.appendChild(document.createTextNode('Log out'));
+
+    box.appendChild(chip);
+    box.appendChild(logout);
+    return box;
+  }
+
+  function mount(box) {
+    // Preferred home: the launcher's top bar, left of its own buttons. The
+    // bar is rendered by React after this script runs and can be re-created,
+    // so the observer below re-attaches the chip whenever it goes missing.
+    var bar = document.querySelector('.topbar-right');
+    if (bar) {
+      if (box.parentNode !== bar) {
+        box.classList.remove('stack-auth--floating');
+        bar.insertBefore(box, bar.firstChild);
+      }
+      return;
+    }
+    if (!box.isConnected) {
+      box.classList.add('stack-auth--floating');
+      document.body.appendChild(box);
+    }
+  }
+
+  function start(info) {
+    var box = build(info);
+    mount(box);
+    new MutationObserver(function () { mount(box); })
+      .observe(document.body, { childList: true, subtree: true });
+  }
+
+  fetch('/oauth2/userinfo', { credentials: 'same-origin' })
+    .then(function (response) { return response.ok ? response.json() : null; })
+    .then(function (info) {
+      if (!info || (!info.email && !info.user && !info.preferredUsername)) {
+        return;
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function () { start(info); });
+      } else {
+        start(info);
+      }
+    })
+    .catch(function (error) {
+      console.warn('Could not load oauth2-proxy user info:', error);
+    });
+})();

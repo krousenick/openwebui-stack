@@ -1,0 +1,257 @@
+---
+# ===========================================================================
+# Aux model servers (vllm_aux_enabled / vllm_aux_models)
+# ===========================================================================
+# One systemd unit + launch script per vllm_aux_models entry, deployed on
+# the entry's hosts subset (every node when hosts is omitted). Each entry
+# is a single-model standalone `vllm serve` (no Ray, no cross-node
+# sharding) on its own host port. Flow: merge list entries with the
+# vllm_aux_default_* defaults -> validate -> build this node's slice
+# (vllm_aux_local_models) -> open the port in the cluster zone -> deploy
+# scripts + units -> clean up entries no longer placed on this node ->
+# start and wait for /health.
+# ===========================================================================
+
+- name: Resolve the fully-qualified aux image reference
+  # Podman with short-name-mode=enforcing cannot resolve an unqualified
+  # image non-interactively; every pull from the systemd units fails with
+  # exit 125. Docker accepts the FQ form too.
+  ansible.builtin.set_fact:
+    vllm_aux_image_fq: "{{ (vllm_aux_image
+      if ('/' in vllm_aux_image and ('.' in vllm_aux_image.split('/')[0] or ':' in vllm_aux_image.split('/')[0]))
+      else 'docker.io/' ~ vllm_aux_image) }}"
+  when: vllm_aux_enabled | bool
+
+- name: Build the effective aux model list
+  # Accumulate one merged dict per entry: explicit keys win, missing keys
+  # take the vllm_aux_default_* values, port defaults to base_port + index,
+  # hosts normalizes to a list of inventory hostnames. The result
+  # (vllm_aux_effective_models) drives the firewall, the LiteLLM snippet,
+  # and the per-node slice below.
+  ansible.builtin.set_fact:
+    vllm_aux_effective_models: "{{ (vllm_aux_effective_models | default([])) + [aux_merged] }}"
+  vars:
+    aux_defaulted_model: "{{ item.model | default(vllm_aux_default_model) }}"
+    aux_defaulted_name: "{{ item.name | default(aux_defaulted_model.split('/')[-1]) }}"
+    aux_hosts: "{{ item.hosts | default('all') }}"
+    aux_merged:
+      name: "{{ aux_defaulted_name }}"
+      model: "{{ aux_defaulted_model }}"
+      served_model_name: "{{ item.served_model_name | default(aux_defaulted_name) }}"
+      hosts: "{{ ((groups['vllm_compute'] | default([]) | list)
+        if (aux_hosts | string | lower == 'all')
+        else ((aux_hosts | string | split(',')) if (aux_hosts is string) else (aux_hosts | list))) }}"
+      port: "{{ item.port | default(vllm_aux_base_port | int + ansible_loop.index0) | int }}"
+      tensor_parallel_size: "{{ item.tensor_parallel_size | default(vllm_aux_default_tensor_parallel_size) | int }}"
+      max_model_len: "{{ item.max_model_len | default(vllm_aux_default_max_model_len) }}"
+      gpu_memory_utilization: "{{ item.gpu_memory_utilization | default(vllm_aux_default_gpu_memory_utilization) }}"
+      extra_args: "{{ item.extra_args | default(vllm_aux_default_extra_args) }}"
+      api_key: "{{ item.api_key | default(vllm_aux_api_key) }}"
+      reasoning_parser: "{{ item.reasoning_parser | default(vllm_aux_default_reasoning_parser) }}"
+      chat_template_kwargs: "{{ item.chat_template_kwargs | default(vllm_aux_default_chat_template_kwargs) }}"
+      reasoning_effort: "{{ item.reasoning_effort | default(vllm_aux_default_reasoning_effort) }}"
+      reasoning_efforts: "{{ item.reasoning_efforts | default(vllm_aux_default_reasoning_efforts) }}"
+      repetition_detection: "{{ item.repetition_detection | default(vllm_aux_default_repetition_detection) }}"
+  loop: "{{ vllm_aux_models | default([]) }}"
+  loop_control:
+    extended: true
+  when: vllm_aux_enabled | bool
+
+- name: Assert aux model list is valid
+  ansible.builtin.assert:
+    that:
+      - vllm_aux_effective_models is defined
+      - vllm_aux_effective_models | length > 0
+      - aux_item.model | length > 0
+      - aux_item.name | length > 0
+      - aux_item.tensor_parallel_size | int >= 1
+      - aux_item.tensor_parallel_size | int <= vllm_gpus_per_node | int
+      - aux_item.hosts | length > 0
+      - aux_item.hosts | difference(groups['vllm_compute'] | default([]) | list) | length == 0
+    fail_msg: >-
+      vllm_aux_enabled is true but the aux model list is empty or an entry
+      is invalid (empty model or name, tensor_parallel_size exceeding the
+      GPUs detected on {{ inventory_hostname }}, or a hosts entry that is
+      not a vllm_compute inventory hostname).
+  loop: "{{ vllm_aux_effective_models | default([]) }}"
+  loop_control:
+    loop_var: aux_item
+  when: vllm_aux_enabled | bool
+
+- name: Assert aux host ports are unique
+  # Ports default to base_port + index, so explicit ports are the only way
+  # to collide; two servers cannot bind the same host port. Aux and flux
+  # share the host-port space on a node, and none may take the primary
+  # API port.
+  ansible.builtin.assert:
+    that:
+      - (vllm_aux_effective_models | default([]) | map(attribute='port') | list
+          + vllm_flux_effective_models | default([]) | map(attribute='port') | list
+          + [vllm_port | int])
+        | unique | length
+        == (vllm_aux_effective_models | default([]) | length
+          + vllm_flux_effective_models | default([]) | length + 1)
+    fail_msg: "Two or more aux/flux models (or the primary API) share the same host port."
+  when: vllm_aux_enabled | bool
+
+- name: Build this node's aux model slice
+  # The entries placed on THIS node; drives the firewall ports, the deploy
+  # loops, and the cleanup keep-set. Empty when aux is disabled, which is
+  # what makes the cleanup block below tear everything down.
+  ansible.builtin.set_fact:
+    vllm_aux_local_models: "{{ (vllm_aux_local_models | default([])) + [aux_item] }}"
+  loop: "{{ vllm_aux_effective_models | default([]) }}"
+  loop_control:
+    loop_var: aux_item
+  when: inventory_hostname in aux_item.hosts
+
+- name: Open the aux API port in the cluster firewall
+  # Same vllm-cluster zone the primary model uses; the firewalld module is
+  # idempotent, so reruns with unchanged ports report no change. Only the
+  # ports of entries placed on this node open here. Skipped when firewalld
+  # is not running (the primary firewall block has the same gate).
+  ansible.posix.firewalld:
+    zone: vllm-cluster
+    port: "{{ aux_item.port }}/tcp"
+    state: enabled
+    permanent: true
+    immediate: true
+  when:
+    - vllm_aux_enabled | bool
+    - vllm_manage_firewall | bool
+    - vllm_firewalld_state.stdout | default('') | trim == 'running'
+  loop: "{{ vllm_aux_local_models | default([]) }}"
+  loop_control:
+    loop_var: aux_item
+  register: vllm_aux_fw_ports
+  # Same concurrent-writer race as the zone source task (firewall.yml).
+  failed_when: >-
+    vllm_aux_fw_ports is failed and
+    'ALREADY_ENABLED' not in (vllm_aux_fw_ports.msg | default(''))
+
+- name: Deploy the aux launch scripts and systemd units
+  when: vllm_aux_enabled | bool
+  block:
+    - name: Create the aux per-model install directories
+      ansible.builtin.file:
+        path: "{{ vllm_install_dir }}/{{ aux_item.name }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: "{{ vllm_aux_local_models | default([]) }}"
+      loop_control:
+        loop_var: aux_item
+
+    - name: Deploy the aux launch scripts
+      ansible.builtin.template:
+        src: vllm-aux.sh.j2
+        dest: "{{ vllm_install_dir }}/{{ aux_item.name }}/vllm-aux.sh"
+        owner: root
+        # The group the unit runs as: a rootless service account can run
+        # the script, not rewrite it.
+        group: "{{ vllm_run_group }}"
+        mode: "0750"
+      loop: "{{ vllm_aux_local_models | default([]) }}"
+      loop_control:
+        loop_var: aux_item
+      notify: Restart aux services
+
+    - name: Deploy the aux systemd units
+      ansible.builtin.template:
+        src: vllm-aux.service.j2
+        dest: /etc/systemd/system/vllm-aux-{{ aux_item.name }}.service
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ vllm_aux_local_models | default([]) }}"
+      loop_control:
+        loop_var: aux_item
+      notify:
+        - Reload systemd
+        - Restart aux services
+
+- name: Remove aux units for models no longer configured
+  # Model switching: whatever is NOT in this node's slice of
+  # vllm_aux_effective_models gets its unit stopped+disabled, unit file
+  # removed, and launch script directory deleted. This block runs even
+  # when aux is disabled, which fully tears down any aux deployment after
+  # vllm_aux_enabled: false - including units left by a host removed from
+  # an entry's hosts list.
+  block:
+    - name: List deployed aux units
+      ansible.builtin.find:
+        paths: /etc/systemd/system
+        patterns: "vllm-aux-*.service"
+      register: vllm_aux_deployed_units
+
+    - name: Stop and disable removed aux units
+      # failed_when: false tolerates units that are already stopped/absent.
+      ansible.builtin.systemd:
+        name: "{{ aux_unit.path | basename }}"
+        state: stopped
+        enabled: false
+      loop: "{{ vllm_aux_deployed_units.files }}"
+      loop_control:
+        loop_var: aux_unit
+      when: >-
+        (aux_unit.path | basename | regex_replace('^vllm-aux-(.*)[.]service$', '\\1'))
+        not in (vllm_aux_local_models | default([]) | map(attribute='name') | list)
+      failed_when: false
+
+    - name: Remove removed aux unit files
+      ansible.builtin.file:
+        path: "{{ aux_unit.path }}"
+        state: absent
+      loop: "{{ vllm_aux_deployed_units.files }}"
+      loop_control:
+        loop_var: aux_unit
+      when: >-
+        (aux_unit.path | basename | regex_replace('^vllm-aux-(.*)[.]service$', '\\1'))
+        not in (vllm_aux_local_models | default([]) | map(attribute='name') | list)
+
+    - name: Remove removed aux launch script directories
+      ansible.builtin.file:
+        path: "{{ vllm_install_dir }}/{{ aux_unit.path | basename | regex_replace('^vllm-aux-(.*)[.]service$', '\\1') }}"
+        state: absent
+      loop: "{{ vllm_aux_deployed_units.files }}"
+      loop_control:
+        loop_var: aux_unit
+      when: >-
+        (aux_unit.path | basename | regex_replace('^vllm-aux-(.*)[.]service$', '\\1'))
+        not in (vllm_aux_local_models | default([]) | map(attribute='name') | list)
+
+- name: Enable and start the aux services
+  ansible.builtin.systemd:
+    name: vllm-aux-{{ aux_item.name }}
+    state: started
+    enabled: true
+    daemon_reload: true
+  loop: "{{ vllm_aux_local_models | default([]) }}"
+  loop_control:
+    loop_var: aux_item
+  when: vllm_aux_enabled | bool
+
+- name: Wait for the aux APIs to accept requests
+  # vllm serve /health reports ok once the model is loaded; a first run
+  # includes the HF download, so the retries are configurable.
+  ansible.builtin.uri:
+    url: http://127.0.0.1:{{ aux_item.port }}/health
+    timeout: 5
+  register: vllm_aux_health
+  until: vllm_aux_health.status == 200
+  retries: "{{ vllm_aux_health_wait_retries | default(vllm_health_wait_retries) }}"
+  delay: 10
+  changed_when: false
+  loop: "{{ vllm_aux_local_models | default([]) }}"
+  loop_control:
+    loop_var: aux_item
+  when: vllm_aux_enabled | bool
+
+- name: Confirm the aux APIs are healthy
+  ansible.builtin.debug:
+    msg: "Aux API for {{ aux_item.name }} healthy on {{ vllm_host_ip }}:{{ aux_item.port }}."
+  loop: "{{ vllm_aux_local_models | default([]) }}"
+  loop_control:
+    loop_var: aux_item
+  when: vllm_aux_enabled | bool

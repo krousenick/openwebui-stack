@@ -1,0 +1,599 @@
+---
+# ===========================================================================
+# LLM Launcher (vllm_launcher_enabled)
+# ===========================================================================
+# A web control panel for this node's inference server: download models,
+# tune `vllm serve` settings with per-flag guidance, start/stop servers,
+# read their logs. Upstream: Local-LLM-Launcher-GUI, pinned to
+# vllm_launcher_version.
+#
+# What lands on a launcher node (vllm_launcher_node, see
+# launcher_placement.yml):
+#   vllm-launcher       container built on the node's vLLM image; GUI on
+#                       127.0.0.1:vllm_launcher_port, never on the network
+#   vllm-launcher-auth  oauth2-proxy on vllm_launcher_auth_port; signs users
+#                       in against Keycloak on the stack host and forwards
+#                       to the GUI. Traefik on the stack host publishes it
+#                       as https://launcher-<host>.<domain> (site.yml).
+#
+# Flow: resolve the stack settings (domain, realm, OIDC client secret) ->
+# check out the source -> build the image (launcher + sign-in chip) ->
+# render secrets, scripts, units -> open the gate port -> start and wait.
+# A node that stops qualifying (launcher disabled, removed from
+# vllm_launcher_hosts, became a ray worker) gets the units removed; its
+# data directory and image stay.
+# ===========================================================================
+
+- name: Prepare the LLM Launcher
+  when: vllm_launcher_node | bool
+  block:
+    - name: Validate the launcher settings
+      ansible.builtin.assert:
+        that:
+          - vllm_launcher_version | length > 0
+          - vllm_launcher_port | int >= 1
+          - vllm_launcher_port | int <= 65535
+          - vllm_launcher_auth_port | int >= 1
+          - vllm_launcher_auth_port | int <= 65535
+          - vllm_launcher_auth_port | int != vllm_launcher_port | int
+          - vllm_launcher_auth_port | int != vllm_port | int
+          - vllm_launcher_port | int != vllm_port | int
+        fail_msg: >-
+          vllm_launcher_version must be set, and vllm_launcher_port,
+          vllm_launcher_auth_port and vllm_port must be three different TCP
+          ports.
+
+    # --- stack settings ----------------------------------------------------
+    # The gate needs the stack's domain, Keycloak realm, and the secret of
+    # the `launcher` OIDC client that playbooks/site.yml creates. Each one
+    # resolves in order: its variable -> the controller environment (the
+    # vllm-remote runner sources the deployed .env before the play) -> the
+    # .env site.yml rendered, read from the stack host in the inventory or,
+    # when the inventory has none, from the controller itself (ansible runs
+    # on the stack host there).
+    - name: Read the stack .env for the launcher gate settings
+      ansible.builtin.slurp:
+        src: "{{ vllm_launcher_stack_env_file }}"
+      register: vllm_launcher_stack_env_raw
+      delegate_to: "{{ vllm_launcher_stack_host }}"
+      become: false
+      no_log: true
+      # A missing file or an unreachable stack host falls through to the
+      # assert below, which says what to set instead.
+      failed_when: false
+      ignore_unreachable: true
+      when: >-
+        ((vllm_launcher_domain | string | length == 0)
+         and (lookup('ansible.builtin.env', 'DOMAIN') | default('', true) | length == 0))
+        or ((vllm_launcher_keycloak_realm | string | length == 0)
+            and (lookup('ansible.builtin.env', 'KEYCLOAK_REALM') | default('', true) | length == 0))
+        or ((vllm_launcher_ssl_insecure_skip_verify | string | length == 0)
+            and (lookup('ansible.builtin.env', 'LAUNCHER_SSL_INSECURE_SKIP_VERIFY') | default('', true) | length == 0))
+        or ((vllm_launcher_oidc_client_secret | string | length == 0)
+            and (lookup('ansible.builtin.env', 'LAUNCHER_OIDC_CLIENT_SECRET') | default('', true) | length == 0))
+        or ((vllm_launcher_slot | bool)
+            and (vllm_launcher_status_token | string | length == 0)
+            and (lookup('ansible.builtin.env', 'LAUNCHER_STATUS_TOKEN') | default('', true) | length == 0))
+
+    - name: Resolve the launcher gate settings
+      # The group references are '\1' with ONE backslash: inside {{ }} in a
+      # block scalar Ansible hands the backslash to the filter as written,
+      # and regex_search rejects '\\1'.
+      vars:
+        vllm_launcher_stack_env_text: >-
+          {{ vllm_launcher_stack_env_raw.content | default('') | b64decode }}
+      ansible.builtin.set_fact:
+        vllm_launcher_effective_domain: >-
+          {{ (vllm_launcher_domain | string | trim)
+             or (lookup('ansible.builtin.env', 'DOMAIN') | default('', true) | trim)
+             or (vllm_launcher_stack_env_text
+                 | regex_search('^DOMAIN=(.*)$', '\1', multiline=True)
+                 | default([''], true) | first | trim) }}
+        vllm_launcher_effective_realm: >-
+          {{ (vllm_launcher_keycloak_realm | string | trim)
+             or (lookup('ansible.builtin.env', 'KEYCLOAK_REALM') | default('', true) | trim)
+             or (vllm_launcher_stack_env_text
+                 | regex_search('^KEYCLOAK_REALM=(.*)$', '\1', multiline=True)
+                 | default([''], true) | first | trim)
+             or 'platform' }}
+        vllm_launcher_effective_client_secret: >-
+          {{ (vllm_launcher_oidc_client_secret | string | trim)
+             or (lookup('ansible.builtin.env', 'LAUNCHER_OIDC_CLIENT_SECRET') | default('', true) | trim)
+             or (vllm_launcher_stack_env_text
+                 | regex_search('^LAUNCHER_OIDC_CLIENT_SECRET=(.*)$', '\1', multiline=True)
+                 | default([''], true) | first | trim) }}
+        vllm_launcher_effective_skip_verify: >-
+          {{ ((vllm_launcher_ssl_insecure_skip_verify | string | trim)
+              or (lookup('ansible.builtin.env', 'LAUNCHER_SSL_INSECURE_SKIP_VERIFY') | default('', true) | trim)
+              or (vllm_launcher_stack_env_text
+                  | regex_search('^LAUNCHER_SSL_INSECURE_SKIP_VERIFY=(.*)$', '\1', multiline=True)
+                  | default([''], true) | first | trim)
+              or 'false') | bool }}
+        vllm_launcher_effective_status_token: >-
+          {{ (vllm_launcher_status_token | string | trim)
+             or (lookup('ansible.builtin.env', 'LAUNCHER_STATUS_TOKEN') | default('', true) | trim)
+             or (vllm_launcher_stack_env_text
+                 | regex_search('^LAUNCHER_STATUS_TOKEN=(.*)$', '\1', multiline=True)
+                 | default([''], true) | first | trim) }}
+      no_log: true
+
+    - name: Require the stack settings the launcher gate needs
+      ansible.builtin.assert:
+        that:
+          - vllm_launcher_effective_domain | length > 0
+          - vllm_launcher_effective_client_secret | length > 0
+          - vllm_launcher_effective_client_secret not in ['CHANGE_ME', 'change-me-before-production']
+        fail_msg: >-
+          The launcher gate on {{ inventory_hostname }} has no stack domain
+          or no OIDC client secret. Run playbooks/site.yml first with
+          launcher_enabled: true: it creates the `launcher` Keycloak client
+          and renders LAUNCHER_OIDC_CLIENT_SECRET next to DOMAIN in
+          {{ vllm_launcher_stack_env_file }} (looked for on
+          {{ vllm_launcher_stack_host }}). Otherwise set vllm_launcher_domain
+          and vllm_launcher_oidc_client_secret, or export DOMAIN and
+          LAUNCHER_OIDC_CLIENT_SECRET on the controller.
+        quiet: true
+
+    - name: Require the status token the stack's follower reads the slot with
+      # vllm_launcher_slot: one model at a time, and the stack keeps LiteLLM
+      # in step with it through GET /api/stack/slot, which this token guards.
+      ansible.builtin.assert:
+        that:
+          - vllm_launcher_effective_status_token | length >= 16
+          - vllm_launcher_effective_status_token not in ['CHANGE_ME', 'change-me-before-production']
+        fail_msg: >-
+          {{ inventory_hostname }} runs the launcher's single-model slot
+          (vllm_launcher_owns_primary and vllm_launcher_swap) but has no
+          status token. Run playbooks/site.yml first: it generates
+          launcher_status_token and renders LAUNCHER_STATUS_TOKEN into
+          {{ vllm_launcher_stack_env_file }} on {{ vllm_launcher_stack_host }}.
+          Otherwise set vllm_launcher_status_token, or export
+          LAUNCHER_STATUS_TOKEN on the controller.
+        quiet: true
+      when: vllm_launcher_slot | bool
+
+    - name: Derive the portal hostname and the base image reference
+      # Same hostname rule as launcher_fqdns in the openwebui_stack role
+      # (prefix + inventory hostname, lowercased, anything outside
+      # [a-z0-9-] replaced with "-"). The base image is qualified for the
+      # same reason as vllm_image_fq: podman cannot resolve short names
+      # non-interactively.
+      vars:
+        vllm_launcher_base_first_segment: "{{ vllm_launcher_base_image.split('/')[0] }}"
+      ansible.builtin.set_fact:
+        vllm_launcher_fqdn: >-
+          {{ vllm_launcher_hostname_prefix
+             ~ (inventory_hostname | lower | regex_replace('[^a-z0-9-]', '-'))
+             ~ '.' ~ vllm_launcher_effective_domain }}
+        vllm_launcher_base_image_fq: >-
+          {{ vllm_launcher_base_image
+             if ('/' in vllm_launcher_base_image
+                 and ('.' in vllm_launcher_base_first_segment
+                      or ':' in vllm_launcher_base_first_segment
+                      or vllm_launcher_base_first_segment == 'localhost'))
+             else 'docker.io/' ~ vllm_launcher_base_image }}
+
+    # --- image -------------------------------------------------------------
+    - name: Install git for the launcher checkout
+      ansible.builtin.package:
+        name: git
+        state: present
+
+    - name: Create the launcher directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ vllm_launcher_dir }}", mode: "0755" }
+        - { path: "{{ vllm_launcher_dir }}/build", mode: "0755" }
+        - { path: "{{ vllm_launcher_dir }}/build/overlay", mode: "0755" }
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Create the launcher data directory
+      # The launcher's state; settings.json may hold a Hugging Face token.
+      # Owned by whoever the container runs as (root inside a rootless
+      # container is the service account on the host).
+      ansible.builtin.file:
+        path: "{{ vllm_launcher_data_dir }}"
+        state: directory
+        owner: "{{ vllm_run_user }}"
+        group: "{{ vllm_run_group }}"
+        mode: "0700"
+
+    - name: Hand existing launcher data to the service account
+      # Settings, favorites and logs written while the launcher ran as root.
+      ansible.builtin.shell: |
+        set -eu
+        dir={{ vllm_launcher_data_dir | quote }}
+        if [ -n "$(find "$dir" -xdev ! -user {{ vllm_run_user | quote }} -print -quit)" ]; then
+            chown -R {{ (vllm_run_user ~ ':' ~ vllm_run_group) | quote }} "$dir"
+            echo changed
+        fi
+      args:
+        executable: /bin/bash
+      register: vllm_launcher_data_owner
+      changed_when: "'changed' in vllm_launcher_data_owner.stdout"
+      when: vllm_rootless | bool
+
+    - name: Check out the launcher source
+      # The checkout is never edited in place (the sign-in chip is applied
+      # inside the image build), so force only discards stray local changes.
+      ansible.builtin.git:
+        repo: "{{ vllm_launcher_repo }}"
+        dest: "{{ vllm_launcher_dir }}/build/src"
+        version: "{{ vllm_launcher_version }}"
+        force: true
+      register: vllm_launcher_checkout
+
+    - name: Render the launcher Dockerfile
+      ansible.builtin.template:
+        src: vllm-launcher.Dockerfile.j2
+        dest: "{{ vllm_launcher_dir }}/build/Dockerfile"
+        owner: root
+        group: root
+        mode: "0644"
+      register: vllm_launcher_dockerfile
+
+    - name: Keep the git metadata out of the build context
+      ansible.builtin.copy:
+        dest: "{{ vllm_launcher_dir }}/build/.dockerignore"
+        content: |
+          src/.git
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Deploy the image overlay (entry point, slot, page patch script, stylesheet)
+      # stack_entry.py is the image's entry point: it refuses the launcher's
+      # chat requests unless vllm_launcher_chat_enabled, and loads
+      # stack_slot.py when the run script names a slot settings file.
+      # patch_ui.py runs in the build and fits the page (sign-in chip, chat
+      # controls hidden). The slot module ships in every image; it only runs
+      # when the run script names the settings file.
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ vllm_launcher_dir }}/build/overlay/{{ item.dest }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - { src: vllm-launcher-entry.py, dest: stack_entry.py }
+        - { src: vllm-launcher-slot.py, dest: stack_slot.py }
+        - { src: vllm-launcher-patch-ui.py, dest: patch_ui.py }
+        - { src: vllm-launcher-signin.css, dest: stack-auth.css }
+      loop_control:
+        label: "{{ item.dest }}"
+      register: vllm_launcher_overlay_static
+
+    - name: Render the page script (sign-in chip, chat button hidden, Tune settings)
+      # Carries the Keycloak end_session URL for single logout, so it is
+      # rendered per deployment. With the slot it also puts a "Tune
+      # settings" button on the running server's card.
+      ansible.builtin.template:
+        src: vllm-launcher-signin.js.j2
+        dest: "{{ vllm_launcher_dir }}/build/overlay/stack-auth.js"
+        owner: root
+        group: root
+        mode: "0644"
+      register: vllm_launcher_overlay_script
+
+    - name: Check whether the launcher image exists
+      # vllm_container_argv: the image must be in the store the unit uses,
+      # which is the service account's when the containers run rootless.
+      ansible.builtin.command:
+        argv: "{{ vllm_container_argv + ['image', 'inspect', vllm_launcher_image] }}"
+      register: vllm_launcher_image_state
+      changed_when: false
+      failed_when: false
+
+    - name: Build the launcher image
+      # Rebuilt when the image is missing or any build input changed. The
+      # base image is the node's vLLM image, already present for the vLLM
+      # units, so a normal build pulls nothing and (with the launcher's
+      # dependencies already in that image) needs no network;
+      # vllm_launcher_rebuild adds --pull to pick up a newer base. On a node
+      # that just moved to rootless the service account's store is still
+      # empty, and this build is what pulls the base image into it.
+      ansible.builtin.command:
+        argv: >-
+          {{ vllm_container_argv + ['build']
+             + (['--pull'] if vllm_launcher_rebuild | bool else [])
+             + ['--tag', vllm_launcher_image, vllm_launcher_dir ~ '/build'] }}
+      changed_when: true
+      when: >-
+        vllm_launcher_image_state.rc != 0
+        or vllm_launcher_checkout is changed
+        or vllm_launcher_dockerfile is changed
+        or vllm_launcher_overlay_static is changed
+        or vllm_launcher_overlay_script is changed
+        or vllm_launcher_rebuild | bool
+      register: vllm_launcher_build
+
+    # --- secrets and state --------------------------------------------------
+    - name: Generate the gate's cookie secret once
+      # Node-local: it only signs this portal's session cookie, so it never
+      # leaves the node. force: false keeps the first value on later runs
+      # (a new secret would sign everyone out). oauth2-proxy accepts 16, 24
+      # or 32 bytes.
+      ansible.builtin.copy:
+        dest: "{{ vllm_launcher_dir }}/cookie-secret"
+        content: "{{ lookup('ansible.builtin.password', '/dev/null', chars=['ascii_letters', 'digits'], length=32) }}"
+        owner: root
+        group: root
+        mode: "0600"
+        force: false
+      no_log: true
+
+    - name: Read the gate's cookie secret
+      ansible.builtin.slurp:
+        src: "{{ vllm_launcher_dir }}/cookie-secret"
+      register: vllm_launcher_cookie_raw
+      no_log: true
+
+    - name: Record the gate's cookie secret
+      ansible.builtin.set_fact:
+        vllm_launcher_cookie_secret: "{{ vllm_launcher_cookie_raw.content | b64decode | trim }}"
+      no_log: true
+
+    - name: Seed the launcher settings on first deploy
+      # Only the "LAN access" switch (servers bind 0.0.0.0 so LiteLLM on the
+      # stack host can reach them). force: false: after the first deploy the
+      # GUI's Settings page owns this file (token, favorites, benchmarks).
+      ansible.builtin.copy:
+        dest: "{{ vllm_launcher_data_dir }}/settings.json"
+        content: "{{ {'lan_access': vllm_launcher_lan_access | bool} | to_nice_json }}\n"
+        owner: "{{ vllm_run_user }}"
+        group: "{{ vllm_run_group }}"
+        mode: "0600"
+        force: false
+
+    - name: Render the gate's settings
+      # Holds the OIDC client secret and the cookie secret. Root owns it;
+      # the group the gate's unit runs as may read it (podman reads the
+      # --env-file as that account), nobody else.
+      ansible.builtin.template:
+        src: vllm-launcher-auth.env.j2
+        dest: "{{ vllm_launcher_dir }}/auth.env"
+        owner: root
+        group: "{{ vllm_run_group }}"
+        mode: "0640"
+      no_log: true
+      register: vllm_launcher_auth_env
+
+    - name: Render the launcher's secrets
+      # The node's vLLM API key and Hugging Face token (inherited by every
+      # server the GUI starts) and the slot's status token. An --env-file,
+      # so no value shows in the process list. Same ownership as auth.env.
+      ansible.builtin.template:
+        src: vllm-launcher.env.j2
+        dest: "{{ vllm_launcher_dir }}/launcher.env"
+        owner: root
+        group: "{{ vllm_run_group }}"
+        mode: "0640"
+      no_log: true
+      register: vllm_launcher_env_file
+
+    - name: Render the single-model slot settings
+      # Read by stack_slot.py in the launcher container (mounted read-only
+      # at /etc/stack/slot.json): the slot port, rollback, and how LiteLLM
+      # should list the configured model and any other model. No secrets.
+      ansible.builtin.template:
+        src: vllm-launcher-slot.json.j2
+        dest: "{{ vllm_launcher_dir }}/slot.json"
+        owner: root
+        group: "{{ vllm_run_group }}"
+        mode: "0640"
+      register: vllm_launcher_slot_file
+      when: vllm_launcher_slot | bool
+
+    - name: Remove the slot settings from a node without the slot
+      ansible.builtin.file:
+        path: "{{ vllm_launcher_dir }}/slot.json"
+        state: absent
+      register: vllm_launcher_slot_removed
+      when: not (vllm_launcher_slot | bool)
+
+    # --- scripts and units --------------------------------------------------
+    - name: Deploy the launcher run script
+      ansible.builtin.template:
+        src: vllm-launcher.sh.j2
+        dest: "{{ vllm_launcher_dir }}/vllm-launcher.sh"
+        owner: root
+        group: "{{ vllm_run_group }}"
+        mode: "0750"
+      register: vllm_launcher_script
+
+    - name: Deploy the gate run script
+      ansible.builtin.template:
+        src: vllm-launcher-auth.sh.j2
+        dest: "{{ vllm_launcher_dir }}/vllm-launcher-auth.sh"
+        owner: root
+        group: "{{ vllm_run_group }}"
+        mode: "0750"
+      register: vllm_launcher_auth_script
+
+    - name: Deploy the launcher systemd unit
+      ansible.builtin.template:
+        src: vllm-launcher.service.j2
+        dest: /etc/systemd/system/vllm-launcher.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: vllm_launcher_unit
+
+    - name: Deploy the gate systemd unit
+      ansible.builtin.template:
+        src: vllm-launcher-auth.service.j2
+        dest: /etc/systemd/system/vllm-launcher-auth.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: vllm_launcher_auth_unit
+
+    - name: Open the launcher gate and model ports in the cluster firewall
+      # Same vllm-cluster zone as the vLLM API: the gate port for Traefik on
+      # the stack host, plus the range for extra models started from the
+      # GUI. The GUI port itself (loopback) is never opened. Skipped when
+      # firewalld is not running (the primary firewall block has the same
+      # gate).
+      ansible.posix.firewalld:
+        zone: vllm-cluster
+        port: "{{ item }}/tcp"
+        state: enabled
+        permanent: true
+        immediate: true
+      loop: >-
+        {{ [vllm_launcher_auth_port | string]
+           + ([vllm_launcher_model_ports | string]
+              if vllm_launcher_model_ports | string | length > 0 else []) }}
+      when:
+        - vllm_manage_firewall | bool
+        - vllm_firewalld_state.stdout | default('') | trim == 'running'
+      register: vllm_launcher_fw_ports
+      # Same concurrent-writer race as the zone source task (firewall.yml).
+      failed_when: >-
+        vllm_launcher_fw_ports is failed and
+        'ALREADY_ENABLED' not in (vllm_launcher_fw_ports.msg | default(''))
+
+- name: Start the LLM Launcher
+  when: vllm_launcher_node | bool
+  block:
+    # Restarts are explicit tasks, not handlers: flushing handlers here
+    # would also fire the pending flux/aux restarts earlier than a run
+    # without the launcher does.
+    - name: Restart the launcher when its image, script, unit or settings changed
+      # Stops every model server started from the GUI (they are child
+      # processes of the launcher container). A run that changes none of
+      # these never restarts it.
+      ansible.builtin.systemd:
+        name: vllm-launcher
+        state: restarted
+        daemon_reload: true
+      when: >-
+        vllm_launcher_build is changed
+        or vllm_launcher_script is changed
+        or vllm_launcher_unit is changed
+        or vllm_launcher_env_file is changed
+        or vllm_launcher_slot_file is changed
+        or vllm_launcher_slot_removed is changed
+
+    - name: Restart the gate when its settings, script or unit changed
+      # Signs nobody out: sessions live in the browser cookie, and the
+      # cookie secret is kept across runs.
+      ansible.builtin.systemd:
+        name: vllm-launcher-auth
+        state: restarted
+        daemon_reload: true
+      when: >-
+        vllm_launcher_auth_env is changed
+        or vllm_launcher_auth_script is changed
+        or vllm_launcher_auth_unit is changed
+
+    - name: Enable and start the launcher and its gate
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+        daemon_reload: true
+      loop:
+        - vllm-launcher
+        - vllm-launcher-auth
+
+    - name: Wait for the launcher GUI to answer
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ vllm_launcher_port }}/api/about"
+        timeout: 5
+      register: vllm_launcher_health
+      until: vllm_launcher_health.status == 200
+      retries: "{{ vllm_launcher_health_wait_retries }}"
+      delay: 5
+      changed_when: false
+
+    - name: Wait for the launcher gate to answer
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ vllm_launcher_auth_port }}/ping"
+        timeout: 5
+      register: vllm_launcher_auth_health
+      until: vllm_launcher_auth_health.status == 200
+      retries: 12
+      delay: 5
+      changed_when: false
+
+    - name: Show where the launcher is published
+      ansible.builtin.debug:
+        msg: >-
+          LLM Launcher for {{ inventory_hostname }}: https://{{ vllm_launcher_fqdn }}
+          (gate on {{ vllm_host_ip }}:{{ vllm_launcher_auth_port }}, GUI on loopback
+          {{ vllm_launcher_port }}){{ '. The launcher owns the primary model slot: vllm-serve is stopped.'
+             if vllm_launcher_primary_owned | bool else '' }}
+
+- name: Remove the LLM Launcher from nodes that no longer run one
+  # Runs on every node that is not a launcher node, so disabling the
+  # launcher, dropping a host from vllm_launcher_hosts, or switching a node
+  # to a ray worker tears the units down. Nothing happens on a node that
+  # never had one. The data directory (settings, favorites, server logs)
+  # and the image are kept; delete them by hand to reclaim the space.
+  when: not (vllm_launcher_node | bool)
+  block:
+    - name: Check for deployed launcher units
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/{{ item }}.service"
+      loop:
+        - vllm-launcher
+        - vllm-launcher-auth
+      register: vllm_launcher_deployed_units
+
+    - name: Stop and disable removed launcher units
+      # failed_when: false tolerates units that are already stopped.
+      ansible.builtin.systemd:
+        name: "{{ item.item }}"
+        state: stopped
+        enabled: false
+      loop: "{{ vllm_launcher_deployed_units.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stat.exists
+      failed_when: false
+
+    - name: Remove the launcher unit files, scripts, secrets and build context
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/vllm-launcher.service
+        - /etc/systemd/system/vllm-launcher-auth.service
+        - "{{ vllm_launcher_dir }}/vllm-launcher.sh"
+        - "{{ vllm_launcher_dir }}/vllm-launcher-auth.sh"
+        - "{{ vllm_launcher_dir }}/auth.env"
+        - "{{ vllm_launcher_dir }}/launcher.env"
+        - "{{ vllm_launcher_dir }}/slot.json"
+        - "{{ vllm_launcher_dir }}/cookie-secret"
+        - "{{ vllm_launcher_dir }}/build"
+      when: vllm_launcher_deployed_units.results | selectattr('stat.exists') | list | length > 0
+      notify: Reload systemd
+
+    - name: Close the launcher ports in the cluster firewall
+      # Only on a node that had a launcher: the role never touches these
+      # ports on nodes where something else may have opened them.
+      ansible.posix.firewalld:
+        zone: vllm-cluster
+        port: "{{ item }}/tcp"
+        state: disabled
+        permanent: true
+        immediate: true
+      loop: >-
+        {{ [vllm_launcher_auth_port | string]
+           + ([vllm_launcher_model_ports | string]
+              if vllm_launcher_model_ports | string | length > 0 else []) }}
+      when:
+        - vllm_launcher_deployed_units.results | selectattr('stat.exists') | list | length > 0
+        - vllm_manage_firewall | bool
+        - vllm_firewalld_state.stdout | default('') | trim == 'running'
+      register: vllm_launcher_fw_close
+      failed_when: >-
+        vllm_launcher_fw_close is failed and
+        'NOT_ENABLED' not in (vllm_launcher_fw_close.msg | default(''))

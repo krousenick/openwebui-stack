@@ -1,0 +1,109 @@
+---
+# One Open WebUI tool server connection for a LiteLLM MCP server
+# (http://litellm:4000/mcp/<id>, master key), merged into the persisted
+# tool_server.connections row: the entry with the same info.id is replaced,
+# every other connection is kept. Open WebUI reads the row at startup, so it
+# is recreated when the entry changes.
+#
+# Variables: litellm_tool_server_id (the LiteLLM mcp_servers name, also the
+# Open WebUI info.id and the tool ID server:mcp:<id>), litellm_tool_server_name,
+# litellm_tool_server_description. memory.yml predates this file and does the
+# same for `memory`.
+
+- name: Require the tool server settings ({{ litellm_tool_server_id }})
+  ansible.builtin.assert:
+    that:
+      - litellm_master_key | length > 0
+      - openwebui_db_user | length > 0
+      - openwebui_db_password | length > 0
+      - openwebui_db_name | length > 0
+      - litellm_tool_server_id | length > 0
+    fail_msg: "The {{ litellm_tool_server_id }} tool server needs the LiteLLM key and Open WebUI database settings."
+
+- name: Read current Open WebUI tool server connections ({{ litellm_tool_server_id }})
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+      - -tAc
+      - SELECT value::text FROM config WHERE key = 'tool_server.connections'
+  register: litellm_tool_server_current
+  changed_when: false
+  # Check mode skips this command, leaving stdout empty; the merge then
+  # falls back to an empty list instead of failing to parse "".
+  failed_when: false
+  no_log: true
+
+- name: Merge the connection into the desired tool server list ({{ litellm_tool_server_id }})
+  ansible.builtin.set_fact:
+    litellm_tool_server_desired: >-
+      {{ ((litellm_tool_server_current.stdout | trim | default('', true) or '[]')
+         | from_json
+         | selectattr('info.id', 'defined')
+         | rejectattr('info.id', 'equalto', litellm_tool_server_id)
+         | list
+         | union([{
+             'type': 'mcp',
+             'url': 'http://litellm:4000/mcp/' ~ litellm_tool_server_id,
+             'path': '',
+             'auth_type': 'bearer',
+             'key': litellm_master_key,
+             'config': {'enable': true},
+             'info': {
+               'id': litellm_tool_server_id,
+               'name': litellm_tool_server_name,
+               'description': litellm_tool_server_description,
+             },
+           }])
+         | sort(attribute='info.id')) }}
+  no_log: true
+
+- name: Update the persisted tool server connections ({{ litellm_tool_server_id }})
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - -e
+      - PGPASSWORD={{ openwebui_db_password }}
+      - "{{ compose_project_name }}_postgres"
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -U
+      - "{{ openwebui_db_user }}"
+      - -d
+      - "{{ openwebui_db_name }}"
+    stdin: |
+      UPDATE config SET value = '{{ litellm_tool_server_desired | to_json | replace("'", "''") }}'::json, updated_at = (extract(epoch from now())*1000)::bigint WHERE key = 'tool_server.connections';
+  register: litellm_tool_server_update
+  # Compare parsed structures with sorted keys, not raw strings: psql emits
+  # JSON with its own key order and spacing that never matches to_json
+  # byte-for-byte, which would restart Open WebUI on every run.
+  changed_when: >-
+    ((litellm_tool_server_current.stdout | trim | default('', true) or '[]') | from_json
+     | map('to_json', sort_keys=true) | list | sort)
+    != (litellm_tool_server_desired | map('to_json', sort_keys=true) | list | sort)
+  no_log: true
+
+- name: Recreate Open WebUI to load the tool server ({{ litellm_tool_server_id }})
+  community.docker.docker_compose_v2:
+    project_src: "{{ project_root }}"
+    files:
+      - docker-compose.yml
+    profiles: "{{ docker_compose_profiles }}"
+    services:
+      - open-webui
+    state: present
+    recreate: always
+    wait: true
+    wait_timeout: 180
+  when: litellm_tool_server_update is changed

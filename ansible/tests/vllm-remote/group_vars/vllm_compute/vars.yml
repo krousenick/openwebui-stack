@@ -1,0 +1,203 @@
+---
+# Test configuration for the remote GPU node (tests/vllm-remote). Overrides
+# the production values in group_vars/vllm_compute/vars.yml, which stay
+# untouched for the real cluster.
+#
+# Node: Fedora 44, single RTX 4090 (24GB), podman 5.8.9, firewalld running,
+# SELinux permissive. All data lives under the node user's home: the node
+# has no /mnt/data1 and its /var is small.
+#
+# Site-specific values (node paths, firewall CIDR, controller host) live in
+# vars.local.yml (gitignored, same directory) - group_vars files merge in
+# alphabetical order, so the local file overrides this one. See
+# vars.local.yml.example for the keys.
+
+# Ansible (running on the controller) installs missing pieces on this node:
+# podman is present but the NVIDIA container toolkit / CDI spec is not.
+prerequisites_install_missing: true
+prerequisites_check_nvidia: true
+prerequisites_container_cli: podman
+
+# Podman, not docker. GPU injection via CDI (--device nvidia.com/gpu=all
+# consumes the spec nvidia-ctk generates in the prerequisites role).
+vllm_container_cli: podman
+vllm_container_gpu_flag: "--device nvidia.com/gpu=all"
+
+# The node boots with fips=1. The upstream vllm image (Ubuntu OpenSSL)
+# auto-activates FIPS mode from /proc/sys/crypto/fips_enabled but ships no
+# fips.so, so SSL init dies. Mask the flag; see vllm_mask_fips_flag in role
+# defaults. A Red Hat rhel9 image (FIPS-built) would not need the mask.
+
+# Node data lives under the node user's home; the node's /var is small.
+# Rootful podman storage moves off the small /var onto the home volume.
+# Set vllm_podman_storage_root and vllm_hf_cache_dir in vars.local.yml.
+#
+# Rootless: a podman node runs its containers as the unprivileged `vllm`
+# account by default (vllm_container_rootless, role defaults), and the next
+# run moves this node over: it stops the root units, hands the Hugging Face
+# cache to the account, and pulls the images again into the account's own
+# store (25 GB; the model is down meanwhile). Before that run, move the
+# cache out of the login user's home: the account cannot enter a home with
+# mode 0700, and the role refuses to start the move while it cannot (it
+# stops nothing in that case). On the same filesystem `mv` is instant:
+#   sudo mkdir -p /home/vllm-data && sudo mv <old cache dir> /home/vllm-data/huggingface
+# then set vllm_hf_cache_dir to the new path in vars.local.yml. The
+# account's images land under its own home (/home/vllm), which is on the
+# large volume here, so vllm_rootless_storage_root can stay empty. To keep
+# the node rootful instead, set vllm_container_rootless: false there.
+
+# Single node: standalone replica (ray pipeline sharding needs a multi-node
+# cluster). TP=1 matches the single GPU; LiteLLM gets one endpoint.
+vllm_deployment_mode: standalone
+vllm_tensor_parallel_size: 1
+vllm_pipeline_parallel_size: 1
+
+# A/B candidate on a single 24GB RTX 4090: Gemma 4 26B-A4B MoE (25.2B
+# total, 3.8B active, 128 experts/8 routed per token) - the newest
+# generation that fits this card, Apache 2.0 (Google moved Gemma 4 off
+# the old Gemma Terms), image input included (covers the vision-analyst
+# use case on the coding box). Live-tuned against vllm/vllm-openai
+# v0.33.0 on this node; model id, ungated status, and 17.2GB weight
+# total verified by listing the repo's safetensors via the HF API.
+# Third-party AWQ (cyankiwi, 965K downloads, compressed-tensors W4A16):
+# Google publishes no W4A16 vLLM build for the 26B-A4B (only QAT Q4_0
+# GGUF for llama.cpp, per the official recipe which suggests
+# --quantization int8_per_channel_weight_only for vLLM on the raw
+# weights); this AWQ is the community's most-used vLLM-ready 4-bit.
+# Evidence this is a real contender vs Qwen3-Coder-30B (research
+# 2026-11-03, sources recorded in the repo docs):
+#   - Local multi-seed coding bench (3 seeds, real Go test execution):
+#     Gemma 4 26B is the most consistent quantized coder (14/15 on all
+#     seeds, 4.0/10 hard-exam ceiling, quant-insensitive); Qwen3-Coder
+#     30B matches on easy (14/15) at 3.7/10 hard.
+#   - Independent indexes put Qwen3-Coder ahead on raw capability
+#     (SWE-bench ~51.6% class vs Gemma trailing on Codeforces 1718);
+#     Gemma wins on consistency under quantization, vision, and KV cost.
+# Memory plan, all on-GPU, no offloads, ample headroom everywhere:
+#   - AWQ 4-bit weights ~17.2GiB of the 23.6GiB card; 0.90 util reserves
+#     21.2GiB, leaving ~4.0GiB for KV + activations.
+#   - Gemma 4 26B uses sliding-window attention (25 of 30 layers at a
+#     1024-token window; 5 global layers, 2 KV heads @ dim 512):
+#     ~20KiB/token fp16, so vLLM's hybrid KV manager should fit far
+#     more tokens than the Qwen MoE did (~140K+ est vs 114K measured).
+#     fp8 KV halves that again - MEASURE the real line from the logs
+#     before trusting the estimate (every number on this node has been
+#     measured, not projected).
+#   - 256K window (model-native ceiling): fp8 KV grew the pool to 289,427
+#     tokens (measured at 128K window), comfortably above 262,144, so the
+#     full max_position_embeddings now fits. Trade-off: a single 256K
+#     request occupies ~91% of the pool (1.10x concurrency) vs 2.21x at
+#     128K; concurrent full-window requests queue behind the first one.
+#     The LiteLLM context-compaction callback trims oversized histories
+#     for models with smaller windows, so clients are protected either way.
+vllm_model: cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit
+vllm_served_model_name: gemma-4-26b-a4b
+vllm_max_model_len: 262144
+vllm_gpu_memory_utilization: 0.90
+
+# Adaptive-router registration (litellm/config.yaml's "adaptive" router
+# lists this model in available_models). Tier 2 = mid quality, matching the
+# auto router's MEDIUM tier pairing with gemini-3.8-flash; strengths mirror
+# what a 26B-A4B local model is good at. Self-hosted, so its price is 0.
+vllm_adaptive_quality_tier: "2"
+vllm_adaptive_strengths: ["code_generation", "code_understanding", "analytical_reasoning"]
+vllm_adaptive_input_cost_per_token: "0.0"
+vllm_extra_args:
+  - "--kv-cache-dtype"
+  - "fp8"
+  - "--max-num-seqs"
+  - "16"
+  - "--enforce-eager"
+  - "--enable-auto-tool-choice"
+  - "--tool-call-parser"
+  - "gemma4"
+# Gemma 4 emits reasoning traces; the parser splits them into the reasoning
+# field instead of inline in content, and the LiteLLM model_info gets
+# supports_reasoning: true. Gemma 4 thinking is off by default, so the
+# chat-template kwargs turn it on server-side (request-level kwargs still
+# win per the vLLM docs). The template variable is enable_thinking
+# (default false); a {thinking: true} kwarg is silently ignored.
+vllm_reasoning_parser: gemma4
+vllm_chat_template_kwargs:
+  enable_thinking: true
+# Default thinking level LiteLLM merges into requests that send none;
+# a per-request reasoning_effort from a client overrides it.
+vllm_reasoning_effort: medium
+# Levels the opencode/MAGIE thinking picker offers. Gemma 4 thinking is
+# on/off: none disables it; low/medium/high all enable it at about the
+# same depth (measured 239-318 completion tokens on one prompt, 2026-11-09).
+vllm_reasoning_efforts: [none, low, medium, high]
+
+vllm_repetition_detection:
+  max_pattern_size: 20
+  min_pattern_size: 3
+  min_count: 4
+
+# LLM Launcher: web control panel for this node's inference server
+# (download models, tune `vllm serve` with a rating per setting, start and
+# stop servers), published as https://launcher-vllm-node-01.<domain> behind
+# an oauth2-proxy gate that signs in against Keycloak on the stack host.
+# Off until wanted. To turn it on: set launcher_enabled: true for the stack
+# (group_vars/all/vars.yml), point the portal at this node in the stack
+# inventory (launcher_nodes / launcher_node_addresses in
+# inventory/hosts.local.yml), run playbooks/site.yml, then set this true and
+# run `run.sh inference`. The runner sources the deployed .env, which is
+# where the gate gets DOMAIN, KEYCLOAK_REALM and LAUNCHER_OIDC_CLIENT_SECRET.
+#
+# One 4090 at 0.90 leaves no room for a second model, so the GUI can only
+# start something once it owns the primary slot: vllm_launcher_owns_primary
+# true keeps vllm-serve installed but stopped, freeing the GPU and port 8000
+# for the GUI. The launcher then runs one model at a time on port 8000
+# (vllm_launcher_swap, on by default): a launch replaces the running model,
+# and the stack's launcher follower points LiteLLM at whatever it serves.
+# Nothing serves until a model is launched, and nothing relaunches it after
+# a reboot or a vllm-launcher restart.
+#
+# Both switches are off (the role defaults) and are deliberately not set in
+# this file: set them in vars.local.yml. A variable set here wins over the
+# same variable in vars.local.yml, because Ansible reads the files of this
+# directory in alphabetical order and vars.local.yml comes first.
+#   vllm_launcher_enabled: true
+#   vllm_launcher_owns_primary: true
+
+# The compute segment the controller reaches the node on (set in
+# vars.local.yml). The API port opens in the vllm-cluster zone for LiteLLM;
+# Ray ports stay open for later ray-mode runs.
+vllm_manage_firewall: true
+
+# One 4090 cannot co-run the primary model and a flux server; the single-GPU
+# flux cleanup path is covered by the rig tests instead.
+vllm_flux_enabled: false
+
+# Aux models exercise the hardware-aware placement layer on real hardware,
+# but NOT on this node: the 30B primary at 0.90 leaves nothing for a second
+# server, and the 31G-RAM box has no headroom for co-running CPU tiers
+# (the lockup lesson). Disabled here; the rig test (tests/vllm-rig) covers
+# the aux deploy/cleanup paths, and the gatekeeper belongs on a node with a
+# spare GPU via its hosts key when one exists.
+vllm_aux_enabled: false
+vllm_aux_models: []
+
+# First run pulls the ~18GB GPTQ-Int4 weights before /health can pass
+# (the ~10GB vLLM image is already cached on the node); 180 x 10s = 30
+# minutes covers a slow link.
+vllm_health_wait_retries: 180
+
+# Supply via the controller environment (VLLM_API_KEY) or override here.
+vllm_api_key: local-vllm-key
+
+# vLLM image. The Red Hat rhel9 images are FIPS-built (no mask needed) but
+# require registry.redhat.io credentials - export REGISTRY_REDHAT_IO_USER /
+# REGISTRY_REDHAT_IO_PASS on the controller (or podman login on the node)
+# and switch to one of:
+#   registry.redhat.io/rhoai/odh-vllm-cuda-rhel9:v2.25.12-1791275271
+#   registry.redhat.io/rhaii-fast/vllm-omni-cuda-rhel9:3.6.0-fast.2-1791209357
+#   registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.2-1790621718a
+# Until credentials exist the run uses the upstream Ubuntu image with the
+# FIPS mask (the node boots fips=1; see vllm_mask_fips_flag in defaults).
+vllm_image: "vllm/vllm-openai:latest"
+vllm_mask_fips_flag: true
+
+# Controller (stack host) address for the Loki push API. The role default
+# resolves it from the openwebui group, which this test inventory does not
+# define, so set it in vars.local.yml.

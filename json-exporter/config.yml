@@ -1,0 +1,108 @@
+# Scrapes Chatterbox TTS Server v2 JSON endpoints (devnen/Chatterbox-TTS-Server).
+# The old port-4123 monitoring API was removed upstream in v2.0.0; these modules
+# map the surviving endpoints on port 8004. Field paths verified against the
+# live /api/ui/initial-data and /api/model-info responses.
+#
+# json_exporter 0.8 notes:
+# - JSON booleans auto-convert to 1/0 metrics.
+# - `values` maps JSON values to export values; leave it unset for raw numerics.
+# - gjson `#` suffix counts array/object entries.
+
+modules:
+  # /api/ui/initial-data: UI bootstrap + comprehensive health check.
+  # Endpoint reachability itself is Prometheus's synthetic
+  # up{module="chatterbox_initial_data"}.
+  chatterbox_initial_data:
+    metrics:
+      - name: chatterbox_model_loaded
+        path: '{.model_info.loaded}'
+        help: 1 when the TTS model is loaded
+        value: '{.model_info.loaded}'
+
+      # Numeric sample rate as the value; engine identity in labels.
+      - name: chatterbox_engine
+        path: '{.model_info.sample_rate}'
+        help: Active engine identity (value = sample rate)
+        labels:
+          engine_type: '{.model_info.type}'
+          class_name: '{.model_info.class_name}'
+          device: '{.model_info.device}'
+        value: '{.model_info.sample_rate}'
+
+      - name: chatterbox_config_sample_rate
+        path: '{.config.audio_output.sample_rate}'
+        help: Configured output sample rate
+        value: '{.config.audio_output.sample_rate}'
+
+      - name: chatterbox_default_temperature
+        path: '{.config.generation_defaults.temperature}'
+        help: Configured default temperature
+        value: '{.config.generation_defaults.temperature}'
+
+      - name: chatterbox_default_exaggeration
+        path: '{.config.generation_defaults.exaggeration}'
+        help: Configured default exaggeration
+        allow_missing_key: true
+        value: '{.config.generation_defaults.exaggeration}'
+
+      - name: chatterbox_default_cfg_weight
+        path: '{.config.generation_defaults.cfg_weight}'
+        help: Configured default CFG weight
+        allow_missing_key: true
+        value: '{.config.generation_defaults.cfg_weight}'
+
+  # /api/model-info: loaded model status, type, supported languages.
+  chatterbox_model_info:
+    metrics:
+      - name: chatterbox_model_info_loaded
+        path: '{.loaded}'
+        help: Model loaded flag from the model-info endpoint
+        value: '{.loaded}'
+
+      - name: chatterbox_model_info_engine
+        path: '{.sample_rate}'
+        help: Engine identity from model-info (value = sample rate)
+        labels:
+          engine_type: '{.type}'
+          class_name: '{.class_name}'
+          device: '{.device}'
+        value: '{.sample_rate}'
+
+      - name: chatterbox_model_info_turbo_available
+        path: '{.turbo_available_in_package}'
+        help: 1 when the Turbo engine is available in the installed package
+        allow_missing_key: true
+        value: '{.turbo_available_in_package}'
+
+      - name: chatterbox_model_info_multilingual_available
+        path: '{.multilingual_available_in_package}'
+        help: 1 when the multilingual engine is available in the package
+        allow_missing_key: true
+        value: '{.multilingual_available_in_package}'
+
+      - name: chatterbox_model_info_supports_multilingual
+        path: '{.supports_multilingual}'
+        help: 1 when the active engine supports multiple languages
+        allow_missing_key: true
+        value: '{.supports_multilingual}'
+
+      - name: chatterbox_model_info_supports_paralinguistic
+        path: '{.supports_paralinguistic_tags}'
+        help: 1 when the active engine supports paralinguistic tags
+        allow_missing_key: true
+        value: '{.supports_paralinguistic_tags}'
+
+  # /get_predefined_voices: [{display_name, filename}, ...]
+  chatterbox_voices:
+    metrics:
+      # json_exporter 0.8 appends the values key to object metrics, so the
+      # exported series is chatterbox_predefined_voice_present_present.
+      - name: chatterbox_predefined_voice
+        type: object
+        path: '{[*]}'
+        help: One series per predefined voice in the library
+        labels:
+          display_name: '{.display_name}'
+          filename: '{.filename}'
+        values:
+          present: 1

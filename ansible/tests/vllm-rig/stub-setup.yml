@@ -1,0 +1,111 @@
+---
+# One-time preparation of the vllm-test OrbStack VM (run from the "fedora"
+# OrbStack VM, which is the ansible controller for the rig).
+#
+# Installs the host prerequisites the role expects on a Fedora compute node
+# (docker, firewalld), the GPU stubs (fake nvidia-smi / nvidia-ctk, a
+# pre-registered nvidia docker runtime), and builds a CPU-only stand-in for
+# the vllm/vllm-openai image that delegates `vllm start` to the real ray CLI
+# and stubs `vllm serve` with an HTTP /health endpoint.
+- name: Prepare vLLM test rig VM
+  hosts: vllm_compute
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Install rig host packages
+      ansible.builtin.dnf:
+        name:
+          - docker
+          - docker-compose
+          - firewalld
+          - openssh-server
+        state: present
+
+    - name: Enable services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop:
+        - docker
+        - firewalld
+        - sshd
+
+    - name: Install the nvidia-smi stub
+      ansible.builtin.copy:
+        dest: /usr/local/bin/nvidia-smi
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          # Test rig stub: report 2 fake GPUs.
+          case "${1:-}" in
+            --list-gpus)
+              echo "GPU 0: NVIDIA GeForce RTX 409D (UUID: GPU-fake-0000)"
+              echo "GPU 1: NVIDIA GeForce RTX 409D (UUID: GPU-fake-0001)"
+              exit 0
+              ;;
+            "")
+              echo "NVIDIA-SMI 550.54.16  Driver Version: 550.54.16  CUDA Version: 12.4"
+              exit 0
+              ;;
+            *) exit 0 ;;
+          esac
+
+    - name: Install the nvidia-ctk stub
+      ansible.builtin.copy:
+        dest: /usr/local/bin/nvidia-ctk
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          # Test rig stub: pretend to configure the nvidia runtime.
+          if [ "$1" = "runtime" ] && [ "$2" = "configure" ]; then
+            echo "nvidia-ctk stub: runtime configured"
+          fi
+          exit 0
+
+    - name: Pre-register the nvidia docker runtime
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        mode: "0644"
+        content: |
+          {
+            "runtimes": {
+              "nvidia": { "path": "/usr/bin/runc", "runtimeArgs": [] }
+            }
+          }
+      notify: Restart docker
+
+    - name: Build the CPU vLLM stand-in image
+      ansible.builtin.copy:
+        src: vllm-stub.py
+        dest: /opt/vllm-stub-build/vllm-stub.py
+        mode: "0644"
+
+    - name: Write the stub image Dockerfile
+      ansible.builtin.copy:
+        dest: /opt/vllm-stub-build/Dockerfile
+        mode: "0644"
+        content: |
+          FROM rayproject/ray:latest
+          USER root
+          COPY vllm-stub.py /opt/vllm-stub.py
+          RUN echo '#!/bin/bash' > /usr/local/bin/vllm \
+              && echo 'exec python3 /opt/vllm-stub.py "$@"' >> /usr/local/bin/vllm \
+              && chmod +x /usr/local/bin/vllm
+          ENTRYPOINT ["/bin/bash"]
+
+    - name: Build the stub image
+      ansible.builtin.command:
+        argv:
+          - docker
+          - build
+          - -t
+          - vllm/vllm-openai:test-stub
+          - /opt/vllm-stub-build
+      changed_when: true
+
+  handlers:
+    - name: Restart docker
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted

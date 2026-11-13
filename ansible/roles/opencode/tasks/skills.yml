@@ -1,0 +1,29 @@
+---
+# Sync the centralized skills (the stack's ./skills SKILL.md packages,
+# also registered with the LiteLLM Skills Gateway) into the user's global
+# opencode skill directory. OpenCode discovers skills from
+# ~/.config/opencode/skills/<name>/SKILL.md and exposes them through its
+# native `skill` tool; the agent lists them by name/description and loads
+# the full instructions on demand (progressive disclosure).
+#
+# The files are copied, not symlinked, so the checkout cannot leak into
+# the user's home when it is not present (the playbook may run from the
+# deployed tree). Copy is not content-diffed: skills are small and the
+# copy module's default compare (checksum) makes reruns no-ops.
+
+- name: Create the opencode skills directory
+  ansible.builtin.file:
+    path: "{{ opencode_account.home }}/.config/opencode/skills"
+    state: directory
+    owner: "{{ opencode_user.username }}"
+    group: "{{ opencode_account.group }}"
+    mode: "0755"
+
+- name: Sync skills into opencode
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../skills/"
+    dest: "{{ opencode_account.home }}/.config/opencode/skills/"
+    owner: "{{ opencode_user.username }}"
+    group: "{{ opencode_account.group }}"
+    mode: "0644"
+  register: opencode_skills_sync

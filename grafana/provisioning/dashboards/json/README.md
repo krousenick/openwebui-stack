@@ -11,6 +11,9 @@ This directory contains pre-configured Grafana dashboard configurations in JSON 
 - **openwebui-dashboard.json** - Open WebUI application metrics and user activity
 - **postgresql-dashboard.json** - PostgreSQL database performance and health metrics
 - **traefik-dashboard.json** - Traefik reverse proxy metrics and routing statistics
+- **chatterbox-dashboard.json** - Chatterbox TTS status, memory, voices, and container stats
+- **stack-logs-dashboard.json** - Logs from every container
+- **container-resources-dashboard.json** - Docker CPU, memory, network, and disk for every container
 
 ## License Information
 

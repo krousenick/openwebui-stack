@@ -1,0 +1,676 @@
+---
+# ===========================================================================
+# vLLM compute node defaults (role: vllm_compute)
+# ===========================================================================
+# Each node runs the official vllm/vllm-openai container under systemd
+# (docker run, not compose; the compute nodes are separate hosts from the
+# Open WebUI stack). Three layers of inference serving live in this role:
+#
+#   1. The primary chat/completion model - one logical model sharded across
+#      the cluster in one of three topologies (see vllm_deployment_mode).
+#   2. Flux image-generation servers - N independent single-model servers
+#      listed in vllm_flux_models (see the Flux section below).
+#   3. Aux model servers - additional single-model servers (a small
+#      decision model next to a large analyst model, ...) listed in
+#      vllm_aux_models, each placed on a chosen subset of nodes via its
+#      hosts key (see the Aux section below).
+#
+# Topologies for the primary model:
+#
+#   standalone  Every node loads the full model and serves it on
+#              vllm_port. No cross-node traffic at all; LiteLLM load
+#              balances across the endpoints. Highest aggregate
+#              throughput when the model fits in one node's GPUs.
+#
+#   ray + PP    (default) One Ray head + N-1 workers. `vllm serve` runs
+#              only on the head and shards the model by pipeline stage:
+#              --pipeline-parallel-size = node count. Each node holds a
+#              contiguous layer range; inter-node traffic is only the
+#              activations at stage boundaries, which fits 10GbE. Best
+#              for models too large for one node.
+#
+#   ray + TP    Set vllm_cross_node_tensor_parallel: true. Tensor
+#              parallelism spreads across nodes instead:
+#              --tensor-parallel-size = TP-per-node x node count, PP=1.
+#              Every layer's all-reduce crosses the fabric every step, so
+#              25GbE+ is required to be usable.
+#
+# The chosen topology only changes how the model is sharded; from LiteLLM's
+# point of view there is always one model_name (ray) or one per node
+# (standalone).
+# ===========================================================================
+
+vllm_deployment_mode: ray
+
+# Container CLI the launch scripts and systemd units drive. 'docker' keeps
+# the original behavior; 'podman' swaps the binary, drops the docker.service
+# requirement (podman is daemonless), and the docker-exec-based Ray health
+# check for podman-exec. The target node must have the chosen CLI installed
+# (the prerequisites role installs it when prerequisites_install_missing).
+vllm_container_cli: docker
+
+# Run the containers rootless: as an unprivileged service account instead
+# of root. On by default wherever it is possible, which is every podman
+# node; the docker daemon itself runs as root, so docker nodes stay rootful.
+# The units stay system units with the same names; they get
+# User=<vllm_container_user>, and the account gets lingering so its runtime
+# directory exists without a login. Root inside a container is then that
+# account on the host: a process that breaks out of a container holds no
+# root and no sudo. GPU access goes through CDI (vllm_container_gpu_flag:
+# "--device nvidia.com/gpu=all"), which needs no root.
+#
+# Switching an existing node moves it in one run: the role stops the units
+# that still run as root, removes their containers from root's store, hands
+# vllm_hf_cache_dir to the account, and starts the units again. The account
+# has its own image store, so the first start pulls the images again (the
+# copy in root's store can be deleted afterwards: `podman rmi` as root).
+vllm_container_rootless: "{{ vllm_container_cli == 'podman' }}"
+
+# The service account. Created when missing, with no password and no login
+# shell; an account that already exists is used as it is. Do not point this
+# at an account with sudo rights: that hands a container breakout root.
+vllm_container_user: vllm
+# Its home when the role creates it; "" lets useradd choose (/home/<name>).
+vllm_container_user_home: ""
+
+# Where the account keeps images and containers. "" is podman's default,
+# ~/.local/share/containers/storage under its home. Set a path on the data
+# volume when the home filesystem is small.
+vllm_rootless_storage_root: ""
+
+# Rootful podman storage graphroot when vllm_container_cli is podman and
+# vllm_container_rootless is false. The remote node keeps all data under
+# /home (its /var is small); set this per group_vars. Only applied when it
+# differs from the current value.
+vllm_podman_storage_root: /var/lib/containers/storage
+
+# Start every container under an init process (PID 1) that forwards the
+# stop signal to the server and reaps the processes it leaves behind;
+# without one a container whose server ignores SIGTERM is only stopped by
+# the kill after the timeout. docker's --init is tini. podman's own --init
+# is catatonit, so on podman the role installs tini and passes it with
+# --init-path; it must be the static build, because podman mounts the host
+# binary into images that may not carry its libraries. Set the path to ""
+# to use catatonit instead.
+vllm_container_init: true
+vllm_container_init_package: tini-static
+vllm_container_init_path: "{{ '/usr/bin/tini-static' if vllm_container_cli == 'podman' else '' }}"
+
+# Image reference. Podman nodes need a fully-qualified reference: with
+# short-name-mode=enforcing (the Fedora default) an unqualified name like
+# "vllm/vllm-openai" cannot be resolved non-interactively, so every pull
+# from the systemd unit fails with exit 125. The role derives the FQ form
+# (vllm_image_fq) for podman by prefixing docker.io/ when no registry is
+# present; docker accepts both forms, so vllm_image stays unchanged.
+vllm_image: "vllm/vllm-openai:latest"
+vllm_container_name: vllm
+
+# Model to serve. An HF repo id or an absolute path present on every node.
+vllm_model: "Qwen/Qwen3.8-Flash-Next-FP8"
+
+# Model id LiteLLM exposes. Defaults to the repo id's basename.
+vllm_served_model_name: "{{ vllm_model.split('/')[-1] }}"
+
+# Tensor parallelism *within* a node = number of GPUs per node. vLLM shards
+# each layer's matrices across these GPUs (NCCL all-reduce over NVLink/PCIe).
+# Standalone and ray+TP modes pass this straight to --tensor-parallel-size;
+# ray+PP uses it for the within-node dimension of the pipeline stages.
+vllm_tensor_parallel_size: 1
+
+# Pipeline parallelism across nodes - one stage per node. Only meaningful
+# in ray mode: `vllm serve` on the head gets --pipeline-parallel-size.
+# Defaults to the number of vllm_compute hosts (one stage per node).
+vllm_pipeline_parallel_size: "{{ groups['vllm_compute'] | default([]) | length }}"
+
+# Switch ray mode from pipeline-parallel to cross-node tensor parallelism.
+# When true the head runs --tensor-parallel-size = vllm_tensor_parallel_size
+# x node count and PP collapses to 1. Total GPUs = TP x node count.
+# 25GbE+ fabric recommended; 10GbE bottlenecks NCCL all-reduce.
+vllm_cross_node_tensor_parallel: false
+
+# Serving knobs passed to `vllm serve` on the head (ray) or every node
+# (standalone). vllm_extra_args appends raw vLLM CLI flags, e.g.
+#   vllm_extra_args: ["--enforce-eager", "--swap-space 2"]
+vllm_port: 8000
+vllm_max_model_len: 32768
+vllm_gpu_memory_utilization: 0.90
+vllm_extra_args: []
+vllm_api_key: ""
+
+# Reasoning support (primary model). Set to a vLLM reasoning parser name
+# when the model emits reasoning traces (e.g. gemma4 for the Gemma 4
+# series, qwen3 for Qwen3, deepseek_r1 for DeepSeek R1 / QwQ; full list in
+# the vLLM docs). Renders --reasoning-parser <name> on `vllm serve`, so the
+# OpenAI-compatible API returns the reasoning in its own field instead of
+# inline in content, and marks the LiteLLM model_info with
+# supports_reasoning: true. Empty string disables both.
+vllm_reasoning_parser: ""
+
+# Default chat-template kwargs for the primary model, rendered as
+# --default-chat-template-kwargs '<json>' on `vllm serve` and merged with
+# request-level chat_template_kwargs (request values win). This is how a
+# model whose reasoning is off by default thinks: Gemma 4 needs
+# {"enable_thinking": true}; Qwen3 thinks by default and can be turned off with
+# {"enable_thinking": false}. Empty dict omits the flag.
+vllm_chat_template_kwargs: {}
+
+# Default reasoning effort for the primary model, rendered into the
+# LiteLLM litellm_params (reasoning_effort) rather than `vllm serve`:
+# LiteLLM merges it into every request, and a request-level
+# reasoning_effort (from Open WebUI / MAGIE) overrides it. vLLM maps the
+# effort onto the chat template itself (e.g. low/medium/high turn
+# thinking on for Gemma 4, "none" turns it off). One of: none, minimal,
+# low, medium, high, xhigh, max. Empty string sends no default - clients
+# that set reasoning_effort per request still work.
+vllm_reasoning_effort: ""
+
+# Reasoning-effort levels the clients offer for the primary model. Each
+# entry becomes a supports_<level>_reasoning_effort: true flag in the
+# LiteLLM model_info; the opencode/MAGIE LiteLLM plugin turns those flags
+# into the model's thinking-level picker (variants) and shows none when
+# the list is empty, even with supports_reasoning: true. Only meaningful
+# with vllm_reasoning_parser set. Gemma 4 thinking is on/off: none turns
+# it off and every other level turns it on with about the same depth.
+#   vllm_reasoning_efforts: [none, low, medium, high]
+vllm_reasoning_efforts: []
+
+vllm_repetition_detection:
+  max_pattern_size: 20
+  min_pattern_size: 3
+  min_count: 4
+
+# Adaptive-router registration for the primary model. When non-empty, the
+# LiteLLM registration tasks (and the litellm-models.yaml.j2 snippet) add
+# this model_info block, so the model can be listed in an adaptive router's
+# available_models (LiteLLM's adaptive router reads quality_tier +
+# strengths as the cold-start prior and input_cost_per_token as the cost
+# signal). Empty string disables the block entirely.
+#   quality_tier: 1 (light) .. 3 (frontier); see litellm/config.yaml
+#   strengths: request types the model is strong at (code_generation,
+#     code_understanding, technical_design, analytical_reasoning, writing,
+#     factual_lookup, general)
+#   input_cost_per_token: $/token; 0.0 for self-hosted nodes (the adaptive
+#     router's cost weight then always favors this model on price)
+vllm_adaptive_quality_tier: ""
+vllm_adaptive_strengths: []
+vllm_adaptive_input_cost_per_token: "0.0"
+
+# model_info fragment the LiteLLM registration tasks add when the tier is
+# set. Derived, not configured: combine() into the registered model_info so
+# the POST body and the rendered snippet stay in sync. Empty when the tier
+# is unset (aux models never carry adaptive prefs).
+vllm_adaptive_model_info: >-
+  {{ {} if (vllm_adaptive_quality_tier | default('') | string | length == 0)
+     else {
+       'adaptive_router_preferences': {
+         'quality_tier': vllm_adaptive_quality_tier | int,
+         'strengths': vllm_adaptive_strengths,
+       },
+       'input_cost_per_token': vllm_adaptive_input_cost_per_token | float,
+     } }}
+
+# Hugging Face cache directory shared by all vllm containers. Put it on the
+# node's large data volume; the same weights are read by the primary model
+# server and every flux server.
+vllm_hf_cache_dir: /mnt/data1/huggingface
+
+# Hugging Face token for gated models. Set explicitly in group_vars.
+vllm_hf_token: ""
+
+# Ray cluster ports. Every node pins these so the firewalld rules and the
+# ray start command line stay deterministic; they are the ports opened in
+# the vllm-cluster firewalld zone.
+vllm_ray_head_port: 6379        # Ray GCS server (head only)
+vllm_ray_dashboard_port: 8265   # Ray dashboard (head only)
+vllm_ray_node_manager_port: 13377     # per-node worker manager
+vllm_ray_object_manager_port: 13378   # per-node object store
+vllm_ray_runtime_env_agent_port: 13379
+vllm_ray_min_worker_port: 14000 # worker port range (open 14000-15000)
+vllm_ray_max_worker_port: 15000
+
+# The address workers use to reach the Ray head. Computed by the role from
+# the inventory host marked vllm_ray_head: true; set explicitly to override.
+vllm_ray_head_address: ""
+
+# Networking. Ray traffic is unauthenticated and can execute arbitrary
+# code, so the firewalld zone only admits the compute segment. Binding the
+# source routes ALL of that subnet's traffic into the zone, so the zone
+# also admits the ssh service (see tasks/firewall.yml) to keep management
+# access from the subnet working.
+vllm_manage_firewall: true
+vllm_firewall_zone_source: "STACK_HOST_CIDR"
+
+# /health wait budget. The role waits this many 10s attempts for the API;
+# a first run includes the HF model download, so raise it per group_vars
+# (e.g. 180 for a ~15GB model on a slow uplink).
+vllm_health_wait_retries: 60
+
+# Systemd unit names for the primary-model services.
+vllm_ray_service_name: vllm-ray
+vllm_vllm_service_name: vllm-serve
+
+# Install directory for the generated launch scripts (one per service, plus
+# one subdirectory per flux model).
+vllm_install_dir: /opt/vllm
+
+# Container shared memory. Cross-node NCCL/Ray needs a large /dev/shm;
+# 16g matches the default the vllm docs recommend for distributed serving.
+# Only passed on docker: the containers run with --ipc host (they share the
+# host's IPC namespace), and podman rejects --shm-size together with
+# --ipc host ("cannot set shmsize when running in the host IPC Namespace").
+vllm_shm_size: "16g"
+
+# Container CLI GPU injection. With docker, --gpus all needs the NVIDIA
+# container toolkit configured for the docker daemon. With podman, prefer
+# CDI (--device nvidia.com/gpu=all) - override in group_vars when the node
+# registers a compatible nvidia runtime instead.
+vllm_container_gpu_flag: "--gpus all"
+
+# FIPS workaround for containers whose OpenSSL is not FIPS-enabled. On a
+# host booted with fips=1, /proc/sys/crypto/fips_enabled reads 1 inside
+# every container, and Ubuntu/Debian-based images then auto-activate FIPS
+# mode - which fails hard (ssl.SSLError [CRYPTO] unknown error) because
+# those images do not ship the fips.so provider. Bind-mounting /dev/null
+# over the flag (podman only; docker cannot bind over /proc) hides it so
+# the container OpenSSL runs in normal mode. Set true for podman nodes
+# running on a FIPS host.
+vllm_mask_fips_flag: false
+
+# Number of GPUs per node. Autodetected from nvidia-smi when 0; the role
+# asserts tensor_parallel_size never exceeds it, and flux entries clamp the
+# same way.
+vllm_gpus_per_node: 0
+
+# ===========================================================================
+# Flux image-generation servers
+# ===========================================================================
+# Independent of the primary model topology: no Ray, no sharding across
+# nodes. Each vllm_flux_models entry deploys ONE single-model vllm serve
+# container (systemd unit vllm-flux-<name>) on its own host port, on EVERY
+# vllm_compute node. Removing an entry removes its unit and script; editing
+# one restarts it. This is how you switch image models or run several
+# (FLUX.1-dev for quality, FLUX.1-schnell for speed) side by side.
+#
+# Keys per entry (all optional except model):
+#   name                 unit/model id suffix; also the model name LiteLLM
+#                        exposes when served_model_name is unset
+#   model                HF repo id or local path (defaults:
+#                        vllm_flux_default_model)
+#   port                 host port; default vllm_flux_base_port + index
+#   tensor_parallel_size GPUs for this server (default 1 = one GPU)
+#   max_model_len        context length (default 2048; flux prompts are short)
+#   gpu_memory_utilization fraction of GPU memory this server may use
+#   extra_args           raw vLLM CLI flags appended to `vllm serve`
+#
+# GPU budget: each entry consumes tensor_parallel_size GPUs on every node
+# while it is running. The role asserts the tensor_parallel_size of each
+# entry against vllm_gpus_per_node, but total simultaneous servers must fit
+# your GPU count - e.g. on a 4-GPU node you can run four TP=1 flux servers,
+# or one TP=2 server plus the primary model at TP=2, and so on.
+# ===========================================================================
+vllm_flux_enabled: false
+
+vllm_flux_models: []
+
+# Default values merged into every vllm_flux_models entry that does not
+# set its own. Change these to switch the fleet-wide default model.
+vllm_flux_default_model: "black-forest-labs/FLUX.1-dev"
+vllm_flux_default_tensor_parallel_size: 1
+vllm_flux_default_max_model_len: 2048
+vllm_flux_default_gpu_memory_utilization: 0.95
+vllm_flux_default_extra_args: []
+
+# Base host port for flux servers when an entry sets none; entry i binds
+# vllm_flux_base_port + i (8005, 8006, ...).
+vllm_flux_base_port: 8005
+
+# Image for flux containers. Defaults to the main vLLM image.
+vllm_flux_image: "{{ vllm_image }}"
+
+# Optional API key for the flux endpoints. Empty leaves them unauthenticated;
+# they are only reachable on the node's host port.
+vllm_flux_api_key: ""
+
+# ===========================================================================
+# Aux model servers
+# ===========================================================================
+# Additional single-model `vllm serve` servers placed on a chosen subset of
+# the vllm_compute nodes - the orchestration layer for "send this model to
+# the node that has the hardware for it". Like flux entries each is one
+# standalone server (no Ray, no cross-node sharding) with its own systemd
+# unit (vllm-aux-<name>) and host port; unlike flux entries the hosts key
+# selects which nodes run it, so a 24GB vision model can land on the A100
+# node while a 0.6B decider shares a 4090 with other work. Omit hosts (or
+# set it to 'all') to run the model on every node, like flux entries do.
+#
+# Aux and flux share a GPU budget on every node: the role asserts each
+# entry's tensor_parallel_size against vllm_gpus_per_node but not the
+# total across servers - plan co-running servers to fit the node's GPUs.
+#
+# Keys per entry (all optional except model):
+#   name                 unit/model id suffix; also the model name LiteLLM
+#                        exposes when served_model_name is unset
+#   model                HF repo id or local path (defaults:
+#                        vllm_aux_default_model)
+#   hosts                inventory hostnames this entry deploys on; 'all'
+#                        or omit = every vllm_compute node
+#   port                 host port; default vllm_aux_base_port + index
+#   tensor_parallel_size GPUs for this server (default 1 = one GPU)
+#   max_model_len        context length (default vllm_aux_default_max_model_len)
+#   gpu_memory_utilization fraction of GPU memory this server may use
+#   extra_args           raw vLLM CLI flags appended to `vllm serve`
+#   api_key              per-entry API key override (default vllm_aux_api_key)
+#   reasoning_parser     vLLM reasoning parser for reasoning models (default
+#                        vllm_aux_default_reasoning_parser; e.g. qwen3, gemma4,
+#                        deepseek_r1). Renders --reasoning-parser and marks
+#                        the LiteLLM model_info with supports_reasoning: true
+#   chat_template_kwargs default chat-template kwargs rendered as
+#                        --default-chat-template-kwargs (default
+#                        vllm_aux_default_chat_template_kwargs; e.g.
+#                        {enable_thinking: true} to turn Gemma 4 thinking on)
+#   reasoning_effort     default reasoning effort rendered into the LiteLLM
+#                        litellm_params (default
+#                        vllm_aux_default_reasoning_effort; one of none,
+#                        minimal, low, medium, high, xhigh, max). A
+#                        request-level reasoning_effort overrides it
+#   reasoning_efforts    levels the clients offer, rendered as
+#                        supports_<level>_reasoning_effort flags in the
+#                        LiteLLM model_info (default
+#                        vllm_aux_default_reasoning_efforts; see
+#                        vllm_reasoning_efforts)
+#   repetition_detection default repetition-loop detection rendered into the
+#                        LiteLLM litellm_params (default
+#                        vllm_aux_default_repetition_detection); vLLM ends
+#                        generation early on repeated N-gram patterns
+#
+
+# Ports must be unique across the flux AND aux lists per node - they all
+# bind host ports in the same space.
+# ===========================================================================
+vllm_aux_enabled: false
+
+vllm_aux_models: []
+
+vllm_aux_default_model: "Qwen/Qwen3-0.6B"
+vllm_aux_default_tensor_parallel_size: 1
+vllm_aux_default_max_model_len: 8192
+vllm_aux_default_gpu_memory_utilization: 0.90
+vllm_aux_default_extra_args: []
+vllm_aux_default_reasoning_parser: ""
+vllm_aux_default_chat_template_kwargs: {}
+vllm_aux_default_reasoning_effort: ""
+vllm_aux_default_reasoning_efforts: []
+vllm_aux_default_repetition_detection:
+  max_pattern_size: 20
+  min_pattern_size: 3
+  min_count: 4
+
+# Base host port for aux servers when an entry sets none; entry i binds
+# vllm_aux_base_port + i (8010, 8011, ...). 8010 keeps them clear of the
+# flux range (8005+).
+vllm_aux_base_port: 8010
+
+# Image for aux containers. Defaults to the main vLLM image.
+vllm_aux_image: "{{ vllm_image }}"
+
+# API key the aux servers require. Defaults to the primary model's key so
+# one VLLM_API_KEY on the controller covers every layer; LiteLLM sends
+# that same key. Empty (with vllm_api_key also empty) disables auth.
+vllm_aux_api_key: "{{ vllm_api_key }}"
+
+# ===========================================================================
+# Monitoring: Prometheus exporters on each compute node + remote Grafana
+# dashboard. Deployed when vllm_monitoring_enabled is true; the firewalld
+# tasks admit the exporter ports in the vllm-cluster zone, and the OTel
+# collector on the stack host scrapes them (see otel/config.yaml's
+# remote-node / remote-nvidia-gpu jobs).
+# ===========================================================================
+
+vllm_monitoring_enabled: true
+
+# node-exporter: host CPU/memory/disk metrics, no GPU access needed.
+vllm_node_exporter_image: "prom/node-exporter:latest"
+vllm_node_exporter_port: 9100
+
+# GPU exporter flavor. DCGM only supports datacenter GPUs (Tesla, A/H/L/B
+# series); a GeForce card (RTX 4090 etc.) is NOT DCGM-compatible and the
+# nvidia-gpu-exporter (nvidia-smi based) is the correct exporter instead.
+# 'auto' probes the first GPU name via nvidia-smi: GeForce -> nvidia-smi
+# exporter, anything else -> dcgm. Override per group_vars when the fleet
+# is known.
+vllm_gpu_exporter_flavor: auto
+vllm_dcgm_exporter_image: "nvidia/dcgm-exporter:latest"
+vllm_dcgm_exporter_port: 9400
+vllm_nvidia_smi_exporter_port: 9835
+
+# The nvidia-smi exporter (utkuozdemir/nvidia-gpu-exporter, NVML backend)
+# targets consumer GPUs; the port matches the nvidia-gpu-exporter rpm's
+# default so a node with the rpm already running is detected as a served
+# port and reused. NVIDIA_DRIVER_CAPABILITIES=utility is required for the
+# NVML library to be injected into the container.
+vllm_nvidia_smi_exporter_image: "docker.io/utkuozdemir/nvidia_gpu_exporter:latest-nvml"
+
+# Effective exporter list; computed so tasks/firewall.yml (which runs
+# before tasks/monitoring.yml) can open the right ports. The GPU entry is
+# chosen by tasks/monitoring.yml's flavor detection (dcgm for datacenter
+# GPUs, nvidia-smi for GeForce) and injected into vllm_gpu_exporter.
+vllm_gpu_exporter: {}
+vllm_monitoring_exporters: "{{ [{'name': 'vllm-node-exporter', 'image': vllm_node_exporter_image,
+  'port': vllm_node_exporter_port, 'container_port': 9100, 'extra': ['--path.rootfs=/host']}]
+  + ([vllm_gpu_exporter] if (vllm_gpu_exporter | length) > 0 else []) }}"
+
+# Deployment: podman nodes get a systemd quadlet per exporter (systemd owns
+# the lifecycle; units are <name>-container.service); docker nodes use
+# community.docker.docker_container with restart_policy.
+
+# ===========================================================================
+# Log shipping: vllm-serve logs land in journald (the systemd unit runs the
+# podman container). A Grafana Alloy container (vllm-log-shipper.service)
+# tails the journal for vllm-serve.service entries and pushes them to the
+# controller's Loki push API, published on the controller's management IP
+# (docker-compose lgtm service, host port 3100). Deployed when
+# vllm_monitoring_enabled is true; vllm-serve logs then appear in Grafana
+# with service_name/container_name = vllm-serve.
+# ===========================================================================
+vllm_log_shipping_enabled: true
+vllm_alloy_image: "docker.io/grafana/alloy:latest"
+# How far back each journal reader goes on (re)start. Entries older than
+# Loki's rejection window are dropped anyway; 30m keeps restart backfill
+# cheap while surviving short shipper outages.
+vllm_log_ship_max_age: "30m"
+
+# Controller (stack host) address for the Loki push API. Resolved from the
+# openwebui group in the inventory; the fallback covers inventories that
+# define only vllm_compute (e.g. tests/vllm-remote), where group_vars must
+# set vllm_controller_host explicitly.
+vllm_controller_host: "{{ hostvars[groups['openwebui'] | first]['ansible_host']
+  if (groups['openwebui'] | default([]) | length > 0) else '127.0.0.1' }}"
+vllm_loki_push_port: 3100
+vllm_loki_push_url: "http://{{ vllm_controller_host }}:{{ vllm_loki_push_port }}/loki/api/v1/push"
+
+# ===========================================================================
+# LLM Launcher: a web control panel for each independent inference server
+# ===========================================================================
+# Local-LLM-Launcher-GUI (https://github.com/jimdawdy-hub/Local-LLM-Launcher-GUI)
+# is a browser GUI for downloading models and starting `vllm serve` with
+# per-setting guidance (a green/yellow/red rating for every flag against the
+# node's GPU). It only manages the machine it runs on, so the role runs one
+# per independent inference server:
+#
+#   standalone  one launcher on every vllm_compute node
+#   ray         one launcher, on the vllm_ray_head node
+#
+# Each launcher is a container (unit vllm-launcher) built on the node's own
+# vLLM image, so the models it starts run the same vLLM as the Ansible units
+# and read the same Hugging Face cache. It listens on the node's loopback
+# only. An oauth2-proxy container (unit vllm-launcher-auth) is the only way
+# in: it signs users in against Keycloak on the stack host and admits the
+# roles in vllm_launcher_allowed_roles. Traefik on the stack host publishes
+# it as https://launcher-<inventory name>.<domain> (playbooks/site.yml,
+# launcher_enabled in group_vars/all/vars.yml).
+#
+# Models started from the GUI are child processes of the launcher container:
+# restarting vllm-launcher (an image rebuild, a changed unit) stops them, and
+# nothing restarts them after a reboot.
+# ===========================================================================
+vllm_launcher_enabled: false
+
+# Nodes that run a launcher. 'auto' follows the topology above; a list of
+# inventory hostnames (or a comma-separated string) overrides it.
+vllm_launcher_hosts: auto
+
+# Upstream source, pinned to a commit for reproducible images. Point both at
+# a fork to carry local changes. 476cceb is the v0.6.1 release (2026-10-31).
+vllm_launcher_repo: https://github.com/jimdawdy-hub/Local-LLM-Launcher-GUI.git
+vllm_launcher_version: 476cceb9ca1116039dc2f38d49c45a7cd39d50f5
+
+# Base image of the launcher image. The launcher is installed on top of it,
+# so `vllm` inside the container is whatever this image ships.
+vllm_launcher_base_image: "{{ vllm_image }}"
+
+# Image the node builds. The tag follows the pinned commit, so a version bump
+# builds a new image. A changed Dockerfile or sign-in chip rebuilds it too;
+# set vllm_launcher_rebuild: true for one run to pick up a newer base image.
+vllm_launcher_image: "localhost/vllm-launcher:{{ vllm_launcher_version[:12] }}"
+vllm_launcher_rebuild: false
+
+# Raw Dockerfile lines appended after the launcher install, e.g. to add
+# another engine the GUI can drive (llama-server on PATH enables llama.cpp).
+vllm_launcher_extra_build_steps: []
+
+# Loopback port of the GUI on the node. Never opened in the firewall.
+vllm_launcher_port: 8765
+
+# Install directory (build context, scripts, secrets) and the launcher's
+# state: settings.json (may hold a Hugging Face token), saved favorites,
+# benchmark records, and the logs of the servers it started.
+vllm_launcher_dir: "{{ vllm_install_dir }}/launcher"
+vllm_launcher_data_dir: "{{ vllm_launcher_dir }}/data"
+
+# Bind the servers the GUI starts to 0.0.0.0 instead of 127.0.0.1, so
+# LiteLLM on the stack host can reach them. Seeds the launcher's "LAN
+# access" setting on first deploy only; after that the Settings page owns it.
+vllm_launcher_lan_access: true
+
+# Chat from the launcher itself. Off: people talk to models through Open
+# WebUI or an API client (opencode, an IDE), never through the launcher.
+# The image then refuses the launcher's two chat paths and hides their
+# controls: the "Test chat" box on a server card, and the panel that starts
+# a second Open WebUI on the node with no login in front of it. Changing
+# this rebuilds the image and restarts the launcher (which stops the models
+# it started).
+vllm_launcher_chat_enabled: false
+
+# Start every `vllm serve` the GUI launches with the node's API key
+# (VLLM_API_KEY = vllm_api_key), so a GUI-started server is never open on
+# the compute segment and LiteLLM's stored key keeps working. With
+# vllm_launcher_chat_enabled: true the launcher's test chat sends no key,
+# so it reports an error against these servers; set this false to use it
+# and rely on the firewall zone alone.
+vllm_launcher_enforce_api_key: true
+
+# Hand this node's primary model slot to the launcher: the role keeps
+# vllm-serve installed but stopped and disabled, and skips its /health wait,
+# so the GUI has the GPU. Launch on vllm_port with the served model name
+# LiteLLM already knows and the registration keeps routing to it. Standalone
+# mode only (a ray-sharded model stays under Ansible). Set it per host to
+# try the GUI on one node while the others keep serving.
+vllm_launcher_owns_primary: false
+
+# One model at a time, on a node whose launcher owns the primary slot: every
+# launch from the GUI (Launch page, Favorites) stops the running model and
+# starts the new one on vllm_port. Choosing another model swaps it in, and
+# launching the running model with changed settings restarts it with them
+# (the Launch page opens on it, with its settings as the "Running now"
+# preset). The fit advice and the Models page then rate each model against
+# the whole GPU instead of what the running model leaves free. The stack's
+# launcher follower (launcher_follow_enabled) points LiteLLM and Open WebUI
+# at whatever the node serves; it reads the node through the gate with
+# LAUNCHER_STATUS_TOKEN, so run playbooks/site.yml first. No effect without
+# vllm_launcher_owns_primary, where vllm-serve holds the port.
+vllm_launcher_swap: true
+
+# Start the replaced settings again when a swapped-in model exits before it
+# answers (out of memory, a wrong parser). The failed attempt and its log
+# stay on the Servers page.
+vllm_launcher_swap_rollback: true
+
+# Seconds a new model may take to answer before the rollback watcher stops
+# waiting for it (big models take 10-15 minutes to load).
+vllm_launcher_swap_load_timeout: 2700
+
+# Seconds to wait for the stopped model's GPU memory and port to come free
+# before the next model starts anyway.
+vllm_launcher_swap_release_timeout: 90
+
+# How LiteLLM lists a GUI-started model that has a reasoning parser but is
+# not the configured one (vllm_served_model_name keeps its own
+# vllm_reasoning_efforts, vllm_reasoning_effort and adaptive-router
+# settings): the effort levels clients offer (keep none for the Thinking
+# switch's off state) and the default effort for requests that send none
+# ("" leaves the model's own default).
+vllm_launcher_reasoning_efforts: [none, low, medium, high]
+vllm_launcher_reasoning_effort: ""
+
+# Bearer token for the slot status route (GET /api/stack/slot) that the
+# stack's follower reads through the gate. Resolves like the gate settings
+# below: this variable -> LAUNCHER_STATUS_TOKEN in the controller
+# environment -> the .env playbooks/site.yml rendered.
+vllm_launcher_status_token: ""
+
+# Host ports opened in the vllm-cluster zone for extra models started from
+# the GUI (pick one of these as the port in the Launch form). The primary
+# port (vllm_port) is already open. Empty string opens nothing.
+vllm_launcher_model_ports: "8100-8109"
+
+# Extra environment for the launcher container (inherited by the servers it
+# starts), e.g. {HF_HUB_ENABLE_HF_TRANSFER: "1"}.
+vllm_launcher_extra_env: {}
+
+# /api/about wait budget after (re)starting the launcher (x 5s).
+vllm_launcher_health_wait_retries: 24
+
+# --- OAuth gate (oauth2-proxy on the node) ---------------------------------
+vllm_launcher_auth_image: "quay.io/oauth2-proxy/oauth2-proxy:v7.15.1"
+
+# Port oauth2-proxy listens on; opened in the vllm-cluster zone so Traefik
+# on the stack host can reach it. Must match launcher_auth_port in
+# group_vars/all/vars.yml.
+vllm_launcher_auth_port: 4180
+
+# Public name of this node's portal: <prefix><inventory hostname>.<domain>.
+# Must match launcher_hostname_prefix in group_vars/all/vars.yml, which
+# builds the Traefik routes and the Keycloak redirect URIs from it.
+vllm_launcher_hostname_prefix: "launcher-"
+
+# Keycloak client created by playbooks/site.yml and the roles oauth2-proxy
+# admits (keycloak-oidc --allowed-role: "<client>:<client role>" or a realm
+# role name). An empty list admits every signed-in realm user.
+vllm_launcher_oidc_client_id: launcher
+vllm_launcher_allowed_roles:
+  - "launcher:launcher_admin"
+
+# Stack settings the gate needs. Each resolves in order: its variable below
+# -> the controller environment -> the .env playbooks/site.yml rendered
+# (keys DOMAIN, KEYCLOAK_REALM, LAUNCHER_OIDC_CLIENT_SECRET,
+# LAUNCHER_SSL_INSECURE_SKIP_VERIFY in both). The .env is read from
+# vllm_launcher_stack_host: the stack host of this inventory, or the
+# controller itself when the inventory has none (tests/vllm-remote, where
+# ansible runs on the stack host and the runner also sources that .env).
+# Run site.yml first so the `launcher` Keycloak client and its secret exist.
+#   domain        the stack's domain (portal = launcher-<host>.<domain>)
+#   realm         Keycloak realm; 'platform' when nothing else is found
+#   client secret secret of the `launcher` OIDC client
+#   skip verify   true when auth.<domain> serves a certificate the
+#                 oauth2-proxy image does not trust (Cloudflare Origin CA)
+vllm_launcher_domain: ""
+vllm_launcher_keycloak_realm: ""
+vllm_launcher_oidc_client_secret: ""
+vllm_launcher_ssl_insecure_skip_verify: ""
+vllm_launcher_stack_host: "{{ groups['openwebui'] | default([]) | first | default('localhost') }}"
+vllm_launcher_stack_env_file: /mnt/data1/openwebui-stack/.env
+
+# Address the node's oauth2-proxy uses for auth.<domain> (OIDC discovery,
+# token exchange). Pinned to the stack host so the node does not depend on
+# DNS for it; empty string leaves name resolution to the node.
+vllm_launcher_keycloak_host_ip: "{{ vllm_controller_host if vllm_controller_host != '127.0.0.1' else '' }}"

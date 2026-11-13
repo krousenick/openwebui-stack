@@ -1,0 +1,195 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Node Overview",
+      "tooltip": "Per-node host and GPU metrics",
+      "type": "link",
+      "url": "/d/vllm-remote-nodes/vllm-remote-nodes"
+    }
+  ],
+  "preload": false,
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": ["vllm", "remote-nodes"],
+  "templating": {
+    "list": [
+      {
+        "name": "deployment",
+        "label": "Inference Deployment",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(up{job=~\"remote-vllm|remote-aux-.*\"}, job)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "selected": true, "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "log_filter",
+        "label": "Log Filter",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": "", "value": "" }
+      }
+    ]
+  },
+  "time": { "from": "now-3h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Inference Deployments",
+  "uid": "vllm-inference-deployments",
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Deployment Up",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": 0 }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "up{job=~\"$deployment\"}", "legendFormat": "{{ "up {{ job }} {{ instance }}" }}", "refId": "A" } ],
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "textMode": "auto" },
+      "description": "API scrape health per deployment: remote-vllm is the vllm-serve primary; remote-aux-* are the aux servers (gatekeeper, ...)."
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Prompt Tokens (total)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "fieldConfig": { "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": 0 } ] }, "unit": "short" }, "overrides": [] },
+      "targets": [ { "expr": "sum by (job) (vllm:prompt_tokens_total{job=~\"$deployment\"})", "legendFormat": "{{ "prompt {{ job }}" }}", "refId": "A" } ],
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "textMode": "auto" },
+      "description": "Cumulative prompt (input) tokens processed since server start."
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Generation Tokens (total)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "purple", "value": 0 } ] }, "unit": "short" }, "overrides": [] },
+      "targets": [ { "expr": "sum by (job) (vllm:generation_tokens_total{job=~\"$deployment\"})", "legendFormat": "{{ "gen {{ job }}" }}", "refId": "A" } ],
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "textMode": "auto" },
+      "description": "Cumulative generated (output) tokens since server start. This vLLM build exposes vllm:generation_tokens_total (no completion_tokens_total)."
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Successful Requests (total)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": { "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] }, "unit": "short" }, "overrides": [] },
+      "targets": [ { "expr": "sum by (job) (vllm:request_success_total{job=~\"$deployment\"})", "legendFormat": "{{ "reqs {{ job }}" }}", "refId": "A" } ],
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "textMode": "auto" },
+      "description": "Cumulative successful requests since server start."
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Token Throughput (prompt vs generation)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": { "defaults": { "unit": "ops", "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "sum by (job) (rate(vllm:prompt_tokens_total{job=~\"$deployment\"}[$__rate_interval]))", "legendFormat": "{{ "prompt {{ job }}" }}", "refId": "A" }, { "expr": "sum by (job) (rate(vllm:generation_tokens_total{job=~\"$deployment\"}[$__rate_interval]))", "legendFormat": "{{ "gen {{ job }}" }}", "refId": "B" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } },
+      "description": "Prompt and generated tokens per second for the selected deployment(s)."
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Requests Running / Waiting",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "vllm:num_requests_running{job=~\"$deployment\"}", "legendFormat": "{{ "running {{ job }}" }}", "refId": "A" }, { "expr": "vllm:num_requests_waiting{job=~\"$deployment\"}", "legendFormat": "{{ "waiting {{ job }}" }}", "refId": "B" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "KV Cache Usage",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 }, { "color": "orange", "value": 75 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "100 * vllm:kv_cache_usage_perc{job=~\"$deployment\"}", "legendFormat": "{{ "kv {{ job }}" }}", "refId": "A" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Prefix Cache Hit Rate",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "100 * (vllm:prefix_cache_hits_total{job=~\"$deployment\"} / vllm:prefix_cache_queries_total{job=~\"$deployment\"})", "legendFormat": "{{ "hit% {{ job }}" }}", "refId": "A" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } },
+      "description": "Percentage of prompt tokens served from the prefix cache, cumulative since server start (rate-of-ratios goes NaN on idle windows)."
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Time to First Token",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "fieldConfig": { "defaults": { "unit": "s", "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 }, { "color": "orange", "value": 1 }, { "color": "red", "value": 5 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "vllm:time_to_first_token_seconds_sum{job=~\"$deployment\"} / vllm:time_to_first_token_seconds_count{job=~\"$deployment\"}", "legendFormat": "{{ "ttft {{ job }}" }}", "refId": "A" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } },
+      "description": "Mean time to first token since server start (sum/count; a rate-of-ratios goes NaN on idle windows)."
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Inter-Generation Token Latency",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "fieldConfig": { "defaults": { "unit": "s", "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 }, { "color": "orange", "value": 0.1 }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "vllm:inter_token_latency_seconds_sum{job=~\"$deployment\"} / vllm:inter_token_latency_seconds_count{job=~\"$deployment\"}", "legendFormat": "{{ "itl {{ job }}" }}", "refId": "A" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } },
+      "description": "Mean inter-token latency since server start (sum/count; a rate-of-ratios goes NaN on idle windows)."
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Requests/s by Finish Reason",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "fieldConfig": { "defaults": { "unit": "ops", "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "sum by (job, finished_reason) (rate(vllm:request_success_total{job=~\"$deployment\"}[$__rate_interval]))", "legendFormat": "{{ "{{ finished_reason }} {{ job }}" }}", "refId": "A" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } },
+      "description": "Completed requests/s split by finished_reason: stop (normal), length (max tokens reached), abort, error."
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Admission Rejections",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "fieldConfig": { "defaults": { "unit": "ops", "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "never", "spanNulls": false }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "sum by (job, reason) (rate(vllm:admission_rejections_total{job=~\"$deployment\"}[$__rate_interval]))", "legendFormat": "{{ "reject {{ reason }} {{ job }}" }}", "refId": "A" } ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": [ "lastNotNull", "max" ] }, "tooltip": { "mode": "multi" } },
+      "description": "Requests rejected before admission (queue/token limits)."
+    },
+    {
+      "id": 20,
+      "type": "logs",
+      "title": "Deployment Logs",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 36 },
+      "targets": [ { "expr": "{job=~\"loki\\\\.source\\\\.journal\\\\.(vllm|aux_.*)\"} |~ \"$log_filter\"", "refId": "A" } ],
+      "options": { "dedupStrategy": "none", "enableInfiniteScrolling": true, "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": true, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true },
+      "description": "All vllm-serve and aux deployment journald logs. Narrow to one deployment with the Log Filter, e.g. gatekeeper (matches service_name) or vllm-serve."
+    }
+  ]
+}

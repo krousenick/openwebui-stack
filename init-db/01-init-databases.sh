@@ -47,4 +47,7 @@ create_db_and_user "$OPENWEBUI_DB_NAME" "$OPENWEBUI_DB_USER" "$OPENWEBUI_DB_PASS
 # Create LiteLLM database
 create_db_and_user "$LITELLM_DB_NAME" "$LITELLM_DB_USER" "$LITELLM_DB_PASSWORD"
 
+# Create Keycloak database
+create_db_and_user "$KEYCLOAK_DB_NAME" "$KEYCLOAK_DB_USER" "$KEYCLOAK_DB_PASSWORD"
+
 echo "All databases initialized successfully!"

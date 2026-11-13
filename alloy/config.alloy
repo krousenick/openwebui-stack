@@ -1,0 +1,62 @@
+// Docker container logs for the local logging driver.
+// loki.source.docker reads the engine API, so json-file logs are not required.
+// https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.docker/
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // Human-readable label for LogQL: strips the compose "/" prefix.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "service_name"
+  }
+
+  // container_name mirrors the docker_stats receiver's metric label in
+  // otel/config.yaml, so log and metric queries filter identically.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container_name"
+  }
+
+  // plain container label kept for backwards compatibility with existing
+  // dashboards.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  // No-op on discovery targets: loki.source.docker only sets
+  // __meta_docker_container_log_stream per entry, after discovery relabeling.
+  // This rule fires when the same rule set is applied to entries via the
+  // source's relabel_rules (see below).
+  rule {
+    source_labels = ["__meta_docker_container_log_stream"]
+    regex         = "(.*)"
+    target_label  = "stream"
+  }
+}
+
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.write.lgtm.receiver]
+
+  // loki.source.docker appends __meta_docker_container_log_stream (stdout/
+  // stderr) to each entry AFTER discovery relabeling, so the stream label must
+  // be extracted here via the source's own relabel_rules, sharing the
+  // discovery rule set.
+  relabel_rules = discovery.relabel.containers.rules
+}
+
+loki.write "lgtm" {
+  endpoint {
+    url = "http://lgtm:3100/loki/api/v1/push"
+  }
+}

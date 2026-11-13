@@ -1,0 +1,56 @@
+---
+# One read-only look at the host. Runs in check mode too, so a dry run
+# reports the real state. Sets:
+#   nvidia_driver_probe  the raw answers (see the keys in the script)
+#   nvidia_driver_state  no_gpu | ok | module_not_loaded | module_missing
+#                        | not_installed
+
+- name: Look at the GPU and the driver on this host
+  # cmd:, not the free-form shell argument: Ansible splits a free-form
+  # script on quotes before running it and rejects this one.
+  ansible.builtin.shell:
+    cmd: |
+      set -u
+      gpus=0
+      for d in /sys/bus/pci/devices/*; do
+          [ "$(cat "$d/vendor" 2>/dev/null)" = 0x10de ] || continue
+          # 0x03xxxx is a display controller; the GPU's audio function is not.
+          case "$(cat "$d/class" 2>/dev/null)" in 0x03*) gpus=$((gpus + 1)) ;; esac
+      done
+      smi=no smi_version= smi_error=
+      if out=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>&1); then
+          smi=yes
+          smi_version=$(printf '%s\n' "$out" | head -1 | tr -d ' ')
+      else
+          # Letters, digits and plain punctuation only, so the JSON stays valid.
+          smi_error=$(printf '%s' "$out" | head -1 | tr -cd 'A-Za-z0-9 .,:/()_-' | cut -c1-160)
+      fi
+      kernel=$(uname -r)
+      module_version=$(modinfo -k "$kernel" -F version nvidia 2>/dev/null | head -1)
+      userspace_version=
+      for f in /usr/lib64/libnvidia-ml.so.*.* /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.*.* /usr/lib/libnvidia-ml.so.*.*; do
+          if [ -e "$f" ]; then userspace_version=${f##*.so.}; break; fi
+      done
+      yn() { if "$@" >/dev/null 2>&1; then echo yes; else echo no; fi; }
+      printf '{"gpus": %s, "smi": "%s", "smi_version": "%s", "smi_error": "%s", "kernel": "%s", "module_version": "%s", "userspace_version": "%s", "runfile_install": "%s", "module_loaded": "%s", "nouveau_loaded": "%s", "gcc": "%s", "make": "%s", "nvidia_ctk": "%s", "dkms": "%s"}\n' \
+          "$gpus" "$smi" "$smi_version" "$smi_error" "$kernel" "$module_version" "$userspace_version" \
+          "$(yn test -x /usr/bin/nvidia-uninstall)" "$(yn grep -q '^nvidia ' /proc/modules)" "$(yn grep -q '^nouveau ' /proc/modules)" \
+          "$(yn command -v gcc)" "$(yn command -v make)" "$(yn command -v nvidia-ctk)" "$(yn command -v dkms)"
+    executable: /bin/bash
+  register: nvidia_driver_probe_run
+  changed_when: false
+  check_mode: false
+
+- name: Record the driver state
+  vars:
+    probe: "{{ nvidia_driver_probe_run.stdout | from_json }}"
+  ansible.builtin.set_fact:
+    nvidia_driver_probe: "{{ probe }}"
+    # nvidia-smi decides: a host that reports a GPU through it is fine even
+    # when no PCI device is visible (WSL2 passes the GPU through without one).
+    nvidia_driver_state: >-
+      {{ 'ok' if probe.smi == 'yes'
+         else 'no_gpu' if probe.gpus | int == 0
+         else 'module_not_loaded' if probe.module_version | length > 0
+         else 'module_missing' if probe.userspace_version | length > 0
+         else 'not_installed' }}

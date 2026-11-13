@@ -1,0 +1,432 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: GPUTemperature
+    folder: Alerts
+    interval: 30s
+    rules:
+      - uid: gpu-temperature-slowdown
+        title: GPU Temperature At Slowdown Threshold
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: DCGM_FI_DEV_GPU_TEMP >= 91
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+              refId: C
+        noDataState: OK
+        execErrState: Alerting
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU reached NVIDIA slowdown temperature"
+          description: "Tesla P4 temperature is {{ $values.B }} C. NVIDIA reports 91 C as the slowdown threshold."
+
+      - uid: gpu-temperature-shutdown
+        title: GPU Temperature Near Shutdown Threshold
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: DCGM_FI_DEV_GPU_TEMP >= 94
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+              refId: C
+        noDataState: OK
+        execErrState: Alerting
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "GPU reached NVIDIA shutdown temperature"
+          description: "Tesla P4 temperature is {{ $values.B }} C. NVIDIA reports 94 C as the shutdown threshold."
+
+  - orgId: 1
+    name: KeycloakSLOs
+    folder: Alerts
+    interval: 30s
+    rules:
+      - uid: keycloak-high-login-latency
+        title: Keycloak High Login Latency
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                histogram_quantile(0.95,
+                  sum(rate(http_server_requests_seconds_bucket{
+                    job=~".*keycloak.*",
+                    uri=~"/realms/\\{realm\\}/(protocol|login-actions)/.*"
+                  }[5m])) by (le)
+                ) > 0.5
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+              refId: C
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Keycloak P95 login latency exceeds 500ms"
+          description: "P95 latency is {{ $value | humanizeDuration }} (threshold: 500ms)"
+
+      - uid: keycloak-critical-login-latency
+        title: Keycloak Critical Login Latency
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                histogram_quantile(0.95,
+                  sum(rate(http_server_requests_seconds_bucket{
+                    job=~".*keycloak.*",
+                    uri=~"/realms/\\{realm\\}/(protocol|login-actions)/.*"
+                  }[5m])) by (le)
+                ) > 1
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+              refId: C
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Keycloak P95 login latency exceeds 1s"
+          description: "P95 latency is {{ $value | humanizeDuration }} (threshold: 1s)"
+
+      - uid: keycloak-high-error-rate
+        title: Keycloak High Error Rate
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                sum(rate(http_server_requests_seconds_count{
+                  job=~".*keycloak.*",
+                  uri=~"/realms/\\{realm\\}/(protocol|login-actions)/.*",
+                  outcome="SERVER_ERROR"
+                }[5m]))
+                /
+                sum(rate(http_server_requests_seconds_count{
+                  job=~".*keycloak.*",
+                  uri=~"/realms/\\{realm\\}/(protocol|login-actions)/.*"
+                }[5m])) > 0.001
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+              refId: C
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Keycloak server error rate exceeds 0.1%"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 0.1%)"
+
+      - uid: keycloak-db-pool-exhausted
+        title: Keycloak DB Pool Exhausted
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 120
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: agroal_awaiting_count{job=~".*keycloak.*"} > 0
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+              refId: C
+        noDataState: OK
+        execErrState: Alerting
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Threads waiting for database connections"
+          description: "{{ $value }} threads are waiting for database connections"
+
+      - uid: keycloak-high-login-failure-ratio
+        title: Keycloak High Login Failure Ratio
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                sum(rate(keycloak_user_events_total{event="login", error!=""}[5m]))
+                /
+                sum(rate(keycloak_user_events_total{event="login"}[5m])) > 0.2
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+              refId: C
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High login failure ratio detected"
+          description: "Login failure ratio is {{ $value | humanizePercentage }}"
+
+  # Logins written to Loki by the keycloak-login-tracker service
+  # (container-scripts/keycloak_login_tracker.py). Each rule counts the
+  # flagged logins of the last 10 minutes, so it fires within a minute or so
+  # of a flagged login (the tracker reads Keycloak every 30 s) and resolves
+  # 10 minutes later. Logins the tracker backfills on its first start are
+  # older than that and fire nothing.
+  - orgId: 1
+    name: KeycloakLogins
+    folder: Alerts
+    interval: 1m
+    rules:
+      - uid: keycloak-login-impossible-travel
+        title: "Keycloak login: impossible travel"
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki
+            model:
+              expr: >-
+                sum by (realm, username, ip, location, prev_location)
+                (count_over_time({service_name="keycloak-logins"} | json | impossible_travel="true" [10m]))
+              queryType: instant
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.username }} signed in from {{ $labels.location }}, too far from {{ $labels.prev_location }}"
+          description: >-
+            {{ $labels.username }} signed in to realm {{ $labels.realm }} from {{ $labels.ip }}
+            ({{ $labels.location }}). The previous login with a known place was at
+            {{ $labels.prev_location }}, too far away to have travelled in the time between them.
+            The Logins row of the Keycloak dashboard shows both.
+
+      - uid: keycloak-login-new-country
+        title: "Keycloak login: new country"
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki
+            model:
+              expr: >-
+                sum by (realm, username, ip, country, location)
+                (count_over_time({service_name="keycloak-logins"} | json | new_country="true" [10m]))
+              queryType: instant
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.username }} signed in from {{ $labels.country }} for the first time in 30 days"
+          description: >-
+            {{ $labels.username }} signed in to realm {{ $labels.realm }} from {{ $labels.ip }}
+            ({{ $labels.location }}), a country none of the user's logins of the last 30 days came from.
+            The Logins row of the Keycloak dashboard shows the user's other places.

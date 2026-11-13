@@ -1,0 +1,72 @@
+---
+- name: Wait for Keycloak HTTPS endpoint
+  ansible.builtin.uri:
+    url: "{{ keycloak_url }}/realms/master"
+    method: GET
+    validate_certs: "{{ keycloak_validate_certs }}"
+    status_code:
+      - 200
+      - 302
+  register: keycloak_ready
+  until: keycloak_ready.status | default(0) in [200, 302]
+  retries: 12
+  delay: 5
+
+- name: Bootstrap Keycloak realm and provisioner
+  ansible.builtin.import_tasks:
+    file: keycloak_bootstrap.yml
+
+# The keycloak-login-tracker service retries until this client exists, so
+# on a first deploy it starts reading events once this has run.
+- name: Create the read-only client of the login tracker
+  ansible.builtin.import_tasks:
+    file: keycloak_login_tracker.yml
+  when: keycloak_login_tracker_enabled | bool
+  tags:
+    - login-tracker
+
+- name: Enable passkey login
+  ansible.builtin.import_tasks:
+    file: keycloak_passkeys.yml
+  when: keycloak_passkeys_enabled | bool
+
+- name: Load Keycloak application lists
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../group_vars/all/vars.yml"
+
+# include_vars outranks the play's vars_files. The reload above therefore
+# puts the tracked defaults (domain: localhost) back on top of this site's
+# values for every task that follows, and the clients below would be created
+# for the wrong domain. Load the site file again after it; without one the
+# lookup falls back to vars.yml, which changes nothing.
+- name: Reapply this site's settings over the reloaded defaults
+  ansible.builtin.include_vars:
+    file: "{{ lookup('ansible.builtin.first_found', keycloak_site_vars_candidates) }}"
+  vars:
+    keycloak_site_vars_candidates:
+      - "{{ playbook_dir }}/../group_vars/all/vars.local.yml"
+      - "{{ playbook_dir }}/../group_vars/all/vars.yml"
+
+- name: Configure Keycloak applications
+  ansible.builtin.include_tasks:
+    file: keycloak_app.yml
+  vars:
+    app: "{{ application }}"
+  loop: "{{ keycloak_apps }}"
+  loop_control:
+    loop_var: application
+    label: "{{ application.client_id }}"
+
+- name: Configure Keycloak groups
+  ansible.builtin.import_tasks:
+    file: keycloak_groups.yml
+
+- name: Set realm default groups for self-registered users
+  ansible.builtin.import_tasks:
+    file: keycloak_registration.yml
+  when: keycloak_registration_enabled | bool
+
+- name: Create Keycloak application users
+  ansible.builtin.import_tasks:
+    file: keycloak_users.yml
+  when: keycloak_users | length > 0

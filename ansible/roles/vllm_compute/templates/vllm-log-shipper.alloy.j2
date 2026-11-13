@@ -1,0 +1,51 @@
+// Managed by Ansible (role: vllm_compute). Ships vllm-serve and vllm-aux-*
+// journald logs to the controller's Loki push API.
+//
+// The vllm-serve and vllm-aux-* units log through journald (podman run
+// inherits the unit's journal), so loki.source.journal with _SYSTEMD_UNIT
+// matches is the only reader needed - no docker socket or file tailing.
+// Journal fields arrive as __journal_FIELD internal labels and are dropped
+// before forwarding; the shared loki.relabel component promotes the unit
+// name to a queryable systemd_unit label.
+
+loki.relabel "journal_unit" {
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "systemd_unit"
+  }
+  forward_to = [loki.write.controller.receiver]
+}
+
+loki.source.journal "vllm" {
+  matches = "_SYSTEMD_UNIT=vllm-serve.service"
+  max_age = "{{ vllm_log_ship_max_age }}"
+  labels = {
+    "service_name"    = "vllm-serve",
+    "container_name" = "vllm-serve",
+    "node"           = "{{ vllm_host_ip }}",
+  }
+  relabel_rules = loki.relabel.journal_unit.rules
+  forward_to     = [loki.relabel.journal_unit.receiver]
+}
+
+{% if vllm_aux_enabled | default(false) | bool and (vllm_aux_local_models | default([]) | length > 0) %}
+{% for aux_item in vllm_aux_local_models %}
+loki.source.journal "aux_{{ aux_item.name }}" {
+  matches = "_SYSTEMD_UNIT=vllm-aux-{{ aux_item.name }}.service"
+  max_age = "{{ vllm_log_ship_max_age }}"
+  labels = {
+    "service_name"    = "{{ aux_item.name }}",
+    "container_name" = "{{ aux_item.name }}",
+    "node"           = "{{ vllm_host_ip }}",
+  }
+  relabel_rules = loki.relabel.journal_unit.rules
+  forward_to     = [loki.relabel.journal_unit.receiver]
+}
+{% endfor %}
+{% endif %}
+
+loki.write "controller" {
+  endpoint {
+    url = "{{ vllm_loki_push_url }}"
+  }
+}

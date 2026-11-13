@@ -1,0 +1,52 @@
+---
+# Skills Gateway: register the skills shipped in ./skills (SKILL.md
+# packages) with LiteLLM's proxy-hosted skill store and the Claude Code
+# marketplace (https://docs.litellm.ai/docs/skills_gateway).
+#
+# The work is done by container-scripts/litellm_skills_sync.py in the
+# litellm container. Its docstring describes the two stores, the archive
+# digest comparison that makes a rerun with unchanged skills a no-op, and
+# the report it returns. It validates every skill's frontmatter first
+# (container-scripts/skill_packages.py) and publishes nothing from a
+# checkout with a bad package.
+#
+# Only SKILL.md is published: the upload zip and the digest hold that one
+# file, and Open WebUI stores a skill as a single document. A skill must
+# therefore be self-contained; files beside SKILL.md (references/,
+# scripts/) reach opencode only, through its directory copy.
+
+- name: Require Skills Gateway settings
+  ansible.builtin.assert:
+    that:
+      - litellm_master_key | length > 0
+    fail_msg: "Skills Gateway requires the LiteLLM master key."
+
+- name: Stage the skill packages on the deployment host
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../skills/"
+    dest: "{{ project_root }}/skills/"
+    mode: "0644"
+  when: hostvars[inventory_hostname].ansible_connection | default('ssh') != 'local'
+
+- name: Sync the skill packages into the LiteLLM skill store and marketplace
+  ansible.builtin.import_tasks:
+    file: container_script.yml
+  vars:
+    container_script: litellm_skills_sync.py
+    container_script_service: litellm
+    container_script_args:
+      - --archive-base-url
+      - "https://litellm.{{ domain }}"
+    container_script_env:
+      LITELLM_MASTER_KEY: "{{ litellm_master_key }}"
+
+- name: Show skill search result count
+  # Report-only: semantic search needs skill_search_embedding_model
+  # (litellm_skill_search_embedding_model, by default the local
+  # local-embedding model), and the script reports null instead of failing
+  # when it does not answer.
+  ansible.builtin.debug:
+    msg: >-
+      Skill search returned {{ container_script_report.search.results }}
+      skill(s) for "{{ container_script_report.search.query }}".
+  when: container_script_report.search | default(none) is mapping

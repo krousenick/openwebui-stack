@@ -1,0 +1,205 @@
+---
+# ===========================================================================
+# vllm_compute main task flow
+# ===========================================================================
+# Order matters:
+#   1. Validate configuration and inventory (asserts fail fast).
+#   2. Detect GPUs and derive the parallel sizes each node will pass to
+#      `vllm serve` / `ray start`.
+#   3. Resolve Ray topology (head host, per-node roles) when in ray mode.
+#   4. Open the firewalld zone for cluster traffic.
+#   5. Deploy the primary model services (services.yml).
+#   6. Deploy flux image-generation servers (flux.yml), independent of the
+#      primary topology.
+#   7. Deploy the LLM Launcher GUI and its OAuth gate (launcher.yml) on the
+#      nodes launcher_placement.yml picked.
+#   8. Render the LiteLLM snippet last so it sees every deployed model.
+# ===========================================================================
+- name: Validate vLLM configuration
+  ansible.builtin.assert:
+    that:
+      - vllm_deployment_mode in ["standalone", "ray"]
+      - vllm_model | length > 0
+      - vllm_tensor_parallel_size | int >= 1
+    fail_msg: >-
+      vllm_deployment_mode must be 'standalone' or 'ray',
+      vllm_model must be set, and vllm_tensor_parallel_size >= 1.
+
+- name: Require at least one vllm_compute host
+  ansible.builtin.assert:
+    that:
+      - groups['vllm_compute'] | default([]) | length > 0
+    fail_msg: "No hosts in the vllm_compute inventory group."
+
+- name: Detect GPUs per node
+  when: vllm_gpus_per_node | int == 0
+  block:
+    - name: Count NVIDIA GPUs
+      ansible.builtin.command:
+        cmd: nvidia-smi --list-gpus
+      register: vllm_gpu_list
+      # Read-only, and the assert below needs the count in a dry run too:
+      # skipped under --check, the count read as 0 and the dry run failed.
+      check_mode: false
+      changed_when: false
+      failed_when: false
+
+    - name: Set GPUs per node from nvidia-smi
+      ansible.builtin.set_fact:
+        vllm_gpus_per_node: "{{ (vllm_gpu_list.stdout_lines | select('match', '^GPU ') | list | length) if vllm_gpu_list.rc == 0 else 1 }}"
+
+- name: Assert enough GPUs for tensor parallelism
+  ansible.builtin.assert:
+    that:
+      - vllm_gpus_per_node | int >= vllm_tensor_parallel_size
+    fail_msg: >-
+      vllm_tensor_parallel_size ({{ vllm_tensor_parallel_size }}) exceeds
+      the GPUs detected on {{ inventory_hostname }} ({{ vllm_gpus_per_node }}).
+
+- name: Resolve Ray head address
+  when: vllm_deployment_mode == 'ray'
+  block:
+    - name: Find the Ray head host
+      ansible.builtin.set_fact:
+        vllm_ray_head_host: >-
+          {{ (groups['vllm_compute']
+              | map('extract', hostvars)
+              | selectattr('vllm_ray_head', 'defined')
+              | selectattr('vllm_ray_head')
+              | map(attribute='inventory_hostname')
+              | list) }}
+      delegate_to: localhost
+      run_once: true
+
+    - name: Require exactly one Ray head host
+      ansible.builtin.assert:
+        that:
+          - vllm_ray_head_host | length == 1
+        fail_msg: >-
+          Ray mode needs exactly one inventory host with
+          vllm_ray_head: true in the vllm_compute group.
+      delegate_to: localhost
+      run_once: true
+
+    - name: Derive the Ray head address
+      ansible.builtin.set_fact:
+        vllm_ray_head_address: "{{ hostvars[vllm_ray_head_host[0]]['ansible_host'] | default(vllm_ray_head_host[0]) }}"
+      delegate_to: localhost
+      run_once: true
+
+- name: Set this node's Ray role
+  ansible.builtin.set_fact:
+    # vllm_ray_head_host is a list; the assert above guarantees one entry.
+    vllm_ray_role: "{{ 'head' if (vllm_ray_head_host[0] == inventory_hostname) else 'worker' }}"
+  when: vllm_deployment_mode == 'ray'
+
+- name: Resolve host IP for VLLM_HOST_IP
+  ansible.builtin.set_fact:
+    vllm_host_ip: "{{ hostvars[inventory_hostname]['ansible_host'] | default(inventory_hostname) }}"
+
+- name: Compute effective parallel sizes
+  # The `vllm serve` command line takes ONE --tensor-parallel-size and ONE
+  # --pipeline-parallel-size covering the whole shard. Standalone and ray+PP
+  # use the per-node TP; ray+TP multiplies it by the node count and collapses
+  # PP to 1 (each GPU rank is one tensor parallel worker).
+  ansible.builtin.set_fact:
+    vllm_effective_tp: "{{ (vllm_tensor_parallel_size | int) * (vllm_pipeline_parallel_size | int)
+      if (vllm_deployment_mode == 'ray' and vllm_cross_node_tensor_parallel | bool)
+      else (vllm_tensor_parallel_size | int) }}"
+    vllm_effective_pp: "{{ 1
+      if (vllm_deployment_mode != 'ray' or vllm_cross_node_tensor_parallel | bool)
+      else (vllm_pipeline_parallel_size | int) }}"
+
+- name: Resolve the fully-qualified image reference
+  # Podman with short-name-mode=enforcing (the Fedora default) cannot
+  # resolve an unqualified image non-interactively; every pull from the
+  # systemd units fails with exit 125. Docker accepts the FQ form too, so
+  # the scripts always use the qualified reference. A reference counts as
+  # qualified when its first path segment looks like a registry host
+  # (contains a dot or a port), e.g. ghcr.io/... or localhost:5000/....
+  vars:
+    vllm_image_first_segment: "{{ vllm_image.split('/')[0] }}"
+  ansible.builtin.set_fact:
+    vllm_image_fq: "{{ vllm_image
+      if ('.' in vllm_image_first_segment or ':' in vllm_image_first_segment)
+      else 'docker.io/' ~ vllm_image }}"
+
+- name: Collect vLLM endpoint hosts
+  # extract() yields None for hosts whose vllm_host_ip fact has not been set
+  # yet; map('string') stringifies and select('string') keeps the values,
+  # dropping the unset ones.
+  ansible.builtin.set_fact:
+    vllm_endpoints: "{{ groups['vllm_compute'] | default([])
+      | map('extract', hostvars, 'vllm_host_ip')
+      | select('string')
+      | list }}"
+  when: vllm_deployment_mode == 'standalone'
+  run_once: true
+  delegate_to: localhost
+
+- name: Resolve LLM Launcher placement
+  # Before services.yml: a node whose primary model slot the launcher owns
+  # keeps vllm-serve stopped, so the fact must exist when the unit is
+  # deployed. Sets vllm_launcher_node / vllm_launcher_primary_owned (both
+  # false while vllm_launcher_enabled is false).
+  ansible.builtin.import_tasks:
+    file: launcher_placement.yml
+
+- name: Prepare the container runtime (init process, rootless account)
+  # Before every task file that deploys a unit or calls the container CLI:
+  # sets who the containers run as (vllm_run_user, vllm_container_argv) and
+  # the --init flags, and on a podman node creates the unprivileged service
+  # account the containers run under.
+  ansible.builtin.import_tasks:
+    file: container_runtime.yml
+
+- name: Resolve the GPU exporter flavor before the firewall tasks
+  # The firewall opens the GPU exporter port, so the flavor (dcgm for
+  # datacenter GPUs, nvidia-smi for GeForce) and vllm_gpu_exporter must be
+  # resolved before firewall.yml imports the exporter list.
+  ansible.builtin.import_tasks:
+    file: gpu_flavor.yml
+
+- name: Configure firewall for the cluster network
+  ansible.builtin.import_tasks:
+    file: firewall.yml
+  when: vllm_manage_firewall | bool
+
+- name: Deploy vLLM services
+  # Primary model: ray-start.sh + vllm-serve.sh scripts and their systemd
+  # units, then start them and wait for the cluster and API to come up.
+  ansible.builtin.import_tasks:
+    file: services.yml
+
+- name: Deploy Flux image-generation servers
+  # Independent per-model servers. The import is unconditional: the tasks
+  # no-op when the list is empty, and the cleanup block inside is what
+  # tears flux down after vllm_flux_enabled: false. Runs before the
+  # LiteLLM render so flux entries land in the snippet too.
+  ansible.builtin.import_tasks:
+    file: flux.yml
+
+- name: Deploy aux model servers
+  # Additional per-model servers placed on a chosen subset of nodes via
+  # each entry's hosts key. Same unconditional-import + cleanup pattern
+  # as flux. Also runs before the LiteLLM render.
+  ansible.builtin.import_tasks:
+    file: auxiliary.yml
+
+- name: Deploy the LLM Launcher
+  # Web control panel per independent inference server, behind an
+  # oauth2-proxy gate that signs in against Keycloak on the stack host.
+  # Unconditional import like flux/aux: the cleanup block inside removes
+  # the units from nodes that no longer run a launcher.
+  ansible.builtin.import_tasks:
+    file: launcher.yml
+
+- name: Render LiteLLM registration snippet
+  ansible.builtin.import_tasks:
+    file: litellm_registration.yml
+  when: vllm_deployment_mode == 'standalone' or (vllm_ray_role | default('') == 'head')
+
+- name: Deploy node monitoring exporters and dashboard
+  ansible.builtin.import_tasks:
+    file: monitoring.yml
+  when: vllm_monitoring_enabled | bool

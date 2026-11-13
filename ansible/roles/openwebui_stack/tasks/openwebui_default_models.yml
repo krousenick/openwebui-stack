@@ -1,0 +1,43 @@
+---
+# Enforce Open WebUI's default chat model (admin Settings > Models >
+# Default Models) from openwebui_default_models, which defaults to the
+# LiteLLM `auto` router whenever litellm_auto_router_tiers renders one.
+# DEFAULT_MODELS in the compose env only seeds a fresh database;
+# afterwards the stored value wins, so this goes through the admin API,
+# which persists the value and updates the running app without a restart.
+# container-scripts/openwebui_default_models.py holds the endpoints and
+# posts the stored config back with only DEFAULT_MODELS changed, so pinned
+# models and the model order list are preserved.
+#
+# A default that Open WebUI does not list yet is still set, with a
+# warning: models reach LiteLLM from several places (provider flags in
+# group_vars, vLLM names registered later by playbooks/inference.yml,
+# entries added in the LiteLLM Admin UI), and the setting starts working
+# the moment the model appears. Until then Open WebUI ignores it.
+#
+# Auth reuses the skill-publisher admin API key that openwebui_skills.yml
+# upserts from the vault value openwebui_api_admin_key; that task runs
+# first in tasks/main.yml.
+
+- name: Set the Open WebUI default model
+  ansible.builtin.import_tasks:
+    file: container_script.yml
+  vars:
+    container_script: openwebui_default_models.py
+    container_script_service: open-webui
+    container_script_args:
+      - --models
+      - "{{ openwebui_default_models_csv }}"
+    container_script_env:
+      OPENWEBUI_API_KEY: "{{ openwebui_api_admin_key }}"
+
+- name: Warn when a default model is not served yet
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: Open WebUI does not list
+      {{ container_script_report.missing | join(', ') }}.
+      The default is saved and applies once the model exists. For `auto`,
+      enable litellm_gemini_models_enabled or set litellm_auto_router_tiers;
+      for a vLLM model, run playbooks/inference.yml; otherwise check the
+      name against the LiteLLM model_name.
+  when: container_script_report.missing | default([]) | length > 0
