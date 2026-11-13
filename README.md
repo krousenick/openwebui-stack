@@ -300,6 +300,29 @@ Keycloak includes several security hardening options:
 
 - **Resource Limits**: Memory and CPU limits applied to Keycloak container
 
+### Login tracking
+
+The Keycloak dashboard in Grafana (`/d/keycloak-auth`) has a **Logins** row: recent logins with time, user, result, IP address, country and city; a map of logins from public addresses; places per user; counts; and the state of two alert rules. It answers "are my logins coming from where I am?".
+
+How it gets there: Keycloak saves every login of the `platform` realm in its event store for 30 days. The `keycloak-login-tracker` service reads new logins every 30 seconds through Keycloak's admin API as the `login-tracker` client, which may only read events. It looks up each public address in DB-IP's free City Lite database, kept on the stack host (`geoip/`, refreshed monthly by the playbook), so login addresses are never sent to an outside service. It then writes one line per login to Loki (`{service_name="keycloak-logins"}`).
+
+- **LAN logins** (private addresses such as 10.x and 192.168.x) show as `LAN` with no country, city or map pin; Docker addresses (172.16.0.0/12) show as `Stack-internal`. A login through a VPN shows the VPN's address.
+- **Impossible travel**: a successful login more than 300 km from the user's previous login with a known place, which the user could only have reached faster than 1000 km/h. Set `keycloak_login_tracker_min_distance_km` and `keycloak_login_tracker_max_speed_kmh` to change the limits.
+- **New country**: a successful login from a country none of the user's logins came from in the last 30 days (a user's first located login is the baseline, not new).
+- Failed logins are listed and shown in yellow on the map, but are never flagged.
+- Places come from DB-IP: often the ISP's nearest hub rather than the exact town, so short jumps between nearby cities are normal. IP geolocation by [DB-IP](https://db-ip.com), CC BY 4.0.
+
+The alert rules `Keycloak login: impossible travel` and `Keycloak login: new country` (folder Alerts) fire for 10 minutes after a flagged login. No contact point is configured, so they show in Grafana only; enable the Discord contact point (`grafana/provisioning/alerting/discord-contactpoints.yml.disabled`) to be notified.
+
+```bash
+# On the stack host: the tracker, its last log lines, and a dry pass
+docker compose ps keycloak-login-tracker
+docker compose logs --tail 20 keycloak-login-tracker
+docker compose exec keycloak-login-tracker python3 /opt/stack-scripts/keycloak_login_tracker.py --once --check --realm platform
+```
+
+Turn it off with `keycloak_login_tracker_enabled: false` in `vars.local.yml` (the service goes; the `login-tracker` client stays in Keycloak).
+
 ### Realm Import
 
 To import a pre-configured realm:

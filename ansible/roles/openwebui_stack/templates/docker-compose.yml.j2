@@ -639,6 +639,73 @@ services:
       retries: 10
       start_period: 120s
 
+{% if keycloak_login_tracker_enabled | default(true) | bool %}
+  # ===========================================================================
+  # Keycloak login tracker (container-scripts/keycloak_login_tracker.py)
+  # Every interval it reads the realm's new LOGIN and LOGIN_ERROR events from
+  # Keycloak's event store as the login-tracker client (realm-management
+  # view-events only), looks up the place of public addresses in geoip/
+  # (DB-IP City Lite, tasks/geoip.yml), flags impossible travel and logins
+  # from a new country, and writes one line per login to Loki
+  # (service_name="keycloak-logins") for the Keycloak dashboard. Writes
+  # nothing to Keycloak. Only the image's Python runs: the litellm image is
+  # already on the host. Backend network only.
+  # ===========================================================================
+  keycloak-login-tracker:
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-openwebui-stack}_keycloak-login-tracker
+    restart: unless-stopped
+    logging: *default-logging
+    entrypoint: [ "python3", "-u", "{{ container_scripts_mount }}/keycloak_login_tracker.py" ]
+    command:
+      - --realm
+      - "${KEYCLOAK_REALM:-platform}"
+      - --client-id
+      - "${KEYCLOAK_LOGIN_TRACKER_CLIENT_ID:-login-tracker}"
+      - --interval
+      - "{{ keycloak_login_tracker_interval }}"
+      - --max-speed-kmh
+      - "{{ keycloak_login_tracker_max_speed_kmh }}"
+      - --min-distance-km
+      - "{{ keycloak_login_tracker_min_distance_km }}"
+      - --history-days
+      - "{{ keycloak_login_tracker_history_days }}"
+      - --backfill-days
+      - "{{ keycloak_login_tracker_backfill_days }}"
+      - --internal-networks
+      - {{ keycloak_login_tracker_internal_networks | join(',') | to_json }}
+      - --geoip-db
+      - /geoip/{{ geoip_file }}
+    environment:
+      LOGIN_TRACKER_CLIENT_SECRET: "${KEYCLOAK_LOGIN_TRACKER_CLIENT_SECRET:?error}"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./container-scripts:{{ container_scripts_mount }}:ro
+      - ./geoip:/geoip:ro
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "python3", "{{ container_scripts_mount }}/keycloak_login_tracker.py", "--healthcheck" ]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+{% endif %}
+
   # ===========================================================================
   # LGTM Stack (Loki, Grafana, Tempo, Mimir/Prometheus)
   # ===========================================================================

@@ -16,6 +16,15 @@
   ansible.builtin.import_tasks:
     file: keycloak_bootstrap.yml
 
+# The keycloak-login-tracker service retries until this client exists, so
+# on a first deploy it starts reading events once this has run.
+- name: Create the read-only client of the login tracker
+  ansible.builtin.import_tasks:
+    file: keycloak_login_tracker.yml
+  when: keycloak_login_tracker_enabled | bool
+  tags:
+    - login-tracker
+
 - name: Enable passkey login
   ansible.builtin.import_tasks:
     file: keycloak_passkeys.yml

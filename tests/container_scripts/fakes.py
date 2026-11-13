@@ -30,6 +30,8 @@ class Request:
     query: dict[str, str]
     headers: Any
     body: bytes
+    # Every value of each query parameter; query keeps only the first.
+    query_all: dict[str, list[str]] = dataclasses.field(default_factory=dict)
 
     def json(self) -> Any:
         return json.loads(self.body) if self.body else None
@@ -51,6 +53,7 @@ class FakeService:
                     query={key: values[0] for key, values in parse_qs(url.query).items()},
                     headers=self.headers,
                     body=self.rfile.read(length) if length else b"",
+                    query_all=parse_qs(url.query),
                 )
                 service.requests.append(request)
                 status, payload = service.handle(request)

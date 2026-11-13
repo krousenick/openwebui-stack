@@ -90,3 +90,5 @@ npm-debug.log*
 # Cloudflare Origin CA root (public root CA, safe to commit; used by the opencode role)
 !ansible/roles/opencode/files/origin_ca_rsa_root.pem
 .tmp*
+# GeoIP database the playbook downloads for the Keycloak login tracker
+geoip/

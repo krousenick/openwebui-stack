@@ -48,7 +48,7 @@ Each is at `https://grafana.example.com/d/<uid>`.
 | `stack-openwebui` | Open WebUI |
 | `stack-litellm` | LiteLLM |
 | `tokenization` | Tokenization |
-| `keycloak-auth` | Keycloak Authentication |
+| `keycloak-auth` | Keycloak Authentication, with the Logins row: recent logins with place, map, travel flags |
 | `chatterbox-tts` | Chatterbox TTS |
 | `stack-traefik` | Traefik |
 | `stack-postgres` | PostgreSQL |
@@ -109,6 +109,7 @@ The addresses the containers use to reach each other on the Docker networks. Non
 | `http://litellm:4000/v1` | LiteLLM, as Open WebUI calls it; MCP at `http://litellm:4000/mcp/<server>` |
 | `http://open-webui:8080` | Open WebUI; Keycloak sends back-channel logout to `/oauth/backchannel-logout` |
 | `http://keycloak:8080/realms/platform/.well-known/openid-configuration` | Keycloak discovery, as Open WebUI reads it; metrics on `keycloak:9000` |
+| `http://keycloak:8080/admin/realms/platform/events` | The realm's saved login events, as the `keycloak-login-tracker` service reads them (client `login-tracker`, view-events only); it writes the logins to Loki at `http://lgtm:3100/loki/api/v1/push` |
 | `postgres:5432`, `valkey:6379`, `http://qdrant:6333` | Databases, cache, vector store |
 | `http://lgtm:4317` (gRPC), `http://lgtm:4318` (HTTP) | OpenTelemetry ingest; Grafana on `lgtm:3000`, Loki on `lgtm:3100` |
 | `http://brave-search-mcp:8080/mcp`, `http://blender:8000/mcp`, `http://freecad:8000/mcp`, `http://printer-mcp:3000/mcp`, `http://traefik:8082/mcp` (Playwright), `http://memory-mcp:8080/mcp` | MCP servers behind the LiteLLM gateway |
@@ -117,6 +118,12 @@ The addresses the containers use to reach each other on the Docker networks. Non
 | `http://chatterbox-tts-server:8004/v1` | Text to speech, as Open WebUI calls it |
 | `oauth2-proxy:4180` | Voice sign-in gate; metrics on 4181 |
 | `node-exporter:9100`, `nvidia-gpu-exporter:9400`, `postgres-exporter:9187`, `traefik:8080` | Metrics the OTel collector scrapes |
+
+## Downloads from the stack host
+
+| What | URL | When |
+|------|-----|------|
+| DB-IP IP to City Lite, the login tracker's GeoIP database | `https://download.db-ip.com/free/dbip-city-lite-YYYY-MM.mmdb.gz` | A playbook run, when the host's copy is from an earlier month (`tasks/geoip.yml`); about 120 MB. Login addresses are looked up in this local file, never sent out |
 
 ## Quick checks
 

@@ -213,6 +213,34 @@ curl -sk "https://litellm.localhost/v1/memory?key_prefix=user:" -H "Authorizatio
 - Search embeds with `memory_embedding_model_effective` (the skill-search model, `local-embedding` by default) through LiteLLM `/v1/embeddings`; vectors are cached in process by (memory id, updated_at), and it falls back to keyword overlap when embedding fails.
 - Open WebUI connects to `http://litellm:4000/mcp/memory` with the master key (`tasks/mcp/memory.yml`, info.id `memory`, in `models.default_metadata.toolIds`; tag `memory` covers both tasks, which a plain `mcp/main.yml` import otherwise reaches only on a full run). It must keep `ENABLE_FORWARD_USER_INFO_HEADERS: "true"` and must not set `FORWARD_USER_INFO_HEADER_JWT_SECRET`, which replaces the plain headers with one JWT.
 
+### Keycloak login tracking (Logins row of the Keycloak dashboard)
+
+```bash
+# The tracker is healthy; its log has one line per change of state and per flagged login
+docker compose ps keycloak-login-tracker
+docker compose logs --tail 20 keycloak-login-tracker
+
+# One pass by hand: --check pushes nothing and lists the logins a pass would push
+docker compose exec keycloak-login-tracker python3 /opt/stack-scripts/keycloak_login_tracker.py \
+  --once --check --realm platform
+
+# The GeoIP release the host has
+cat geoip/dbip-city-lite.mmdb.release
+```
+
+`keycloak_login_tracker_enabled` (default true). Keycloak saves the realm's logins in its event store (`events_enabled`, 30 days, `tasks/keycloak_bootstrap.yml`) but logs only failures: the jboss-logging listener writes successes at DEBUG. The `keycloak-login-tracker` service (`container-scripts/keycloak_login_tracker.py`, run by the litellm image's Python as uid 65534) reads new `LOGIN` and `LOGIN_ERROR` events through `GET /admin/realms/<realm>/events` as the `login-tracker` client, looks up each public address in DB-IP's City Lite file (`geoip/`, fetched by `tasks/geoip.yml`, read by `container-scripts/mmdb.py`), and pushes one JSON line per login to Loki (`{service_name="keycloak-logins", realm, result}`). The Keycloak dashboard's Logins row and the `KeycloakLogins` rules in `grafana/provisioning/alerting/keycloak-alerts.yml` read that stream. The user chose on 2026-11-13: event store plus tracker, a local DB-IP file (login addresses never leave the host), private addresses shown as "LAN" without a place, alerts on impossible travel and on a new country. README "Login tracking".
+
+**Critical implementation notes:**
+- The `login-tracker` client (`tasks/keycloak_login_tracker.yml`, tag `login-tracker`) has a service account with realm-management's `view-events` and nothing else, plus the `kc-admin-api` and `roles` client scopes: without `kc-admin-api` the token lacks the admin API audience and the events API answers 401. The tasks sign in as the master admin, because Keycloak lets an admin grant only roles it holds and the provisioner has no `view-events`.
+- The tracker writes nothing to Keycloak and keeps its state in memory. At start it replays the event store (`--history-days`, 30) to learn each user's places, asks Loki which event ids it already pushed, and pushes the rest that are at most `--backfill-days` (6) old: Loki refuses entries older than a week (`reject_old_samples_max_age`). Then it polls with a 10-minute overlap and skips event ids it has seen. It does not push before Loki has answered, so a restart never pushes a login twice.
+- The flags compare only successful logins that have a place. `impossible_travel`: more than `keycloak_login_tracker_min_distance_km` (300) from the user's previous located login, at a speed above `keycloak_login_tracker_max_speed_kmh` (1000); logins in the same minute count as one minute apart. `new_country`: the user has located logins in the window and none from this country; the first located login is the baseline, not new. LAN, stack-internal and failed logins never take part.
+- Address classes: `--internal-networks` (172.16.0.0/12, Docker's pools) and loopback are `stack-internal`; every other non-global address (RFC 1918, CGNAT 100.64/10, IPv6 ULA) is `LAN`. Keycloak records what Traefik passes on, so a VPN or a Cloudflare tunnel connector shows its own address, and behind a Cloudflare proxy Traefik would need `forwardedHeaders.trustedIPs` for Cloudflare's ranges or every login shows a Cloudflare address. On 2026-11-13 no public address had reached Traefik in a week; every login came from the LAN.
+- Every line carries `level` (info; warn for failed or flagged logins). Without it Loki's level detection finds the `error` key and marks every login as an error.
+- `tasks/geoip.yml` downloads `dbip-city-lite-YYYY-MM.mmdb.gz` (about 120 MB, 127 MB unpacked) only when `<file>.release` names an older month, falls back to last month's in the first days of a month, and refuses a file under 10 MB or whose metadata is not a City database. The new file replaces the old by rename; the tracker reopens it when its inode, size or mtime change. DB-IP's licence (CC BY 4.0) asks for a link to db-ip.com wherever the places show: the Logins row's text panel and the table and map panel links carry it.
+- Grafana reads alert-rule files only at start. A deploy that adds or changes rules without recreating `lgtm` reloads them with `POST /api/admin/provisioning/alerting/reload` (Grafana admin credentials; tested on 13.3 on 2026-11-13). Rules removed from a file stay until a `deleteRules` entry deletes them.
+- The map query derives a `status` label (the flag, else `failed` or `ok`) with `label_format`, because a geomap layer colours by one field only.
+- Tested end to end on 2026-11-13 in throwaway containers on Photon: Keycloak 26.8 configured like the live one, the live otel-lgtm image with this provisioning, the real DB-IP file, and the real client task (three changes, then none on a second run). Logins forged with `X-Forwarded-For` from LAN, Docker and public addresses came out with the right places and flags; the panels and both alert rules showed them; a running tracker picked up a later login within one interval.
+
 ### LLM Launcher portals (web GUI per vLLM inference server)
 
 ```bash
@@ -376,6 +404,7 @@ Shared code: `stack_api.py` (HTTP client, argument parser, exit contract) and `s
 - The scripts run inside the containers on purpose. The admin APIs listen on container-local ports only, and the skill archive digest must be computed with LiteLLM's zlib: DEFLATE output differs from the host's build, and a host-side digest would never match the discovery index.
 - A container that predates the mount fails with a hint to run `--tags environment,compose` once. `tasks/sync.yml` carries the `always` tag, so the deployed `container-scripts/` is current on tag-limited runs.
 - `roles/vllm_compute/files/ray_nodes_ready.py` is the one script outside this scheme: the Ray head container has no such mount, so `tasks/services.yml` pipes it to `python -` over stdin.
+- `keycloak_login_tracker.py` is a service too (`keycloak-login-tracker`, "Keycloak login tracking" above). `mmdb.py` is its MaxMind DB reader in the standard library; `tests/container_scripts/mmdb_writer.py` writes the small databases its tests read.
 
 ### Secret scanning (CI)
 

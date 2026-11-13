@@ -322,3 +322,111 @@ groups:
         annotations:
           summary: "High login failure ratio detected"
           description: "Login failure ratio is {{ $value | humanizePercentage }}"
+
+  # Logins written to Loki by the keycloak-login-tracker service
+  # (container-scripts/keycloak_login_tracker.py). Each rule counts the
+  # flagged logins of the last 10 minutes, so it fires within a minute or so
+  # of a flagged login (the tracker reads Keycloak every 30 s) and resolves
+  # 10 minutes later. Logins the tracker backfills on its first start are
+  # older than that and fire nothing.
+  - orgId: 1
+    name: KeycloakLogins
+    folder: Alerts
+    interval: 1m
+    rules:
+      - uid: keycloak-login-impossible-travel
+        title: "Keycloak login: impossible travel"
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki
+            model:
+              expr: >-
+                sum by (realm, username, ip, location, prev_location)
+                (count_over_time({service_name="keycloak-logins"} | json | impossible_travel="true" [10m]))
+              queryType: instant
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.username }} signed in from {{ $labels.location }}, too far from {{ $labels.prev_location }}"
+          description: >-
+            {{ $labels.username }} signed in to realm {{ $labels.realm }} from {{ $labels.ip }}
+            ({{ $labels.location }}). The previous login with a known place was at
+            {{ $labels.prev_location }}, too far away to have travelled in the time between them.
+            The Logins row of the Keycloak dashboard shows both.
+
+      - uid: keycloak-login-new-country
+        title: "Keycloak login: new country"
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki
+            model:
+              expr: >-
+                sum by (realm, username, ip, country, location)
+                (count_over_time({service_name="keycloak-logins"} | json | new_country="true" [10m]))
+              queryType: instant
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.username }} signed in from {{ $labels.country }} for the first time in 30 days"
+          description: >-
+            {{ $labels.username }} signed in to realm {{ $labels.realm }} from {{ $labels.ip }}
+            ({{ $labels.location }}), a country none of the user's logins of the last 30 days came from.
+            The Logins row of the Keycloak dashboard shows the user's other places.

@@ -55,6 +55,17 @@
     - compose
     - freecad
 
+# Before the compose step: the login tracker mounts geoip/ read-only.
+# Tagged compose like the FreeCAD archive, so a `--tags compose` run has it.
+- name: Fetch the GeoIP database of the Keycloak login tracker
+  ansible.builtin.import_tasks:
+    file: geoip.yml
+  when: keycloak_login_tracker_enabled | bool
+  tags:
+    - compose
+    - geoip
+    - login-tracker
+
 # After the sync: it creates traefik/dynamic in the deployed tree.
 - name: Publish the LLM Launcher portals through Traefik
   ansible.builtin.import_tasks:

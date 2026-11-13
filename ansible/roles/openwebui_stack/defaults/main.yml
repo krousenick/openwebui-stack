@@ -64,6 +64,7 @@ stack_secret_names:
   - launcher_status_token
   - memory_mcp_signing_key
   - keycloak_provisioner_client_secret
+  - keycloak_login_tracker_client_secret
   - traefik_dashboard_password
   - code_sandbox_token
   - openwebui_api_admin_key
@@ -153,6 +154,50 @@ launcher_redirect_uris: >-
   {{ launcher_fqdns | map('regex_replace', '^(.*)$', 'https://\1/oauth2/callback') | list }}
 launcher_post_logout_redirect_uris: >-
   {{ launcher_fqdns | map('regex_replace', '^(.*)$', 'https://\1') | list }}
+
+# Keycloak login tracking (container-scripts/keycloak_login_tracker.py,
+# service keycloak-login-tracker). Keycloak saves the realm's logins in its
+# event store (tasks/keycloak_bootstrap.yml: events_enabled, kept 30 days)
+# but logs only the failed ones. Every interval the tracker reads the new
+# LOGIN and LOGIN_ERROR events as the login-tracker client, whose service
+# account holds only realm-management's view-events role
+# (tasks/keycloak_login_tracker.yml), looks up the place of each public
+# address in the local GeoIP file below, and pushes one JSON line per login
+# to Loki (service_name="keycloak-logins"). The Keycloak dashboard's Logins
+# row shows them, and the KeycloakLogins alert rules fire on two flags:
+#   impossible_travel  a successful login more than min_distance_km from the
+#                      user's previous located login, which it could only
+#                      have reached faster than max_speed_kmh;
+#   new_country        a successful login from a country the user has no
+#                      located login from in the last history_days, while
+#                      it has some from other countries.
+# Private addresses show as LAN and the internal networks (Docker's) as
+# stack-internal; neither gets a place or takes part in the checks, and
+# neither do failed logins. Turning the tracker off removes the service and
+# leaves the Keycloak client in place.
+keycloak_login_tracker_enabled: true
+keycloak_login_tracker_client_id: login-tracker
+keycloak_login_tracker_interval: 30
+keycloak_login_tracker_max_speed_kmh: 1000
+keycloak_login_tracker_min_distance_km: 300
+keycloak_login_tracker_history_days: 30
+# How far back the first start pushes logins; Loki refuses entries older
+# than a week.
+keycloak_login_tracker_backfill_days: 6
+keycloak_login_tracker_internal_networks:
+  - 172.16.0.0/12
+
+# GeoIP database of the login tracker (tasks/geoip.yml): DB-IP's free IP to
+# City Lite (CC BY 4.0, https://db-ip.com), one release a month. It is kept
+# in geoip/ of the deployed tree and mounted read-only into the tracker, so
+# login addresses never leave the host. A run downloads the current month's
+# release when the host has an older one, or last month's while the new one
+# is not out yet; a failed download keeps the file already there. The
+# licence asks for a link to db-ip.com wherever the places are shown, which
+# the dashboard panels carry.
+geoip_dir: "{{ project_root }}/geoip"
+geoip_file: dbip-city-lite.mmdb
+geoip_url_template: "https://download.db-ip.com/free/dbip-city-lite-%s.mmdb.gz"
 
 # Playwright MCP cluster. When true, the playbook adds the Open WebUI tool
 # server connection for the playwright_cluster LiteLLM MCP server. The

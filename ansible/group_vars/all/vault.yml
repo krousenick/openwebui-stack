@@ -29,6 +29,8 @@ oauth2_proxy_cookie_secret: CHANGE_ME
 launcher_oidc_client_secret: CHANGE_ME
 launcher_status_token: CHANGE_ME
 keycloak_provisioner_client_secret: CHANGE_ME
+# Keycloak login tracker: the login-tracker client (view-events only).
+keycloak_login_tracker_client_secret: CHANGE_ME
 traefik_dashboard_password: CHANGE_ME
 code_sandbox_token: CHANGE_ME
 # Saved memories: LiteLLM's memory hook signs each memory tool call's owner
