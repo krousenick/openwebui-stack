@@ -899,7 +899,7 @@ docker compose exec code-sandbox sh -c 'touch /outputs/.probe && rm /outputs/.pr
 docker compose exec postgres psql -U openwebui -d openwebui -tAc \
   "SELECT key, value FROM config WHERE key IN ('code_interpreter.enable', 'code_interpreter.engine');"
 docker compose exec postgres psql -U openwebui -d openwebui -tAc \
-  "SELECT meta->'manifest'->>'version' FROM function WHERE id = 'tool_result_file_download';"
+  "SELECT meta::jsonb->'manifest'->>'version' FROM function WHERE id = 'tool_result_file_download';"
 
 # 5. Model-authored STL generation, end to end (inside the sandbox)
 docker compose exec code-sandbox python3 /path/to/your_tree_script.py
