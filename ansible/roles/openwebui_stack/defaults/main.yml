@@ -394,8 +394,10 @@ skills_public_index_enabled: true
 #           marketplace row per skill, registered through the deprecated
 #           /claude-code/plugins routes. What the stack did before the
 #           Skill Hub. In LiteLLM 1.110 only this store's skills can be
-#           named in a model request (container.skills, which puts their
-#           SKILL.md in the system prompt) or found by semantic search.
+#           named in a model request (container.skills, which on
+#           /v1/messages puts their SKILL.md in the system prompt; on
+#           /v1/chat/completions vLLM refuses the tools it adds) or found
+#           by semantic search.
 #   hub     the Skill Hub (/skill-hub/skills), which LiteLLM recommends:
 #           versioned archives behind the marketplace and the discovery
 #           index. Deletes the legacy store's copies, so neither of those

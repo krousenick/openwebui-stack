@@ -10,9 +10,10 @@ role's litellm_skills_store, picks where the skills live
           /claude-code/plugins routes that LiteLLM now marks deprecated,
           whose archive is that store's /v1/skills/{id}/archive. In LiteLLM
           1.110 only this store's skills can be named in a model request
-          ("container": {"skills": [{"skill_id": ...}]} on
-          /v1/chat/completions or /v1/messages, which puts their SKILL.md in
-          the system prompt) or found by semantic skill search (GET
+          ("container": {"skills": [{"skill_id": ...}]}; on /v1/messages
+          that puts their SKILL.md in the system prompt, while on
+          /v1/chat/completions vLLM refuses the Anthropic-shaped tools
+          LiteLLM adds) or found by semantic skill search (GET
           /v1/skills?query=, the skill_search MCP tool).
   hub     The Skill Hub (/skill-hub/skills), the path LiteLLM recommends:
           stored archives with version history, in one registry that also

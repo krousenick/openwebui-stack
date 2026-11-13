@@ -1002,19 +1002,23 @@ than one file that works in all three.
 
 **Choosing the store.** Open WebUI, Claude Code (through the marketplace)
 and opencode load the skills themselves, so they work with every setting.
-A request sent straight to LiteLLM, on `/v1/chat/completions` or
-`/v1/messages`, gets a skill only when it names it,
-`"container": {"skills": [{"skill_id": "litellm_skill_…"}]}`: LiteLLM then
-adds that SKILL.md to the system prompt. That lookup, and semantic skill
+A request sent straight to LiteLLM gets a skill only when it names it,
+`"container": {"skills": [{"type": "custom", "skill_id": "litellm_skill_…"}]}`.
+On `/v1/messages` LiteLLM then adds that SKILL.md to the system prompt. On
+`/v1/chat/completions` LiteLLM 1.110 also appends the skill as a tool in
+Anthropic's shape, without a `function` object, and vLLM refuses the
+request with a 400 (seen live on 2026-11-13). The `litellm_code_execution`
+tool it adds runs nothing here: its sandbox needs a container socket the
+litellm service does not have. Naming a skill this way, and semantic skill
 search (`GET /v1/skills?custom_llm_provider=litellm_proxy&query=…` and
-LiteLLM's `skill_search` MCP tool), read only the legacy store in LiteLLM
-1.110. A legacy skill's id changes whenever its SKILL.md does, so look ids
+LiteLLM's `skill_search` MCP tool), work only with the legacy store in
+LiteLLM 1.110. A legacy skill's id changes whenever its SKILL.md does, so look ids
 up with `GET /v1/skills?custom_llm_provider=litellm_proxy` first. The hub's
 own `GET /skill-hub/skills?query=…` matches words in names, descriptions
 and tags. And the discovery index lists legacy-store skills first and
 renames a hub skill whose name one of them holds (`stack-ops-2`). So:
 
-| `litellm_skills_store` | Skills named in a request, semantic search | Discovery index | Versions, LiteLLM's recommended API |
+| `litellm_skills_store` | Skills named in a `/v1/messages` request, semantic search | Discovery index | Versions, LiteLLM's recommended API |
 |---|---|---|---|
 | `legacy` | yes | each skill once | no; deprecated marketplace routes |
 | `hub` | no | each skill once | yes |
