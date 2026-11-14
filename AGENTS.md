@@ -439,6 +439,7 @@ Task files hold no inline Python. Every Python job of the `openwebui_stack` role
 | `openwebui_interface_defaults.py` | open-webui | `openwebui_interface_defaults.yml` |
 | `litellm_claude_subscription.py` | litellm | `claude_subscription.yml` |
 | `openwebui_hidden_models.py` | open-webui | `claude_subscription.yml` |
+| `openwebui_model_access.py` | open-webui | `openwebui_model_access.yml` |
 
 Shared code: `stack_api.py` (HTTP client, argument parser, exit contract) and `skill_packages.py` (SKILL.md discovery and the frontmatter rules). Three scripts are services rather than tasks, each run by the litellm image's Python in a compose service of its own: `launcher_follower.py` (`launcher-follower`), `memory_mcp_server.py` (`memory-mcp`) and `skills_mcp_server.py` (`skills-mcp`).
 
@@ -450,6 +451,7 @@ Shared code: `stack_api.py` (HTTP client, argument parser, exit contract) and `s
 - The scripts run inside the containers on purpose. The admin APIs listen on container-local ports only, and the skill archive digest must be computed with LiteLLM's zlib: DEFLATE output differs from the host's build, and a host-side digest would never match the discovery index.
 - A container that predates the mount fails with a hint to run `--tags environment,compose` once. `tasks/sync.yml` carries the `always` tag, so the deployed `container-scripts/` is current on tag-limited runs.
 - `roles/vllm_compute/files/ray_nodes_ready.py` is the one script outside this scheme: the Ray head container has no such mount, so `tasks/services.yml` pipes it to `python -` over stdin.
+- `openwebui_model_access.py` keeps every chat model LiteLLM serves shared with every Open WebUI user. Open WebUI 0.13 shows a user who is not an admin only models whose Workspace entry grants them read, and treats a base model with no entry as admin-only. Grants live in the `access_grant` table: public is principal `user` / `*` / `read`, and `POST /api/v1/models/model/access/update` replaces a model's grants, making a plain entry when there is none. The script adds that grant to every base model `/api/models` lists with `owned_by: openai` and keeps a model's other grants. It skips presets (`info.base_model_id`), arena models, pipes and `openwebui_models_kept_private`. It must run after `claude_subscription.yml`: hidden entries are inactive and never reach `/api/models`, but on a fresh run the Claude names would otherwise be shared before they are hidden. `POST /model/update` leaves grants alone on an existing entry, so the reasoning sync does not undo them. Found 2026-11-13: the table was empty, and a new user saw no model.
 - `keycloak_login_tracker.py` is a service too (`keycloak-login-tracker`, "Keycloak login tracking" above). `mmdb.py` is its MaxMind DB reader in the standard library; `tests/container_scripts/mmdb_writer.py` writes the small databases its tests read.
 
 ### Secret scanning (CI)

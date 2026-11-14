@@ -163,6 +163,16 @@
     - openwebui-config
     - claude-subscription
 
+# After the task above: it hides the names no chat can use, and hidden
+# entries never reach the model list this task shares from.
+- name: Share the chat models with every Open WebUI user
+  ansible.builtin.import_tasks:
+    file: openwebui_model_access.yml
+  when: openwebui_models_shared_with_users | bool
+  tags:
+    - openwebui-config
+    - model-access
+
 - name: Configure Keycloak SSO
   ansible.builtin.import_tasks:
     file: keycloak.yml

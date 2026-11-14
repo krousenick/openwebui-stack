@@ -381,6 +381,8 @@ class FakeOpenWebUI(FakeService):
         self.skill_lookup_by_id = True
         self.functions: dict[str, dict[str, Any]] = {}
         self.model_rows: dict[str, dict[str, Any]] = {}
+        # True: the access route answers 200 but stores nothing.
+        self.ignore_access_writes = False
 
     def handle(self, request: Request) -> tuple[int, Any]:
         if not self.authorized(request):
@@ -416,7 +418,30 @@ class FakeOpenWebUI(FakeService):
             if self.model_rows.pop(request.json()["id"], None) is None:
                 return 401, {"detail": "NOT_FOUND"}
             return 200, True
+        if path == "/api/v1/models/model/access/update":
+            return self.handle_model_access(request.json())
         return 404, {"detail": f"no route for {method} {path}"}
+
+    def handle_model_access(self, form: dict[str, Any]) -> tuple[int, Any]:
+        """0.13.3's access route: replaces a model's grants, making a plain entry for a model that has none."""
+        row = self.model_rows.get(form["id"])
+        if row is None:
+            row = {
+                "id": form["id"],
+                "base_model_id": None,
+                "name": form.get("name") or form["id"],
+                "meta": {},
+                "params": {},
+                "is_active": True,
+                "access_grants": [],
+            }
+            self.model_rows[form["id"]] = row
+        if not self.ignore_access_writes:
+            row["access_grants"] = [
+                {**grant, "id": f"grant-{number}", "resource_type": "model", "resource_id": form["id"]}
+                for number, grant in enumerate(form["access_grants"])
+            ]
+        return 200, row
 
     def handle_admin_config(self, method: str, request: Request) -> tuple[int, Any]:
         """The admin config as 0.13.3 saves it: a form, with its MFA guard and I18N rule."""
