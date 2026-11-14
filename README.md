@@ -478,6 +478,16 @@ cd ansible && ansible-playbook playbooks/site.yml --tags openwebui-config
 
 `DEFAULT_MODELS` is a persisted Open WebUI setting: the compose env var only seeds a fresh database, so `tasks/openwebui_default_models.yml` also writes it through the admin API (`POST /api/v1/configs/models`, authenticated with the `skill-publisher` key) on every run. It applies live, no restart. The task compares the default against Open WebUI's model list and prints a warning for a name that is not served; the value is still saved, so a vLLM model registered later by `playbooks/inference.yml` becomes the default without a rerun. A user who picked their own default under Settings → Interface keeps theirs.
 
+#### Who sees which model
+
+Open WebUI shows a user who is not an admin only the models shared with them; admins see every model. `tasks/openwebui_model_access.yml` (`container-scripts/openwebui_model_access.py`) therefore shares every chat model LiteLLM serves with every user on each run (`openwebui_models_shared_with_users`, default true). It is the same as setting Visibility: Public in Workspace → Models, through the admin API, live. A model's other sharing settings are kept. The hidden names (the Claude passthrough, the embedding models) stay hidden, and models listed in `openwebui_models_kept_private` are left for you to share by hand. A model the LLM Launcher swaps in arrives under a new name and stays admin-only until the next run:
+
+```bash
+cd ansible && ansible-playbook playbooks/site.yml --tags model-access
+```
+
+Before this task, a new account saw an empty model list (2026-11-13): sharing had never been set, and only admins had noticed nothing.
+
 ### Services Overview
 
 #### Core Services

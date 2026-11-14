@@ -1,0 +1,27 @@
+---
+# Share the chat models LiteLLM serves with every Open WebUI user. Open
+# WebUI 0.13 shows a user who is not an admin only the models whose
+# Workspace entry grants them read access, and nothing granted any: new
+# accounts saw an empty model list (found 2026-11-13). The logic is in
+# container-scripts/openwebui_model_access.py: every base model the chat
+# picker lists from LiteLLM gets the public read grant (the Workspace's
+# Visibility: Public), a model's other grants are kept, and
+# openwebui_models_kept_private names models it leaves alone.
+#
+# tasks/main.yml imports this after tasks/claude_subscription.yml, which
+# hides the Claude passthrough names and the embedding models: inactive
+# entries never reach the picker's list, so they are never shared. Auth
+# reuses the skill-publisher admin API key (openwebui_api_admin_key) that
+# tasks/openwebui_skills.yml upserts.
+
+- name: Share the chat models with every Open WebUI user
+  ansible.builtin.import_tasks:
+    file: container_script.yml
+  vars:
+    container_script: openwebui_model_access.py
+    container_script_service: open-webui
+    container_script_args:
+      - --exclude
+      - "{{ openwebui_models_kept_private | join(',') }}"
+    container_script_env:
+      OPENWEBUI_API_KEY: "{{ openwebui_api_admin_key }}"

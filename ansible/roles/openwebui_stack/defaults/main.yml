@@ -407,6 +407,22 @@ openwebui_default_models_csv: >-
   {{ [openwebui_default_models | default('', true)] | flatten | join(',')
      | split(',') | map('trim') | reject('equalto', '') | join(',') }}
 
+# Who sees the chat models. Open WebUI 0.13 shows a user who is not an
+# admin only the models shared with them (admins see every model), and
+# nothing shared them, so new accounts saw no model at all. true gives every
+# chat model LiteLLM serves Open WebUI's public read grant on each run
+# (tasks/openwebui_model_access.yml, Visibility: Public), keeping a model's
+# other grants; hidden names (the Claude passthrough, the embedding models)
+# stay hidden. A model the LLM Launcher swaps in between runs stays
+# admin-only until the next run. false shares nothing more and takes back
+# nothing already shared.
+openwebui_models_shared_with_users: true
+
+# Model ids the task above leaves as they are, for models only some users
+# should see: share those by hand (Workspace > Models > Visibility). A model
+# already shared keeps its grant; set it to Private in the UI once.
+openwebui_models_kept_private: []
+
 # Site-wide defaults for every user's Settings > Interface (Open WebUI's
 # default interface settings, set through the admin API by
 # tasks/openwebui_interface_defaults.yml). A user's own choice still wins.
